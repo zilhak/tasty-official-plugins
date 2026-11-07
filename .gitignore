@@ -2,3 +2,4 @@
 .claude-workspace
 .DS_Store
 *.swp
+/target

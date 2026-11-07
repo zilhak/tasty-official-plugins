@@ -1,0 +1,28 @@
+[package]
+name = "plugin-pin-check"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Pulls the pinned tasty plugin crates into this workspace and checks the pin"
+
+# The plugin crates are listed here so Cargo resolves and locks them. The bin-only
+# crates trigger "ignoring invalid dependency ... missing a lib target"; see README.
+[dependencies]
+tasty-plugin-agent-common.workspace = true
+tasty-plugin-agent-stream.workspace = true
+tasty-plugin-claude.workspace = true
+tasty-plugin-clipboard-viewer.workspace = true
+tasty-plugin-codex.workspace = true
+tasty-plugin-git-viewer.workspace = true
+tasty-plugin-html.workspace = true
+tasty-plugin-image.workspace = true
+tasty-plugin-markdown.workspace = true
+tasty-plugin-mesh-demo.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tasty-plugin-manifest.workspace = true
+
+[lints]
+workspace = true

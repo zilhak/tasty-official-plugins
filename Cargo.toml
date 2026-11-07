@@ -1,0 +1,46 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+# Every tasty crate comes from the same tasty commit. To move the pin, change
+# the rev below in every entry (and in [patch.crates-io]); the pin-check tests
+# fail if the entries disagree. When tasty publishes a release tag, replace
+# `rev = "..."` with `tag = "..."`.
+[workspace.dependencies]
+tasty-plugin-agent-common = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+tasty-plugin-agent-stream = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+tasty-plugin-claude = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+tasty-plugin-clipboard-viewer = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+tasty-plugin-codex = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+tasty-plugin-git-viewer = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+tasty-plugin-html = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+tasty-plugin-image = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+tasty-plugin-markdown = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+tasty-plugin-mesh-demo = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+tasty-plugin-manifest = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+serde_json = "1"
+
+# tasty patches tiny_http (vendor/tiny_http, see its PATCHES.md) and builds the
+# agent-stream SSE server against that copy. Use the same copy here.
+[patch.crates-io]
+tiny_http = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_assignments = "deny"
+unused_must_use = "deny"
+dead_code = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+
+# Same as tasty so the plugin binaries match what tasty ships.
+[profile.release]
+lto = "thin"
+strip = true
+opt-level = 3
+
+[profile.dist]
+inherits = "release"
+lto = true

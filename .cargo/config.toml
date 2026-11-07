@@ -1,0 +1,7 @@
+# Statically link the MSVC C runtime so the Windows plugin binaries do not
+# require the VC++ Redistributable (vcruntime140.dll). Same as tasty.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
