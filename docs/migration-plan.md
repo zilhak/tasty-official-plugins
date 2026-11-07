@@ -68,7 +68,7 @@
 | `tasty-i18n` | sdk, egui-theme |
 | `tasty-ui-widgets` | clipboard-viewer, git-viewer, image, markdown, mesh-demo, sdk(`egui-mesh` feature) |
 | `tasty-egui-theme` | clipboard-viewer, git-viewer, image, markdown, ui-widgets |
-| `tasty-type-appearance` | clipboard-viewer, git-viewer, image, markdown, mesh-demo, protocol, sdk |
+| `tasty-type-appearance` | clipboard-viewer, git-viewer, image, markdown, mesh-demo, protocol, ui-widgets, egui-theme |
 | `tasty-type-geometry` | 전이 의존(ui-widgets, egui-theme, type-appearance) |
 | `tasty-icons` | clipboard-viewer·image·markdown의 build-dependency, markdown의 dependency, ui-widgets |
 | `tasty-git-core` | git-viewer. 본체 원격 attach와 함께 쓴다 |
@@ -82,6 +82,7 @@ dev-dependency로만 쓰는 것:
 | `tasty-themes` | markdown, sdk, ui-widgets, egui-theme |
 | `tasty-plugin-manifest` | clipboard-viewer, html, markdown, mesh-demo |
 | `tasty-design-tokens` | ui-widgets |
+| `tasty-type-appearance` | sdk |
 
 지금 이 레포에서는 플러그인이 git 의존이라 workspace 멤버가 아니다. 그래서 플러그인의 dev-dependency는 해석되지 않고 플러그인 시험도 이 레포에서 돌지 않는다. 4단계 뒤에는 플러그인이 멤버가 되므로 `tasty-test-support` 등을 git dev-dependency로 받아야 한다.
 
@@ -127,6 +128,7 @@ dev-dependency로만 쓰는 것:
 | `tasty-plugin-sdk` | `0.31` | 플러그인 쪽 | optional(`egui-mesh` feature) |
 | `tasty-ui-widgets` | `0.31` | - | 비플러그인. `egui_extras` `0.31` |
 | `tasty-egui-theme` | `0.31` | - | 비플러그인 |
+| `tasty-type-appearance` | `0.31` | - | 비플러그인. optional(`egui-compat` feature). egui를 쓰는 플러그인 5개와 ui-widgets·egui-theme이 이 feature를 켠다 |
 | `tasty-plugin-clipboard-viewer` | `0.31` | 사용 | `default-features = false`, `bytemuck`, `default_fonts` |
 | `tasty-plugin-git-viewer` | `0.31` | 사용 | 같음 |
 | `tasty-plugin-image` | `0.31` | 사용 | 같음 |
