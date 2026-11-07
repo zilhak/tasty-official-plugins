@@ -1,0 +1,148 @@
+# CI and release workflows
+
+This repository builds the official Tasty plugins from the tasty crates pinned in
+`Cargo.toml`. The workflows call `scripts/check.sh` and `scripts/package-plugin.sh`, so
+the steps that run in CI also run locally. The tasty sha is not repeated in any
+workflow.
+
+## Workflows
+
+| File | Trigger | What it does |
+|---|---|---|
+| `.github/workflows/ci.yml` | push to `main`, pull request to `main`, manual | `check` job: fmt, clippy, test. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
+| `.github/workflows/release.yml` | manual only (`workflow_dispatch`) | Builds with the `dist` profile, packages each plugin, runs the signing steps (skipped without secrets), and uploads the result as workflow artifacts. It does not create a GitHub Release |
+
+Both workflows use `permissions: contents: read`. `ci.yml` cancels an older run on the
+same ref. Every job has `timeout-minutes`.
+
+## Platforms and runners
+
+The repository has no self-hosted runners. tasty's self-hosted runners belong to the
+tasty repository and cannot be used here. This repository is public, so it uses
+GitHub-hosted runners at no cost.
+
+| Platform label | Target | Runner |
+|---|---|---|
+| `windows-x64` | `x86_64-pc-windows-msvc` | `windows-latest` |
+| `windows-arm64` | `aarch64-pc-windows-msvc` | `windows-11-arm` |
+| `macos-arm64` | `aarch64-apple-darwin` | `macos-latest` (Apple Silicon) |
+| `linux-x64` | `x86_64-unknown-linux-gnu` | `ubuntu-latest` |
+| `linux-arm64` | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` |
+
+These are the same five platforms that tasty releases. Linux ARM64 is included because
+tasty ships a Linux ARM64 package, and the full-package lock file needs a plugin hash
+for every platform.
+
+Every job passes `--target` explicitly, even on a native runner. The ARM64 runner
+images may not include rustup, so the workflows install it when it is missing. The
+toolchain itself comes from `rust-toolchain.toml`. If `windows-11-arm` stops being
+available, Windows ARM64 can be cross-built on `windows-latest` after
+`rustup target add aarch64-pc-windows-msvc`, as tasty does.
+
+Self-hosted runners are possible later, but someone has to register them for this
+repository first. Then change `runner` in the matrix.
+
+## Actions and cache
+
+- Actions are pinned to a commit sha, with the version in a comment
+  (`actions/checkout` v7.0.1, `Swatinem/rust-cache` v2.9.3, `actions/upload-artifact`
+  v7.0.2). Update the sha and the comment together.
+- `Swatinem/rust-cache` builds its cache key from the hash of `Cargo.lock` and
+  `rust-toolchain.toml`. The build job adds the target triple to the key. The release
+  workflow does not use a cache, so release builds always start clean.
+
+## Static C runtime on Windows
+
+`.cargo/config.toml` adds `-C target-feature=+crt-static` for both Windows MSVC targets,
+so the plugins run without the VC++ Redistributable. On Windows, the CI build job
+collects the executables from cargo's `compiler-artifact` messages and runs
+`dumpbin /dependents` on each one. The job fails if any executable imports
+`vcruntime*.dll`, `msvcp*.dll`, or `api-ms-win-crt-*.dll`.
+
+| Platform | Result |
+|---|---|
+| `windows-x64` | Check after push |
+| `windows-arm64` | Check after push |
+
+To check by hand, open the "Inspect DLL imports with dumpbin (Windows)" step in the CI
+log. It lists the DLLs each plugin imports and ends with
+`static CRT: <n> executables import no VC++ runtime DLLs`.
+
+## Packaging
+
+`scripts/package-plugin.sh` follows tasty's `stage_plugins`. It runs in this fixed
+order:
+
+1. `stage`: build with `scripts/check.sh build --profile dist --target <triple>`, then
+   copy each plugin into `<out>/<platform>/stage/<id>/` with its executable,
+   `tasty-plugin.toml`, and `lang/`. `<id>` is the manifest `id`, for example
+   `com.tasty.claude`.
+2. Binary codesigning (workflow step, placeholder).
+3. `sign-manifests`: write `tasty-plugin.toml.sig` next to each staged manifest.
+4. `pack`: one `<id>-<version>-<platform>.tar.gz` per plugin. `<version>` is the
+   manifest `version`.
+5. `pack` then writes `SHA256SUMS-<platform>.txt` (the `sha256sum` format) and
+   `plugins-<platform>.tsv` with the columns `id`, `version`, `platform`, `file`,
+   `sha256`. The hashes cover the archives after signing.
+
+The script finds each executable through the `executable` field of cargo's
+`compiler-artifact` messages. It finds the manifest and `lang/` in the tasty git
+checkout that cargo fetched. `cargo metadata` does not list the bin-only plugin crates,
+so the script locates the checkout through `tasty-plugin-manifest`, which comes from the
+same commit, and then uses `crates/<crate>/` in it. Signing works on the staged copies,
+because the cargo checkout is a shared cache.
+
+Example:
+
+```
+scripts/package-plugin.sh all --platform linux-x64 --target x86_64-unknown-linux-gnu --out target/package
+```
+
+The archives are tar.gz on every platform, including Windows, so one format and one
+hash list serve all platforms. The script needs bash, tar, `sha256sum` or `shasum`, and
+`jq` or Python 3. On Windows it runs under Git Bash.
+
+### Plugins in the packages
+
+The release workflow follows tasty's current rule: plugins whose manifest says
+`bundle = false` are left out. At the pinned commit that leaves out
+`tasty-plugin-agent-stream` and `tasty-plugin-mesh-demo`, so seven plugins are packaged.
+The `include_unbundled` input packages all nine.
+
+Decision pending (NEEDS-USER): whether downloadable packages should include the
+`bundle = false` plugins.
+
+## Signing and release status
+
+The signing steps are placeholders, and nothing is published.
+
+| Step | Secret it reads | Without the secret | With the secret |
+|---|---|---|---|
+| Manifest signature (`tasty-plugin.toml.sig`) | `PLUGIN_MANIFEST_SIGNING_KEY` (Ed25519 private key, PEM) | Logs `unsigned:` and continues | Signs the staged manifests the same way as tasty's `scripts/sign-bundle.sh`: Ed25519 over the SHA-256 digest of the manifest, raw 64 bytes |
+| macOS codesign and notarization | `APPLE_CODESIGN_CERTIFICATE_P12` | Logs `unsigned:` and continues | Fails: not implemented |
+| Windows Authenticode | `WINDOWS_CODESIGN_CERTIFICATE` | Logs `unsigned:` and continues | Fails: not implemented |
+
+GitHub Actions cannot use the `secrets` context in `if:`, so each step reads its secret
+through `env` and checks in the shell whether it is empty.
+
+The release workflow has no tag trigger and no publish job. It uploads the packages
+only as workflow artifacts named `plugins-<platform>`.
+
+These depend on stage 2 decisions about the plugin contract and trust model:
+
+- The long-term signing key, its secret name, and who holds it.
+- Signing scope: manifest only, or the binaries and archives as well.
+- Key rotation, and how the host trusts a new key.
+- The minimum host version a plugin package declares.
+- Where packages are published (tasty Releases, according to the current plan) and the
+  file names and hash list format the full-package lock file reads.
+
+## Checks after the first push
+
+| Check | How | Result |
+|---|---|---|
+| CI passes on `main` | `gh run list --workflow ci.yml --commit <sha>`, then `gh run view <id> --json jobs`: the `check` job and five `build` jobs succeed | Check after push |
+| Static CRT on Windows | "Inspect DLL imports with dumpbin (Windows)" step in the two Windows build jobs | Check after push |
+| Release skeleton | `gh workflow run release.yml --ref main`, then `gh run download <id>`: each `plugins-<platform>` artifact holds the archives, `SHA256SUMS-<platform>.txt`, and `plugins-<platform>.tsv`. The signing step logs contain `unsigned:` | Check after push |
+| No release created | `gh release list` is empty | Check after push |
+| Extra system packages | Whether the Linux runners need packages beyond the image defaults. A local Linux ARM64 build needed none | Check after push |
