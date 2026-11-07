@@ -56,13 +56,15 @@ to_unix_path() {
 
 # Runs a jq filter, or the equivalent Python expression when jq is missing.
 # $1 = jq filter, $2 = python code that reads JSON lines from stdin.
+# Output goes through tr -d '\r': jq.exe and Python on Windows write CRLF line
+# endings, and a trailing \r would end up in the paths read from it.
 json_query() {
   if command -v jq >/dev/null 2>&1; then
-    jq -r "$1"
+    jq -r "$1" | tr -d '\r'
   elif command -v python3 >/dev/null 2>&1; then
-    python3 -I -c "$2"
+    python3 -I -c "$2" | tr -d '\r'
   elif command -v python >/dev/null 2>&1; then
-    python -I -c "$2"
+    python -I -c "$2" | tr -d '\r'
   else
     die "jq or python3 is required to read cargo JSON output"
   fi
