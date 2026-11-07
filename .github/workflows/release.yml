@@ -1,0 +1,141 @@
+name: Release (skeleton)
+
+# Builds, packages, and (when secrets exist) signs the plugins for every
+# platform and uploads the result as workflow artifacts. It does not create a
+# GitHub Release and has no tag trigger. Signing keys, signing scope, and key
+# rotation are not decided yet; see docs/ci.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_unbundled:
+        description: Also package plugins whose manifest says bundle = false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Relative so Git Bash tar on Windows never sees a drive letter.
+  PKG_OUT: target/package
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  package:
+    name: package ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            target: x86_64-pc-windows-msvc
+            runner: windows-latest
+          - platform: windows-arm64
+            target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+          - platform: macos-arm64
+            target: aarch64-apple-darwin
+            runner: macos-latest
+          - platform: linux-x64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - platform: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install rustup if missing (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Get-Command rustup -ErrorAction SilentlyContinue) { exit 0 }
+          $arch = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+          $init = Join-Path $env:RUNNER_TEMP 'rustup-init.exe'
+          Invoke-WebRequest "https://static.rust-lang.org/rustup/dist/$arch-pc-windows-msvc/rustup-init.exe" -OutFile $init
+          & $init -y --default-toolchain none --profile minimal
+          Add-Content $env:GITHUB_PATH (Join-Path $env:USERPROFILE '.cargo\bin')
+      - name: Install rustup if missing (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          command -v rustup >/dev/null && exit 0
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --default-toolchain none --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install toolchain and target
+        run: |
+          rustup toolchain install || rustup show
+          rustup target add ${{ matrix.target }}
+
+      # 1. Build with the dist profile and stage <id>/ folders.
+      - name: Build and stage
+        env:
+          INCLUDE_UNBUNDLED: ${{ inputs.include_unbundled }}
+        run: |
+          args=(--platform ${{ matrix.platform }} --out "$PKG_OUT" --target ${{ matrix.target }} --profile dist)
+          [[ "$INCLUDE_UNBUNDLED" == "true" ]] && args+=(--all)
+          scripts/package-plugin.sh stage "${args[@]}"
+
+      # 2. Binary codesigning. Placeholder: secrets cannot be used in `if:`, so
+      # each step reads them through env and skips when they are empty.
+      - name: Codesign binaries (macOS, placeholder)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CODESIGN_CERTIFICATE_P12: ${{ secrets.APPLE_CODESIGN_CERTIFICATE_P12 }}
+        run: |
+          if [[ -z "$APPLE_CODESIGN_CERTIFICATE_P12" ]]; then
+            echo "unsigned: macOS codesign and notarization skipped (no certificate secret)"
+            exit 0
+          fi
+          echo "::error::macOS codesign is not implemented yet; see docs/ci.md"
+          exit 1
+      - name: Authenticode sign binaries (Windows, placeholder)
+        if: runner.os == 'Windows'
+        env:
+          WINDOWS_CODESIGN_CERTIFICATE: ${{ secrets.WINDOWS_CODESIGN_CERTIFICATE }}
+        run: |
+          if [[ -z "$WINDOWS_CODESIGN_CERTIFICATE" ]]; then
+            echo "unsigned: Windows Authenticode signing skipped (no certificate secret)"
+            exit 0
+          fi
+          echo "::error::Authenticode signing is not implemented yet; see docs/ci.md"
+          exit 1
+
+      # 3. Manifest signatures (tasty-plugin.toml.sig) on the staged copies.
+      - name: Sign manifests
+        env:
+          PLUGIN_MANIFEST_SIGNING_KEY: ${{ secrets.PLUGIN_MANIFEST_SIGNING_KEY }}
+        run: |
+          if [[ -n "$PLUGIN_MANIFEST_SIGNING_KEY" ]]; then
+            key="$RUNNER_TEMP/plugin-manifest-signing-key.pem"
+            (umask 077 && printf '%s\n' "$PLUGIN_MANIFEST_SIGNING_KEY" > "$key")
+            trap 'rm -f "$key"' EXIT
+            export PLUGIN_MANIFEST_SIGNING_KEY_FILE="$key"
+          fi
+          scripts/package-plugin.sh sign-manifests --platform ${{ matrix.platform }} --out "$PKG_OUT"
+
+      # 4. Archive each signed <id>/ folder, then 5. write the SHA-256 lists.
+      - name: Pack
+        run: scripts/package-plugin.sh pack --platform ${{ matrix.platform }} --out "$PKG_OUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugins-${{ matrix.platform }}
+          path: ${{ env.PKG_OUT }}/${{ matrix.platform }}/dist/
+          if-no-files-found: error
+
+  # There is no publish job on purpose. Publishing waits for the stage 2
+  # release decisions (signing keys, where packages go, the lock file format).
+  # This workflow must not create or upload a GitHub Release.
