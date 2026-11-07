@@ -19,6 +19,7 @@ tasty-plugin-markdown = { git = "https://github.com/zilhak/tasty", rev = "89efb5
 tasty-plugin-mesh-demo = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
 tasty-plugin-manifest = { git = "https://github.com/zilhak/tasty", rev = "89efb560203f7041959515ebe17dc7f3de2bbcd2" }
 serde_json = "1"
+toml = "0.8"
 
 # tasty patches tiny_http (vendor/tiny_http, see its PATCHES.md) and builds the
 # agent-stream SSE server against that copy. Use the same copy here.

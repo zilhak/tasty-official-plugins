@@ -1249,6 +1249,7 @@ dependencies = [
  "tasty-plugin-manifest",
  "tasty-plugin-markdown",
  "tasty-plugin-mesh-demo",
+ "toml",
 ]
 
 [[package]]
