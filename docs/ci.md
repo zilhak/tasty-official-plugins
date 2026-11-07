@@ -61,8 +61,8 @@ collects the executables from cargo's `compiler-artifact` messages and runs
 
 | Platform | Result |
 |---|---|
-| `windows-x64` | Check after push |
-| `windows-arm64` | Check after push |
+| `windows-x64` | No VC++ runtime DLL imports in the 9 plugin executables (CI run 42402231647) |
+| `windows-arm64` | No VC++ runtime DLL imports in the 9 plugin executables (CI run 42402231647) |
 
 To check by hand, open the "Inspect DLL imports with dumpbin (Windows)" step in the CI
 log. It lists the DLLs each plugin imports and ends with
@@ -141,8 +141,8 @@ These depend on stage 2 decisions about the plugin contract and trust model:
 
 | Check | How | Result |
 |---|---|---|
-| CI passes on `main` | `gh run list --workflow ci.yml --commit <sha>`, then `gh run view <id> --json jobs`: the `check` job and five `build` jobs succeed | Check after push |
-| Static CRT on Windows | "Inspect DLL imports with dumpbin (Windows)" step in the two Windows build jobs | Check after push |
-| Release skeleton | `gh workflow run release.yml --ref main`, then `gh run download <id>`: each `plugins-<platform>` artifact holds the archives, `SHA256SUMS-<platform>.txt`, and `plugins-<platform>.tsv`. The signing step logs contain `unsigned:` | Check after push |
-| No release created | `gh release list` is empty | Check after push |
-| Extra system packages | Whether the Linux runners need packages beyond the image defaults. A local Linux ARM64 build needed none | Check after push |
+| CI passes on `main` | `gh run list --workflow ci.yml --commit <sha>`, then `gh run view <id> --json jobs`: the `check` job and five `build` jobs succeed | Passed: check and all five build jobs (CI run 42402231647, commit 86ed61d) |
+| Static CRT on Windows | "Inspect DLL imports with dumpbin (Windows)" step in the two Windows build jobs | Passed on both Windows targets (CI run 42402231647) |
+| Release skeleton | `gh workflow run release.yml --ref main`, then `gh run download <id>`: each `plugins-<platform>` artifact holds the archives, `SHA256SUMS-<platform>.txt`, and `plugins-<platform>.tsv`. The signing step logs contain `unsigned:` | Passed: five artifacts, each with 7 archives, the SHA-256 list, and the TSV; `sha256sum -c` passed; every job logged `unsigned:` (release run 42402274255) |
+| No release created | `gh release list` is empty | Passed: no releases |
+| Extra system packages | Whether the Linux runners need packages beyond the image defaults. A local Linux ARM64 build needed none | None needed on the hosted Linux runners (CI run 42402231647) |
