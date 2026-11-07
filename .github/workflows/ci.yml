@@ -1,0 +1,135 @@
+name: CI
+
+# Checks and builds the pinned tasty plugin crates on every supported platform.
+# Every command goes through scripts/check.sh, so CI and local checks run the
+# same steps. Runners and action pins are described in docs/ci.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    # Git Bash on Windows runners.
+    shell: bash
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # rustup installs the toolchain named in rust-toolchain.toml.
+      - name: Install toolchain
+        run: rustup toolchain install || rustup show
+
+      # The cache key includes the hash of Cargo.lock and rust-toolchain.toml.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: fmt
+        run: scripts/check.sh fmt
+      - name: clippy
+        run: scripts/check.sh lint
+      - name: test
+        run: scripts/check.sh test
+
+  build:
+    name: build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            target: x86_64-pc-windows-msvc
+            runner: windows-latest
+          - platform: windows-arm64
+            target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+          - platform: macos-arm64
+            target: aarch64-apple-darwin
+            runner: macos-latest
+          - platform: linux-x64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - platform: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Some partner runner images (ARM64) may not ship rustup.
+      - name: Install rustup if missing (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Get-Command rustup -ErrorAction SilentlyContinue) { exit 0 }
+          $arch = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+          $init = Join-Path $env:RUNNER_TEMP 'rustup-init.exe'
+          Invoke-WebRequest "https://static.rust-lang.org/rustup/dist/$arch-pc-windows-msvc/rustup-init.exe" -OutFile $init
+          & $init -y --default-toolchain none --profile minimal
+          Add-Content $env:GITHUB_PATH (Join-Path $env:USERPROFILE '.cargo\bin')
+      - name: Install rustup if missing (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          command -v rustup >/dev/null && exit 0
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --default-toolchain none --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install toolchain and target
+        run: |
+          rustup toolchain install || rustup show
+          rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build plugins
+        run: scripts/check.sh build --target ${{ matrix.target }}
+
+      # .cargo/config.toml links the MSVC C runtime statically. Fail if a plugin
+      # binary still imports the VC++ runtime DLLs.
+      - name: List plugin executables (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          scripts/check.sh build --target ${{ matrix.target }} \
+            --message-format=json-render-diagnostics > "$RUNNER_TEMP/artifacts.jsonl"
+      - name: Inspect DLL imports with dumpbin (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find 'VC\Tools\MSVC\**\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe not found' }
+          $exes = Get-Content (Join-Path $env:RUNNER_TEMP 'artifacts.jsonl') |
+            ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.reason -eq 'compiler-artifact' -and $_.executable } |
+            ForEach-Object { $_.executable }
+          if (-not $exes) { throw 'no plugin executables reported by cargo' }
+          $bad = @()
+          foreach ($exe in $exes) {
+            $deps = & $dumpbin /nologo /dependents $exe
+            Write-Output "== $exe"
+            $deps | Select-String '\.dll' | ForEach-Object { Write-Output $_.Line.Trim() }
+            if ($deps -match '(?i)vcruntime|msvcp|api-ms-win-crt') { $bad += $exe }
+          }
+          if ($bad) { throw "dynamic CRT imports in: $($bad -join ', ')" }
+          Write-Output "static CRT: $($exes.Count) executables import no VC++ runtime DLLs"
