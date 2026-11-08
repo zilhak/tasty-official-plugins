@@ -307,7 +307,7 @@ git grep -l -E 'tasty-plugin-(\*|\$|\{)|crates/tasty-plugin-?["*$/]|plugin-versi
 | D-2 | 배포 묶음에 `bundle = false` 플러그인(`agent-stream`, `mesh-demo`)을 넣을지 | 지금 규칙대로 뺀다. 릴리스 골격(`include_unbundled` 기본값 `false`)은 그대로 둔다 |
 | D-3 | 소스를 옮길 때 이력 보존 방식과 버전 | git 이력 없이 단순 복사한다. 옮길 때 각 플러그인 버전을 마이너 하나 올린다(예 `0.2.24` → `0.3.0`) — 범위는 F-3 |
 
-### R-6 후속 결정 (2026-11-08, director 결정)
+### 후속 결정 (2026-11-08)
 
 | ID | 항목 | 결정 |
 |---|---|---|
