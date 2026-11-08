@@ -1690,7 +1690,7 @@ dependencies = [
 [[package]]
 name = "tasty-egui-theme"
 version = "0.1.1"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "egui",
  "tasty-i18n",
@@ -1702,7 +1702,7 @@ dependencies = [
 [[package]]
 name = "tasty-git-core"
 version = "0.1.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "git2",
@@ -1714,7 +1714,7 @@ dependencies = [
 [[package]]
 name = "tasty-i18n"
 version = "0.1.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "ab_glyph",
  "tasty-utils",
@@ -1725,7 +1725,7 @@ dependencies = [
 [[package]]
 name = "tasty-icons"
 version = "0.1.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "egui",
  "resvg",
@@ -1734,7 +1734,7 @@ dependencies = [
 [[package]]
 name = "tasty-plugin-agent-common"
 version = "0.1.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "serde_json",
  "tasty-plugin-sdk",
@@ -1743,8 +1743,8 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-agent-stream"
-version = "0.1.157"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+version = "0.1.158"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "directories",
@@ -1759,8 +1759,8 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-claude"
-version = "0.2.24"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+version = "0.2.26"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "directories",
@@ -1777,8 +1777,8 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-clipboard-viewer"
-version = "0.1.412"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+version = "0.1.413"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1801,8 +1801,8 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-codex"
-version = "0.2.68"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+version = "0.2.69"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "getrandom 0.3.4",
@@ -1820,8 +1820,8 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-git-viewer"
-version = "0.1.417"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+version = "0.1.418"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "egui",
@@ -1841,8 +1841,8 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-html"
-version = "0.1.151"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+version = "0.1.154"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -1853,8 +1853,8 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-image"
-version = "0.1.360"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+version = "0.1.361"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1875,7 +1875,7 @@ dependencies = [
 [[package]]
 name = "tasty-plugin-manifest"
 version = "0.1.9"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "semver",
@@ -1891,8 +1891,8 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-markdown"
-version = "0.1.507"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+version = "0.1.508"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "ammonia",
  "anyhow",
@@ -1914,8 +1914,8 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-mesh-demo"
-version = "0.1.323"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+version = "0.1.324"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "egui",
@@ -1930,7 +1930,7 @@ dependencies = [
 [[package]]
 name = "tasty-plugin-protocol"
 version = "0.2.16"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "bytemuck",
  "egui",
@@ -1943,7 +1943,7 @@ dependencies = [
 [[package]]
 name = "tasty-plugin-sdk"
 version = "0.1.22"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "anyhow",
  "egui",
@@ -1963,7 +1963,7 @@ dependencies = [
 [[package]]
 name = "tasty-reaper"
 version = "0.1.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "libc",
  "tracing",
@@ -1973,7 +1973,7 @@ dependencies = [
 [[package]]
 name = "tasty-shm"
 version = "0.1.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "libc",
  "thiserror 1.0.69",
@@ -1983,7 +1983,7 @@ dependencies = [
 [[package]]
 name = "tasty-type-appearance"
 version = "0.1.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "bytemuck",
  "egui",
@@ -1994,7 +1994,7 @@ dependencies = [
 [[package]]
 name = "tasty-type-geometry"
 version = "0.1.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "serde",
 ]
@@ -2002,7 +2002,7 @@ dependencies = [
 [[package]]
 name = "tasty-ui-widgets"
 version = "0.1.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "egui",
  "egui_extras",
@@ -2017,7 +2017,7 @@ dependencies = [
 [[package]]
 name = "tasty-utils"
 version = "0.1.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "directories",
  "libc",
@@ -2128,7 +2128,7 @@ dependencies = [
 [[package]]
 name = "tiny_http"
 version = "0.12.0"
-source = "git+https://github.com/zilhak/tasty?rev=89efb560203f7041959515ebe17dc7f3de2bbcd2#89efb560203f7041959515ebe17dc7f3de2bbcd2"
+source = "git+https://github.com/zilhak/tasty?rev=b9f02af4597d9a16e5067f78b8cdf53363a1a144#b9f02af4597d9a16e5067f78b8cdf53363a1a144"
 dependencies = [
  "ascii",
  "chunked_transfer",
