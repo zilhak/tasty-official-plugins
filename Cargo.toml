@@ -16,7 +16,6 @@ tasty-plugin-git-viewer = { git = "https://github.com/zilhak/tasty", rev = "b9f0
 tasty-plugin-html = { git = "https://github.com/zilhak/tasty", rev = "b9f02af4597d9a16e5067f78b8cdf53363a1a144" }
 tasty-plugin-image = { git = "https://github.com/zilhak/tasty", rev = "b9f02af4597d9a16e5067f78b8cdf53363a1a144" }
 tasty-plugin-markdown = { git = "https://github.com/zilhak/tasty", rev = "b9f02af4597d9a16e5067f78b8cdf53363a1a144" }
-tasty-plugin-mesh-demo = { git = "https://github.com/zilhak/tasty", rev = "b9f02af4597d9a16e5067f78b8cdf53363a1a144" }
 tasty-plugin-manifest = { git = "https://github.com/zilhak/tasty", rev = "b9f02af4597d9a16e5067f78b8cdf53363a1a144" }
 serde_json = "1"
 toml = "0.8"

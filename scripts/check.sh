@@ -29,7 +29,6 @@ PLUGINS=(
   tasty-plugin-html
   tasty-plugin-image
   tasty-plugin-markdown
-  tasty-plugin-mesh-demo
 )
 # Library-only crates among PLUGINS. They build but produce no executable.
 LIBS=(

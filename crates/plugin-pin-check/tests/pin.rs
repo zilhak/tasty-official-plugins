@@ -135,8 +135,8 @@ fn build_list_matches_declared_dependencies() {
     let declared = declared_plugins();
     assert_eq!(
         declared.len(),
-        10,
-        "expected ten plugin crates: {declared:?}"
+        9,
+        "expected nine plugin crates: {declared:?}"
     );
     assert_eq!(script_plugins(), declared);
 }
@@ -216,5 +216,5 @@ fn plugin_manifest_versions_match_crate_versions() {
         );
         checked += 1;
     }
-    assert_eq!(checked, 9, "expected nine plugin manifests");
+    assert_eq!(checked, 8, "expected eight plugin manifests");
 }

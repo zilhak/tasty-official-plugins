@@ -40,10 +40,10 @@ different revs or if a tasty crate in `Cargo.lock` comes from another source.
 | `tasty-plugin-html` | binary |
 | `tasty-plugin-image` | binary |
 | `tasty-plugin-markdown` | binary |
-| `tasty-plugin-mesh-demo` | binary (demo) |
 
 `tasty-plugin-protocol`, `tasty-plugin-manifest`, and `tasty-plugin-sdk` stay in tasty and
 come in as dependencies of these crates.
+`tasty-plugin-mesh-demo` stays in tasty as an SDK example and is not built here.
 
 The build matches tasty's own plugin build:
 

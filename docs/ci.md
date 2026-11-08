@@ -106,11 +106,12 @@ hash list serve all platforms. The script needs bash, tar, `sha256sum` or `shasu
 
 The release workflow follows tasty's current rule: plugins whose manifest says
 `bundle = false` are left out. At the pinned commit that leaves out
-`tasty-plugin-agent-stream` and `tasty-plugin-mesh-demo`, so seven plugins are packaged.
-The `include_unbundled` input packages all nine.
+`tasty-plugin-agent-stream`, so seven plugins are packaged. The `include_unbundled` input
+packages all eight. `tasty-plugin-mesh-demo` stays in tasty as an SDK example and is not
+built here.
 
-Decision pending (NEEDS-USER): whether downloadable packages should include the
-`bundle = false` plugins.
+Decided on 2026-11-08: downloadable packages leave out `bundle = false` plugins, as
+tasty does now.
 
 ## Signing and release status
 

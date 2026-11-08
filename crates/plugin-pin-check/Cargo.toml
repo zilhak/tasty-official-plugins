@@ -18,7 +18,6 @@ tasty-plugin-git-viewer.workspace = true
 tasty-plugin-html.workspace = true
 tasty-plugin-image.workspace = true
 tasty-plugin-markdown.workspace = true
-tasty-plugin-mesh-demo.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
