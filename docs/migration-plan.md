@@ -39,17 +39,17 @@
 | `tasty-plugin-html` | bin | `com.tasty.html` | 기본값 | 배포 | 옮김 |
 | `tasty-plugin-image` | bin | `com.tasty.image` | 기본값 | 배포 | 옮김 |
 | `tasty-plugin-markdown` | bin | `com.tasty.markdown` | 기본값 | 배포 | 옮김 |
-| `tasty-plugin-mesh-demo` | bin | `com.tasty.mesh-demo` | `false` | **데모용.** 매니페스트 설명 "egui-mesh channel proof-of-concept surface (A1)" | **결정 대기**(D-1) |
+| `tasty-plugin-mesh-demo` | bin | `com.tasty.mesh-demo` | `false` | **데모용.** 매니페스트 설명 "egui-mesh channel proof-of-concept surface (A1)" | 남김(SDK 예제, D-1) |
 | `tasty-plugin-protocol` | lib | - | - | 계약 | tasty에 남음(확정) |
 | `tasty-plugin-manifest` | lib | - | - | 계약 | tasty에 남음(확정) |
 | `tasty-plugin-sdk` | lib | - | - | SDK | tasty에 남음(확정) |
 | `tasty-plugin-sdk-wasm` | lib (POC) | - | - | 실험용 WASM SDK. 루트 workspace의 `exclude`에 있고 자체 `Cargo.lock`을 가짐 | tasty에 남음(SDK) |
 
-옮기는 크레이트는 `mesh-demo`를 넣으면 10개, 빼면 9개다.
+옮기는 크레이트는 9개다. `mesh-demo`는 tasty에 SDK 예제로 남는다(D-1).
 
 - `bundle`이 "기본값"인 플러그인은 매니페스트에 `bundle` 키가 없다.
 - `crates/tasty-host-plugin/src/builtin.rs`의 `BUILTINS`에는 bin 9개(`mesh-demo`, `agent-stream` 포함)가 모두 있다. Windows와 그 밖의 플랫폼용 목록이 `#[cfg]`로 나뉘어 있지만 9개는 같다.
-- 배포 스크립트는 `bundle = false`인 2개를 빼고 7개를 넣는다. 루트 `Cargo.toml`의 deb·rpm 자산 목록도 7개다. 배포 묶음에 `bundle = false` 플러그인을 넣을지는 결정 대기(D-2)다.
+- 배포 스크립트는 `bundle = false`인 2개를 빼고 7개를 넣는다. 루트 `Cargo.toml`의 deb·rpm 자산 목록도 7개다. `bundle = false` 플러그인은 지금 규칙대로 배포 묶음에서 뺀다(D-2).
 
 ### 1.2 tasty에 남는 크레이트와 이유
 
@@ -177,31 +177,32 @@ dev-dependency로만 쓰는 것:
 - 2단계(계약·신뢰 체계)가 정해져 있다. 최소 호스트 버전, 서명 범위와 키가 정해져야 이 레포가 tasty와 따로 플러그인을 배포할 수 있다.
 - 이 레포가 따를 tasty 릴리스 태그가 있다.
 - 3절의 egui 버전 규칙이 정해져 있다.
-- 6절 D-1(mesh-demo 처리), D-3(이력 보존 방식)이 정해져 있다.
+- 제품 결정 D-1(mesh-demo 처리), D-3(이력 보존 방식)은 2026-11-08에 정했다("결정 기록" 절).
 
 ### 4.2 이 레포에서
 
-1. 플러그인 크레이트(1.1절의 "옮김" 9개와, D-1에 따라 `mesh-demo`)를 이 레포 `crates/` 아래로 가져온다. 가져오는 방법(`git subtree`나 `git filter-repo`로 이력을 유지할지, 단순 복사할지)은 결정 대기(D-3)다.
-2. 가져온 크레이트를 workspace 멤버로 만들고, 해당 크레이트의 git 의존을 path 의존으로 바꾼다.
-3. tasty에 남는 크레이트(1.2·1.3절)는 git 의존을 유지하고 `rev`를 tasty 릴리스 태그(`tag = "..."`)로 바꾼다. 레포 전체를 태그 하나에 맞춘다.
-4. 가져온 크레이트의 path 의존(`path = "../tasty-plugin-sdk"` 등)을 workspace 의존으로 정리한다. `tasty-test-support`, `tasty-themes`, `tasty-plugin-manifest`, `tasty-design-tokens` 같은 dev-dependency도 git 의존으로 바꾼다.
-5. lint 설정을 옮긴다. 가져온 크레이트의 `[lints] workspace = true`는 이 레포의 `[workspace.lints]`로 해석된다. tasty의 규칙을 옮길지 정하고 옮긴다.
+1. 플러그인 크레이트(1.1절의 "옮김" 9개)를 이 레포 `crates/` 아래로 단순 복사한다. git 이력은 가져오지 않는다(D-3). 가져온 커밋 메시지 본문에 출처 tasty 커밋을 적는다.
+2. 옮기는 각 플러그인의 버전을 현재 버전에서 마이너 버전 하나 올린다(예 `0.2.24` → `0.3.0`). 크레이트 `Cargo.toml`의 `version`과 매니페스트의 `version`을 함께 올린다(D-3).
+3. 가져온 크레이트를 workspace 멤버로 만들고, 해당 크레이트의 git 의존을 path 의존으로 바꾼다.
+4. tasty에 남는 크레이트(1.2·1.3절)는 git 의존을 유지하고 `rev`를 tasty 릴리스 태그(`tag = "..."`)로 바꾼다. 레포 전체를 태그 하나에 맞춘다.
+5. 가져온 크레이트의 path 의존(`path = "../tasty-plugin-sdk"` 등)을 workspace 의존으로 정리한다. `tasty-test-support`, `tasty-themes`, `tasty-plugin-manifest`, `tasty-design-tokens` 같은 dev-dependency도 git 의존으로 바꾼다.
+6. lint 설정을 옮긴다. 가져온 크레이트의 `[lints] workspace = true`는 이 레포의 `[workspace.lints]`로 해석된다. tasty의 규칙을 옮길지 정하고 옮긴다.
    - tasty 루트 `Cargo.toml`의 `[workspace.lints.clippy]`: `undocumented_unsafe_blocks`, `cognitive_complexity`, `multiple_unsafe_ops_per_block`, `result_large_err`(allow), `let_underscore_must_use`, `disallowed_methods`, `missing_safety_doc`. `[workspace.lints.rust]`도 함께 본다.
    - tasty `clippy.toml`: `cognitive-complexity-threshold = 20`, 그리고 `disallowed_methods` lint가 쓰는 `disallowed-methods` 목록(`HexColor::from_rgb`, `Color32::from_rgb` 등). `disallowed_methods`는 이 목록에 기대므로 `clippy.toml`을 함께 옮긴다.
    - tasty의 복잡도 게이트 파일(`.complexity-file-allowlist`, `.complexity-frozen-files`)에 플러그인 파일 항목이 있다. 이 레포에 같은 게이트를 둘지 정한다.
-6. 플러그인 `Cargo.toml`의 `repository = "https://github.com/zilhak/tasty"`를 이 레포 주소로 바꾼다.
-7. 플러그인 버전 게이트를 옮긴다. tasty의 `scripts/check-plugin-version-bump.sh`, `scripts/plugin-bump-fixup.sh`, `scripts/lib/plugin-bump-mode.sh`, `.github/workflows/plugin-version-check.yml`(매니페스트 version을 올렸는지 확인하는 게이트)와 그 시험(`tests/plugin_bump_fixup.rs`, `tests/plugin_version_bump_channel.rs`)을 이 레포에 맞게 옮긴다.
-8. `[patch.crates-io]`의 `tiny_http`를 정리한다. tasty는 `tiny_http = { path = "vendor/tiny_http" }`로 패치한 사본을 쓰고(`vendor/tiny_http/PATCHES.md`), `agent-stream`이 `tiny_http`를 쓴다. `[patch]`는 소비하는 쪽 루트 workspace의 것만 적용되므로 이 레포가 따로 정해야 한다. 1단계 구성에서 이 레포가 어떻게 받기로 했는지(tasty git의 사본으로 돌리는지, crates.io 상류를 쓰는지)는 이 레포의 루트 `Cargo.toml`과 `README.md`를 따른다. 4단계에서는 같은 방식을 유지하거나, 패치 사본을 이 레포 `vendor/`로 가져온다.
-9. 1.5절의 `docs/plugins/claude/index.md` 참조를 처리한다(문서를 함께 옮기거나 시험 경로를 바꾼다).
-10. 2절의 `ATTEMPT_MARKER_PREFIX` 대조 시험을 정한 선택지대로 처리한다.
-11. 플러그인 매니페스트, `lang/`, 서명 파일(`.sig`)을 이 레포의 릴리스 산출물로 만드는 빌드·서명 워크플로를 실제로 동작하게 한다(1단계에서는 골격만 있다).
-12. 이 레포에서 첫 플러그인 릴리스 산출물을 만든다.
+7. 플러그인 `Cargo.toml`의 `repository = "https://github.com/zilhak/tasty"`를 이 레포 주소로 바꾼다.
+8. 플러그인 버전 게이트를 옮긴다. tasty의 `scripts/check-plugin-version-bump.sh`, `scripts/plugin-bump-fixup.sh`, `scripts/lib/plugin-bump-mode.sh`, `.github/workflows/plugin-version-check.yml`(매니페스트 version을 올렸는지 확인하는 게이트)와 그 시험(`tests/plugin_bump_fixup.rs`, `tests/plugin_version_bump_channel.rs`)을 이 레포에 맞게 옮긴다.
+9. `[patch.crates-io]`의 `tiny_http`를 정리한다. tasty는 `tiny_http = { path = "vendor/tiny_http" }`로 패치한 사본을 쓰고(`vendor/tiny_http/PATCHES.md`), `agent-stream`이 `tiny_http`를 쓴다. `[patch]`는 소비하는 쪽 루트 workspace의 것만 적용되므로 이 레포가 따로 정해야 한다. 1단계 구성에서 이 레포가 어떻게 받기로 했는지(tasty git의 사본으로 돌리는지, crates.io 상류를 쓰는지)는 이 레포의 루트 `Cargo.toml`과 `README.md`를 따른다. 4단계에서는 같은 방식을 유지하거나, 패치 사본을 이 레포 `vendor/`로 가져온다.
+10. 1.5절의 `docs/plugins/claude/index.md` 참조를 처리한다(문서를 함께 옮기거나 시험 경로를 바꾼다).
+11. 2절의 `ATTEMPT_MARKER_PREFIX` 대조 시험을 정한 선택지대로 처리한다.
+12. 플러그인 매니페스트, `lang/`, 서명 파일(`.sig`)을 이 레포의 릴리스 산출물로 만드는 빌드·서명 워크플로를 실제로 동작하게 한다(1단계에서는 골격만 있다).
+13. 이 레포에서 첫 플러그인 릴리스 산출물을 만든다.
 
 ### 4.3 tasty에서 지우는 시점
 
 tasty에서 플러그인 소스를 지우는 것은 다음이 모두 끝난 뒤다.
 
-1. 이 레포의 첫 플러그인 릴리스 산출물이 있다(4.2절 12).
+1. 이 레포의 첫 플러그인 릴리스 산출물이 있다(4.2절 13).
 2. tasty가 그 산출물을 받아 설치할 수 있다(3단계 다운로드 설치).
 3. tasty 패키징이 플러그인을 빌드하지 않고 받아 넣을 수 있다(5단계 풀 패키지 잠금 파일. 플러그인 버전과 플랫폼별 SHA-256).
 4. 5절의 tasty 쪽 변경이 같은 변경 묶음으로 준비되어 있다. 플러그인 크레이트를 지우면 tasty 본체 시험과 문서 가드 일부가 바로 깨지므로 삭제와 함께 고친다.
@@ -296,22 +297,24 @@ git grep -l -E 'tasty-plugin-(\*|\$|\{)|crates/tasty-plugin-?["*$/]|plugin-versi
 - **egui 버전 규칙**(3.3절): 본체와 플러그인의 egui 버전이 다를 때 거절할지, 무엇으로 확인할지, 실측 호환 시험을 어디서 할지. — **결정 대기(2단계)**
 - **풀 패키지 잠금 파일 형식**: 확정된 것은 "플러그인 버전과 플랫폼별 SHA-256을 적는다"까지다. 파일 이름, 위치, 형식은 정하지 않았다. — **결정 대기(2·5단계)**
 
-## 결정 대기 모음
+## 결정 기록
 
-### 제품 결정 (NEEDS-USER)
+### 제품 결정 (2026-11-08, 사용자 결정)
 
-| ID | 항목 | 선택지 |
+| ID | 항목 | 결정 |
 |---|---|---|
-| D-1 | `tasty-plugin-mesh-demo` 처리 | 이 레포로 옮김 / tasty에 SDK 예제로 남김 / 삭제 |
-| D-2 | 배포 묶음에 `bundle = false` 플러그인(`agent-stream`, `mesh-demo`)을 넣을지 | 지금처럼 뺌 / 넣음 / 플러그인별로 정함 |
-| D-3 | 소스를 옮길 때 이력 보존 방식 | `git subtree`·`git filter-repo` 등으로 이력 유지 / 단순 복사(tasty 커밋을 출처로 적음) |
+| D-1 | `tasty-plugin-mesh-demo` 처리 | 이 레포로 옮기지 않는다. tasty에 SDK 예제로 남긴다 |
+| D-2 | 배포 묶음에 `bundle = false` 플러그인(`agent-stream`, `mesh-demo`)을 넣을지 | 지금 규칙대로 뺀다. 릴리스 골격(`include_unbundled` 기본값 `false`)은 그대로 둔다 |
+| D-3 | 소스를 옮길 때 이력 보존 방식과 버전 | git 이력 없이 단순 복사한다. 옮길 때 각 플러그인 버전을 마이너 하나 올린다(예 `0.2.24` → `0.3.0`) |
+
+## 결정 대기 모음
 
 ### tasty 쪽 결정
 
 | ID | 항목 | 참고 |
 |---|---|---|
 | T-1 | `ATTEMPT_MARKER_PREFIX` 대조 시험 처리 | 2절의 선택지 1~3 |
-| T-2 | 이 레포에 tasty lint·복잡도 게이트를 그대로 옮길지 | 4.2절 5 |
+| T-2 | 이 레포에 tasty lint·복잡도 게이트를 그대로 옮길지 | 4.2절 6 |
 | T-3 | `docs/plugins/` 문서를 이 레포로 옮길지 | 1.5절, 5.4절 |
 
 ### 2단계 결정
