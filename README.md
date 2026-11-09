@@ -96,3 +96,35 @@ dependencies of `crates/plugin-pin-check`.
   tests in this repository check the pin instead.
 - `fmt` and `lint` cover only this repository's own crate. Cargo does not lint git
   dependencies.
+
+## Known advisories
+
+This repository has no `deny.toml` and runs no `cargo deny` check. `cargo deny` reads
+`cargo metadata`, which leaves out the bin-only plugin crates and their dependencies, so
+it would check only part of `Cargo.lock`. tasty keeps its decisions in its own
+`deny.toml`. The note below is the same decision for what this repository builds.
+
+RUSTSEC-2026-0192: `ttf-parser` 0.25.1 is unmaintained. It has no known vulnerability, and
+the advisory names no fixed version.
+
+- It parses fonts at run time; it is not a build tool. It reaches the plugins through
+  `ab_glyph`, which `epaint` and `tasty-i18n` use, and `tasty-i18n` also uses it directly.
+- Its inputs are the fonts built into egui, the system CJK font, and the language pack
+  font the host passes in `TASTY_LOCALE_FONT`. A language pack font can be a file made by
+  a third party.
+- Version 0.25.1 is `forbid(unsafe_code)`, so the risk of a memory error inside this crate
+  is low.
+- A file that fails to parse, or has a line height of zero or less, panics in `epaint`
+  0.31.1 (`text/fonts.rs:210`, `text/font.rs:94`). The system CJK font and the language
+  pack font go through `tasty_i18n::font` validation first.
+- Damaged files that pass validation (damaged glyf, no cmap, truncated) did not panic in
+  tasty's measurements.
+- A font with glyphs bigger than the font atlas passes validation, but the patched copy
+  of `epaint` leaves those glyphs blank instead of panicking. tasty measured width, height,
+  the replacement glyph paths, and large text sizes with normal fonts.
+- These measurements were made in tasty. Plugin processes were not run on these inputs.
+- Files outside the measured inputs carry no guarantee. Because the crate is unmaintained,
+  a parser defect will not be fixed.
+- Review this if `ttf-parser` gets a vulnerability advisory. The note can go when
+  `ab_glyph` moves to another parser and `tasty-i18n` drops its direct dependency. Which
+  versions do that has not been measured.
