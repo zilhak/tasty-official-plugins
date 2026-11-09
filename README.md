@@ -103,9 +103,10 @@ dependencies of `crates/plugin-pin-check`.
 ## Advisory decisions
 
 The `audit` CI job runs `cargo audit` on `Cargo.lock`. It reads the lock file directly, so
-it covers the bin-only plugin crates and the dependencies only they use, which
+it also checks the crates.io dependencies that only the bin-only plugin crates use, which
 `cargo metadata` leaves out. It matches advisories only against crates.io packages, so the
-`tiny_http` and `epaint` copies from the tasty repository are not matched.
+tasty crates and the `tiny_http` and `epaint` copies, which come from the tasty repository,
+are not matched.
 
 A vulnerability fails the job. Vulnerabilities are not ignored here: the fix goes into
 tasty and arrives with a pin move. Unsound and unmaintained advisories appear as warnings

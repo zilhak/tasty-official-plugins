@@ -56,9 +56,9 @@ repository first. Then change `runner` in the matrix.
 The `audit` job in `ci.yml` installs `cargo-audit` at the version in `CARGO_AUDIT_VERSION`
 and runs `scripts/check.sh audit`. To update the tool, change that value.
 
-`cargo audit` reads `Cargo.lock` directly, so it covers the bin-only plugin crates and the
-dependencies only they use. It matches advisories only against crates.io packages. The
-`tiny_http` and `epaint` copies and the tasty crates come from git and are not matched.
+`cargo audit` reads `Cargo.lock` directly, so it also checks the crates.io dependencies that
+only the bin-only plugin crates use. It matches advisories only against crates.io packages.
+The `tiny_http` and `epaint` copies and the tasty crates come from git and are not matched.
 
 Only a vulnerability fails the job. Unsound, unmaintained, and yanked results appear as
 warnings in the job log.
