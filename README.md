@@ -8,7 +8,7 @@ commit. It holds no copy of their sources.
 
 ## Pinned tasty commit
 
-`b9f02af4597d9a16e5067f78b8cdf53363a1a144`
+`d70cf8d3b20aed9608e18747ea11bb1fe7b77d52`
 
 All tasty crates come from this one commit. The pin is set in the root `Cargo.toml`:
 every entry under `[workspace.dependencies]` and `[patch.crates-io]` that points at
