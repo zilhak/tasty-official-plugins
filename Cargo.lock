@@ -400,8 +400,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.31.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41fcc0f5a7c613afd2dee5e4b30c3e6acafb8ad6f0edb06068811f708a67c562"
+source = "git+https://github.com/zilhak/tasty?rev=d70cf8d3b20aed9608e18747ea11bb1fe7b77d52#d70cf8d3b20aed9608e18747ea11bb1fe7b77d52"
 dependencies = [
  "ab_glyph",
  "ahash",

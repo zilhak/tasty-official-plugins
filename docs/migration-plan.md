@@ -192,7 +192,7 @@ dev-dependency로만 쓰는 것:
    - tasty의 복잡도 게이트 파일(`.complexity-file-allowlist`, `.complexity-frozen-files`)에 플러그인 파일 항목이 있다. 이 레포에 같은 게이트를 둘지 정한다.
 7. 플러그인 `Cargo.toml`의 `repository = "https://github.com/zilhak/tasty"`를 이 레포 주소로 바꾼다.
 8. 플러그인 버전 게이트를 이 레포에도 둔다. tasty의 `scripts/check-plugin-version-bump.sh`, `scripts/plugin-bump-fixup.sh`, `scripts/lib/plugin-bump-mode.sh`, `.github/workflows/plugin-version-check.yml`(매니페스트 version을 올렸는지 확인하는 게이트)와 그 시험(`tests/plugin_bump_fixup.rs`, `tests/plugin_version_bump_channel.rs`)을 이 레포에 맞게 복사한다. tasty의 원본은 tasty에 남는다. `mesh-demo`가 매니페스트 있는 플러그인으로 tasty에 남기 때문이다(F-2).
-9. `[patch.crates-io]`의 `tiny_http`를 정리한다. tasty는 `tiny_http = { path = "vendor/tiny_http" }`로 패치한 사본을 쓰고(`vendor/tiny_http/PATCHES.md`), `agent-stream`이 `tiny_http`를 쓴다. `[patch]`는 소비하는 쪽 루트 workspace의 것만 적용되므로 이 레포가 따로 정해야 한다. 1단계 구성에서 이 레포가 어떻게 받기로 했는지(tasty git의 사본으로 돌리는지, crates.io 상류를 쓰는지)는 이 레포의 루트 `Cargo.toml`과 `README.md`를 따른다. 4단계에서는 같은 방식을 유지하거나, 패치 사본을 이 레포 `vendor/`로 가져온다.
+9. `[patch.crates-io]`의 `tiny_http`를 정리한다. tasty는 `tiny_http = { path = "vendor/tiny_http" }`로 패치한 사본을 쓰고(`vendor/tiny_http/PATCHES.md`), `agent-stream`이 `tiny_http`를 쓴다. `[patch]`는 소비하는 쪽 루트 workspace의 것만 적용되므로 이 레포가 따로 정해야 한다. 1단계 구성에서 이 레포가 어떻게 받기로 했는지(tasty git의 사본으로 돌리는지, crates.io 상류를 쓰는지)는 이 레포의 루트 `Cargo.toml`과 `README.md`를 따른다. 4단계에서는 같은 방식을 유지하거나, 패치 사본을 이 레포 `vendor/`로 가져온다. `epaint`도 같다. tasty는 `vendor/epaint`로 패치한 사본을 쓰고, 이 레포는 tasty git의 사본을 받는다. 걷는 조건은 tasty의 `docs/dev-guide/dep-issues.md`에 있다.
 10. 1.5절의 `docs/plugins/claude/index.md` 참조를 처리한다(문서를 함께 옮기거나 시험 경로를 바꾼다).
 11. 2절의 `ATTEMPT_MARKER_PREFIX` 대조 시험을 정한 선택지대로 처리한다.
 12. 플러그인 매니페스트, `lang/`, 서명 파일(`.sig`)을 이 레포의 릴리스 산출물로 만드는 빌드·서명 워크플로를 실제로 동작하게 한다(1단계에서는 골격만 있다).

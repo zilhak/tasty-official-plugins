@@ -24,6 +24,10 @@ To move the pin:
    locks.
 3. Update the sha in this README and run `scripts/check.sh`.
 
+If Cargo reports `patch location ... does not contain packages matching epaint`, tasty
+has removed its copy. Its `docs/dev-guide/dep-issues.md` gives the condition for that.
+Remove the `epaint` patch and its pin test here too.
+
 The `pin` tests (`crates/plugin-pin-check/tests/pin.rs`) fail if the tasty entries use
 different revs or if a tasty crate in `Cargo.lock` comes from another source.
 
@@ -53,6 +57,10 @@ The build matches tasty's own plugin build:
 - `tiny_http` is patched to the copy tasty vendors, which `tasty-plugin-agent-stream` uses
   for its SSE server. Cargo applies `[patch]` only from the root workspace, so this
   repository repeats it.
+- `epaint` is patched to the copy tasty vendors (`vendor/epaint`, see its `PATCHES.md`).
+  A glyph too big for the font atlas is left blank instead of panicking, and the atlas
+  image stops growing at its width. A pin test fails if `Cargo.lock` takes `epaint` from
+  anywhere else or records an unused patch.
 - `Cargo.lock` keeps the external crate versions from the tasty lock file at the pinned
   commit.
 

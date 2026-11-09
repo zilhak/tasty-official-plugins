@@ -164,6 +164,41 @@ fn all_tasty_crates_come_from_one_pinned_commit() {
 }
 
 #[test]
+fn epaint_comes_from_the_patched_copy_at_the_pin() {
+    let lock = lock_packages();
+    let entries = lock.get("epaint").expect("epaint in Cargo.lock");
+    assert_eq!(entries.len(), 1, "epaint locked more than once");
+    assert_eq!(
+        entries[0].1,
+        pinned_source(),
+        "epaint must come from the pin"
+    );
+
+    // Cargo only warns about a [patch] that matches nothing, and records it here.
+    let table: toml::Table = read_root_file("Cargo.lock")
+        .parse()
+        .expect("parse Cargo.lock");
+    assert!(
+        !table.contains_key("patch"),
+        "Cargo.lock records an unused [patch]: {:?}",
+        table.get("patch")
+    );
+
+    let atlas = tasty_checkout().join("vendor/epaint/src/texture_atlas.rs");
+    let source =
+        std::fs::read_to_string(&atlas).unwrap_or_else(|e| panic!("read {}: {e}", atlas.display()));
+    assert!(
+        source
+            .contains("while required_height >= image.height() && image.height() < image.width()"),
+        "the atlas height limit is gone from the copy"
+    );
+    assert!(
+        source.contains("pub fn can_always_allocate"),
+        "the atlas size check is gone from the copy"
+    );
+}
+
+#[test]
 fn no_plugin_sources_are_copied_here() {
     let crates = workspace_root().join("crates");
     for entry in std::fs::read_dir(&crates).expect("read crates/") {

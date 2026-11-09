@@ -24,6 +24,10 @@ toml = "0.8"
 # agent-stream SSE server against that copy. Use the same copy here.
 [patch.crates-io]
 tiny_http = { git = "https://github.com/zilhak/tasty", rev = "d70cf8d3b20aed9608e18747ea11bb1fe7b77d52" }
+# tasty patches epaint (vendor/epaint, see its PATCHES.md): glyphs too big for the
+# font atlas are left blank instead of panicking, and the atlas image stops growing
+# at its width. Use the same copy here.
+epaint = { git = "https://github.com/zilhak/tasty", rev = "d70cf8d3b20aed9608e18747ea11bb1fe7b77d52" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
