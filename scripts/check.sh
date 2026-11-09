@@ -8,10 +8,11 @@
 #   scripts/check.sh build [ARGS]   build the plugin crates; ARGS go to cargo build
 #                                   as-is, e.g. --release, --profile dist,
 #                                   --target aarch64-pc-windows-msvc
+#   scripts/check.sh audit          cargo audit on Cargo.lock; needs cargo-audit, not in all
 #   scripts/check.sh list-plugins   print the plugin crates to build, one per line
 #   scripts/check.sh list-bins      print the plugin crates that produce a binary
 #
-# Every cargo command uses --locked, so Cargo.lock never changes.
+# Build and check commands use --locked and audit only reads Cargo.lock, so it never changes.
 # Runs under bash on Linux and macOS and under Git Bash on Windows.
 set -euo pipefail
 
@@ -43,6 +44,7 @@ run() {
 cmd_fmt() { run cargo fmt --all --check; }
 cmd_lint() { run cargo clippy --workspace --all-targets --locked -- -D warnings; }
 cmd_test() { run cargo test --workspace --locked; }
+cmd_audit() { run cargo audit --file Cargo.lock; }
 
 cmd_build() {
   local args=()
@@ -81,10 +83,11 @@ case "$sub" in
   lint) cmd_lint ;;
   test) cmd_test ;;
   build) cmd_build "$@" ;;
+  audit) cmd_audit ;;
   list-plugins) cmd_list_plugins ;;
   list-bins) cmd_list_bins ;;
   -h | --help | help)
-    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "unknown subcommand: $sub (see scripts/check.sh help)" >&2

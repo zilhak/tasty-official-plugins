@@ -48,6 +48,25 @@ jobs:
       - name: test
         run: scripts/check.sh test
 
+  # Separate job: a new advisory fails this job without touching check and build.
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_AUDIT_VERSION: 0.22.2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install toolchain
+        run: rustup toolchain install || rustup show
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+
+      - name: cargo audit
+        run: scripts/check.sh audit
+
   build:
     name: build ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}

@@ -9,7 +9,7 @@ workflow.
 
 | File | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/ci.yml` | push to `main`, pull request to `main`, manual | `check` job: fmt, clippy, test. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
+| `.github/workflows/ci.yml` | push to `main`, pull request to `main`, manual | `check` job: fmt, clippy, test. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
 | `.github/workflows/release.yml` | manual only (`workflow_dispatch`) | Builds with the `dist` profile, packages each plugin, runs the signing steps (skipped without secrets), and uploads the result as workflow artifacts. It does not create a GitHub Release |
 
 Both workflows use `permissions: contents: read`. `ci.yml` cancels an older run on the
@@ -50,6 +50,24 @@ repository first. Then change `runner` in the matrix.
 - `Swatinem/rust-cache` builds its cache key from the hash of `Cargo.lock` and
   `rust-toolchain.toml`. The build job adds the target triple to the key. The release
   workflow does not use a cache, so release builds always start clean.
+
+## Advisory check
+
+The `audit` job in `ci.yml` installs `cargo-audit` at the version in `CARGO_AUDIT_VERSION`
+and runs `scripts/check.sh audit`. To update the tool, change that value.
+
+`cargo audit` reads `Cargo.lock` directly, so it covers the bin-only plugin crates and the
+dependencies only they use. It matches advisories only against crates.io packages. The
+`tiny_http` and `epaint` copies and the tasty crates come from git and are not matched.
+
+Only a vulnerability fails the job. Unsound, unmaintained, and yanked results appear as
+warnings in the job log.
+
+The job fetches the advisory database on every run, and the database is not pinned. A new
+advisory can therefore fail the job on a commit that changed nothing related. This is
+intended, and `check` and `build` report their own results. Do not ignore a vulnerability:
+fix it in tasty and move the pin. If the log shows that fetching the database failed, rerun
+the job.
 
 ## Static C runtime on Windows
 

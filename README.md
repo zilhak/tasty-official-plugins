@@ -74,15 +74,16 @@ scripts/check.sh fmt             # cargo fmt --all --check
 scripts/check.sh lint            # cargo clippy --workspace --all-targets --locked -- -D warnings
 scripts/check.sh test            # cargo test --workspace --locked
 scripts/check.sh build [ARGS]    # cargo build --locked -p <each plugin> [ARGS]
+scripts/check.sh audit           # cargo audit --file Cargo.lock (needs cargo-audit, not part of all)
 scripts/check.sh list-plugins    # plugin crates to build, one per line
 scripts/check.sh list-bins       # plugin crates that produce an executable, one per line
 ```
 
 `build` passes its arguments to `cargo build` unchanged, for example
 `scripts/check.sh build --profile dist --target aarch64-pc-windows-msvc`. With `all`
-(the default), extra arguments go to the build step. Every cargo command uses `--locked`,
-so a check never changes `Cargo.lock`. The script is bash and runs under Git Bash on
-Windows.
+(the default), extra arguments go to the build step. Build and check commands use
+`--locked` and `audit` only reads `Cargo.lock`, so a check never changes it. The script
+is bash and runs under Git Bash on Windows.
 
 The plugin list lives only in `scripts/check.sh`. A test checks that it matches the
 dependencies of `crates/plugin-pin-check`.
@@ -101,11 +102,19 @@ dependencies of `crates/plugin-pin-check`.
 
 ## Advisory decisions
 
-This repository has no `deny.toml` and runs no `cargo deny` check. `cargo deny` reads
-`cargo metadata`, which leaves out the bin-only plugin crates and the dependencies only
-they use, so it would check only part of `Cargo.lock`. tasty keeps its decisions in its
-own `deny.toml`. The note below is the same decision for what this repository builds.
-It is not a list of every advisory that applies to `Cargo.lock`.
+The `audit` CI job runs `cargo audit` on `Cargo.lock`. It reads the lock file directly, so
+it covers the bin-only plugin crates and the dependencies only they use, which
+`cargo metadata` leaves out. It matches advisories only against crates.io packages, so the
+`tiny_http` and `epaint` copies from the tasty repository are not matched.
+
+A vulnerability fails the job. Vulnerabilities are not ignored here: the fix goes into
+tasty and arrives with a pin move. Unsound and unmaintained advisories appear as warnings
+in the job log and do not fail the job.
+
+This repository has no `deny.toml` and runs no `cargo deny` check. tasty keeps its
+decisions in its own `deny.toml`. The note below is the same decision for what this
+repository builds. It is not a list of every advisory that applies to `Cargo.lock`; the
+`audit` job log shows those.
 
 RUSTSEC-2026-0192: `ttf-parser` 0.25.1 is unmaintained. It has no known vulnerability, and
 the advisory names no fixed version.
