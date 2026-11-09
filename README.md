@@ -26,7 +26,9 @@ To move the pin:
 
 If Cargo reports `patch location ... does not contain packages matching epaint`, tasty
 has removed its copy. Its `docs/dev-guide/dep-issues.md` gives the condition for that.
-Remove the `epaint` patch and its pin test here too.
+Remove the `epaint` patch and its pin test here too, along with the notes about the
+patched copy in this README and in `docs/migration-plan.md`. The atlas statement under
+"Advisory decisions" depends on the patch, so decide again what holds without it.
 
 The `pin` tests (`crates/plugin-pin-check/tests/pin.rs`) fail if the tasty entries use
 different revs or if a tasty crate in `Cargo.lock` comes from another source.
@@ -97,12 +99,13 @@ dependencies of `crates/plugin-pin-check`.
 - `fmt` and `lint` cover only this repository's own crate. Cargo does not lint git
   dependencies.
 
-## Known advisories
+## Advisory decisions
 
 This repository has no `deny.toml` and runs no `cargo deny` check. `cargo deny` reads
-`cargo metadata`, which leaves out the bin-only plugin crates and their dependencies, so
-it would check only part of `Cargo.lock`. tasty keeps its decisions in its own
-`deny.toml`. The note below is the same decision for what this repository builds.
+`cargo metadata`, which leaves out the bin-only plugin crates and the dependencies only
+they use, so it would check only part of `Cargo.lock`. tasty keeps its decisions in its
+own `deny.toml`. The note below is the same decision for what this repository builds.
+It is not a list of every advisory that applies to `Cargo.lock`.
 
 RUSTSEC-2026-0192: `ttf-parser` 0.25.1 is unmaintained. It has no known vulnerability, and
 the advisory names no fixed version.
