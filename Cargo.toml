@@ -7,27 +7,27 @@ resolver = "2"
 # fail if the entries disagree. When tasty publishes a release tag, replace
 # `rev = "..."` with `tag = "..."`.
 [workspace.dependencies]
-tasty-plugin-agent-common = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
-tasty-plugin-agent-stream = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
-tasty-plugin-claude = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
-tasty-plugin-clipboard-viewer = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
-tasty-plugin-codex = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
-tasty-plugin-git-viewer = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
-tasty-plugin-html = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
-tasty-plugin-image = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
-tasty-plugin-markdown = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
-tasty-plugin-manifest = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
+tasty-plugin-agent-common = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
+tasty-plugin-agent-stream = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
+tasty-plugin-claude = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
+tasty-plugin-clipboard-viewer = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
+tasty-plugin-codex = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
+tasty-plugin-git-viewer = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
+tasty-plugin-html = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
+tasty-plugin-image = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
+tasty-plugin-markdown = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
+tasty-plugin-manifest = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
 serde_json = "1"
 toml = "0.8"
 
 # tasty patches tiny_http (vendor/tiny_http, see its PATCHES.md) and builds the
 # agent-stream SSE server against that copy. Use the same copy here.
 [patch.crates-io]
-tiny_http = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
+tiny_http = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
 # tasty patches epaint (vendor/epaint, see its PATCHES.md): glyphs too big for the
 # font atlas are left blank instead of panicking, and the atlas image stops growing
 # at its width. Use the same copy here.
-epaint = { git = "https://github.com/zilhak/tasty", rev = "df723b5432fa6b0712dc7b48c7535daf2a3fa189" }
+epaint = { git = "https://github.com/zilhak/tasty", rev = "fb0beba602e58862541cdc96a06f9f5c7fbfdf86" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
