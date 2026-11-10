@@ -122,13 +122,13 @@ the advisory names no fixed version.
 
 - It parses fonts at run time; it is not a build tool. It reaches the plugins through
   `ab_glyph`, which `epaint` and `tasty-i18n` use, and `tasty-i18n` also uses it directly.
-- Its inputs are the fonts built into egui, the system CJK font, and the language pack
-  font the host passes in `TASTY_LOCALE_FONT`. A language pack font can be a file made by
-  a third party.
+- Its inputs are the fonts built into egui, the system CJK fonts (one on Linux, up to two
+  on Windows and macOS), and the language pack font the host passes in
+  `TASTY_LOCALE_FONT`. A language pack font can be a file made by a third party.
 - Version 0.25.1 is `forbid(unsafe_code)`, so the risk of a memory error inside this crate
   is low.
 - A file that fails to parse, or has a line height of zero or less, panics in `epaint`
-  0.31.1 (`text/fonts.rs:210`, `text/font.rs:94`). The system CJK font and the language
+  0.31.1 (`text/fonts.rs:210`, `text/font.rs:94`). The system CJK fonts and the language
   pack font go through `tasty_i18n::font` validation first.
 - Damaged files that pass validation (damaged glyf, no cmap, truncated) did not panic in
   tasty's measurements.
