@@ -6,6 +6,12 @@ The plugin sources still live in the tasty repository. Until they move here, thi
 repository builds the tasty plugin crates as git dependencies pinned to a single tasty
 commit. It holds no copy of their sources.
 
+## Branches
+
+`develop` is the integration branch and the default branch, `release` holds release
+candidates, and `main` holds the released version. Work branches start from `develop`,
+and pull requests target `develop`. See [docs/branching.md](docs/branching.md).
+
 ## Pinned tasty commit
 
 `fb0beba602e58862541cdc96a06f9f5c7fbfdf86`

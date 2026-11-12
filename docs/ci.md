@@ -151,7 +151,11 @@ GitHub Actions cannot use the `secrets` context in `if:`, so each step reads its
 through `env` and checks in the shell whether it is empty.
 
 The release workflow has no tag trigger and no publish job. It uploads the packages
-only as workflow artifacts named `plugins-<platform>`.
+only as workflow artifacts named `plugins-<platform>`. Packages of the released
+version are built from `main` (`gh workflow run release.yml --ref main`). Release tags
+go only on `main` commits ([branching.md](branching.md)). When a tag trigger is added,
+the workflow must first check that the tagged commit is an ancestor of `origin/main`,
+as tasty's release workflow does.
 
 These depend on stage 2 decisions about the plugin contract and trust model:
 
