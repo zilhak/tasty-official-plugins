@@ -9,11 +9,17 @@ workflow.
 
 | File | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/ci.yml` | push to `main`, pull request to `main`, manual | `check` job: fmt, clippy, test. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
-| `.github/workflows/release.yml` | manual only (`workflow_dispatch`) | Builds with the `dist` profile, packages each plugin, runs the signing steps (skipped without secrets), and uploads the result as workflow artifacts. It does not create a GitHub Release |
+| `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
+| `.github/workflows/release.yml` | manual only (`workflow_dispatch`); packages of the released version are built with `--ref main` | Builds with the `dist` profile, packages each plugin, runs the signing steps (skipped without secrets), and uploads the result as workflow artifacts. It does not create a GitHub Release |
 
 Both workflows use `permissions: contents: read`. `ci.yml` cancels an older run on the
-same ref. Every job has `timeout-minutes`.
+same ref, so a push to one branch never cancels a run on another. Every job has
+`timeout-minutes`.
+
+The same jobs run on `develop`, `release`, and `main`. A commit fast-forwarded from
+`develop` to `release` and `main` is checked again on each branch. A manual run without
+`--ref` uses the default branch, `develop`. The branch rules are in
+[branching.md](branching.md).
 
 ## Platforms and runners
 

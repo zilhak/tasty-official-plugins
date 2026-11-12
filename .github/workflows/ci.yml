@@ -6,9 +6,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [develop, release, main]
   pull_request:
-    branches: [main]
+    branches: [develop, release, main]
   workflow_dispatch:
 
 permissions:
