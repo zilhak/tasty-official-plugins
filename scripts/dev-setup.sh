@@ -31,9 +31,17 @@ chmod +x .githooks/* 2>/dev/null || true
 
 # The setting is shared by every worktree of the clone, and the relative path is taken from
 # each worktree's own top folder, so each one runs the hooks of its own branch.
-HOOKS_DIR="$(git rev-parse --git-path hooks)"
-WORKTREES="$(git worktree list --porcelain | grep -c '^worktree ')"
-echo "Hooks of this tree: $HOOKS_DIR. Every worktree of this clone ($WORKTREES now) uses .githooks of its own tree."
+# This summary only reports; when it cannot be read it shows "?" and the fetch below still runs.
+HOOKS_DIR="$(git rev-parse --git-path hooks 2>/dev/null)" || HOOKS_DIR="?"
+WORKTREE_LIST="$(git worktree list --porcelain 2>/dev/null)" || WORKTREE_LIST=""
+WORKTREES=""
+if [ -n "$WORKTREE_LIST" ]; then
+    WORKTREES="$(printf '%s\n' "$WORKTREE_LIST" | grep -c '^worktree ' || true)"
+fi
+[ -n "$HOOKS_DIR" ] || HOOKS_DIR="?"
+[ -n "$WORKTREES" ] || WORKTREES="?"
+echo "Hooks of this tree: $HOOKS_DIR. Every worktree of this clone ($WORKTREES now) uses"
+echo "  .githooks of its own tree unless it sets core.hooksPath with git config --worktree."
 
 # The version check reads the dependency closure of every target offline, and a build
 # fetches only the host's crates, so fetch them all once here.

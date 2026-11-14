@@ -81,7 +81,9 @@ Merge commits are made only in these cases:
 The `pre-merge-commit` and `pre-commit` hooks enforce this table. Install them with
 `bash scripts/dev-setup.sh`, which sets `core.hooksPath` to `.githooks` and then runs
 `cargo fetch --locked` for the plugin version check. The setting is shared by every
-worktree of the clone, and each worktree runs the hooks of its own branch.
+worktree of the clone, and each worktree runs the hooks of its own branch, unless a
+worktree sets its own core.hooksPath with `git config --worktree` (`scripts/check.sh` then
+warns there).
 
 The merge commit rule is enforced only by the local hooks; CI does not check merge
 commits. A clone without the hooks can push a merge commit outside this table, so
