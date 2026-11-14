@@ -333,13 +333,16 @@ would leave that range unchecked.
 - The notice set and `.gitattributes` are compared by path, file mode, and blob, so a
   move, a mode change, or a file that becomes a link counts. A symbolic link among them
   (a root notice file, or a file in `LICENSES/`) is undecidable on every run: the
-  packaging copies through the link, so its target could change unseen. The scripts are
-  compared without whole-line comments and blank lines, so a comment change needs no
-  bump, while a comment after code still counts.
-- `scripts/check.sh` is compared whole, like the other scripts. A change of comments or
-  blank lines only needs no bump; any other change, also one of a subcommand that does not
-  build, like `licenses` or `audit`, or of the hook warning, asks every plugin with an
-  archive for a bump, once per release. Leaving parts of `check.sh` out by text matching
+  packaging copies through the link, so its target could change unseen. The scripts and
+  the text of the regions are compared as they are, so a change of a comment or a blank
+  line also asks every plugin with an archive for a bump, once per release. Whether a
+  line that starts with `#` is a comment or data of a string, a here-document, a continued
+  line, or a YAML block scalar takes a shell or YAML parser to tell, and a review changed
+  the build through one such line in a multi-line `awk` program. Region markers and the
+  end of a top or job region may still carry a trailing comment.
+- `scripts/check.sh` is compared whole, like the other scripts: any change, also one of a
+  subcommand that does not build, like `licenses` or `audit`, or of the hook warning,
+  asks every plugin with an archive for a bump, once per release. Leaving parts of `check.sh` out by text matching
   could not be made safe: a one-line help branch, a function closed by an indented brace,
   or compared code that calls a left-out function could change the build unseen. The hook
   warning runs as `( warn_hooks ) || true`, so it cannot change variables or functions of
@@ -351,18 +354,31 @@ would leave that range unchecked.
     name, or of a path that is not written out (a variable or a command substitution;
     none is in use now). A command position is the start of a line, a place after one of
     `; & | ( ) { }` or a backtick, and a place after `then`, `do`, `else`, `elif`, `if`,
-    `while`, `until`, `!`, `time`, `exec`, `builtin`, `command`, or an assignment. Quoted
+    `while`, `until`, `!`, `coproc` (and its name), `time`, `exec`, `builtin`, `command`
+    (and their options that start with `-`, `--` too), an assignment, or a redirection
+    (`> /dev/null`, `2>&1`, `</dev/null`, `&>x`, with the target attached or next). Quoted
     text and text after an unquoted `#` are not commands, so a comment or a string that
-    mentions a source needs nothing; a quoted target (`. "scripts/lib/x.sh"`) is read as
-    its path. `release.yml` is no shell region file and is not read this way.
+    mentions a source does not stop the check; a quoted target (`. "scripts/lib/x.sh"`) is
+    read as its path. `release.yml` is no shell region file and is not read this way.
+  - a word in command position written with a backslash or with `$'...'` or `$"..."`
+    quoting (`\. x`, `sou\rce x`, `$'.' x`). The check does not take such words apart;
+    the message names the file and the line.
   - a `uses:` key in the `package` job of `release.yml` whose value is not
     `owner/repo@ref` or `owner/repo/path@ref` on the same line (quotes and a trailing
     comment are fine). A local action or reusable workflow (`./`), a Docker image, a value
     on the next line or in a block scalar, and a flow mapping are undecidable, because
-    the content they run would not be judged.
+    the content they run would not be judged. So are YAML forms in that job that could
+    spell a `uses:` key another way: an explicit key (`? uses`), a double-quoted key with
+    a backslash escape (`"u\x73es"`), an anchor (`&name`), an alias (`*name`), and a merge
+    key (`<<:`). The body of a block scalar (`run: |`) is data: it is skipped, by its
+    indentation, for these checks and for the `uses:` check.
   - a change under `crates/<dir>/` where `<dir>` has no `Cargo.toml` on either side. Such
     a folder is no crate, so no plugin version would cover the change. A file directly in
     `crates/` stays an archive input (above).
+- The gate is there so that honest changes do not miss a bump. A change that twists shell
+  or YAML spelling on purpose to slip past the checks is for review, shellcheck, and
+  actionlint to stop. Spellings that cost little to close are closed as undecidable (the
+  odd command words and YAML forms above); the gate does not parse shell or YAML in full.
 - A file that a listed script runs in another way than `source` or `.` (`bash x.sh`,
   `eval "$(cat x)"`) is judged only through the line that calls it: the commit that adds
   the call needs a bump, but later changes of that file alone are not seen. Review adds
