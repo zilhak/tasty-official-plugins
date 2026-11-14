@@ -156,6 +156,25 @@ impl Fixture {
         Fixture { tmp, stub }
     }
 
+    /// Puts a git in front of PATH for check.sh that rejects `--type` as git before 2.18
+    /// does (exit 129) and passes everything else to the real git.
+    fn use_git_without_type_option(&self) {
+        let real = std::env::var("PATH")
+            .unwrap_or_default()
+            .split(':')
+            .map(|d| Path::new(d).join("git"))
+            .find(|p| p.is_file())
+            .expect("git on PATH");
+        support::write_executable(
+            &self.stub.path().join("git"),
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --type|--type=*) echo \"error: unknown option\" >&2; exit 129 ;; esac; done\nexec \"{}\" \"$@\"\n",
+                real.display()
+            ),
+        )
+        .expect("git wrapper");
+    }
+
     fn repo(&self) -> std::path::PathBuf {
         self.tmp.path().join("repo")
     }
@@ -271,4 +290,38 @@ fn check_warns_and_keeps_going_when_hooks_path_is_missing() {
     let (code, err) = f.check_fmt(&f.repo(), false, 7);
     assert_eq!(code, 7, "{err}");
     assert!(err.contains(MISSING), "{err}");
+}
+
+#[test]
+fn check_reads_hooks_path_with_a_git_that_has_no_type_option() {
+    let f = Fixture::new();
+    git(
+        &f.repo(),
+        &["config", "--local", "core.hooksPath", ".githooks"],
+    );
+    f.use_git_without_type_option();
+    let (code, err) = f.check_fmt(&f.repo(), false, 0);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("warning:"), "{err}");
+}
+
+#[test]
+fn a_windows_drive_path_is_taken_as_absolute() {
+    let f = Fixture::new();
+    git(
+        &f.repo(),
+        &[
+            "config",
+            "--local",
+            "core.hooksPath",
+            "C:/nonexistent/.githooks",
+        ],
+    );
+    let (code, err) = f.check_fmt(&f.repo(), false, 0);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains(&format!("{MISSING} (C:/nonexistent/.githooks)")),
+        "the drive path was joined to the tree:\n{err}"
+    );
+    assert!(!err.contains("/C:"), "{err}");
 }

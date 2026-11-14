@@ -99,14 +99,18 @@ warn_hooks() {
   [[ "${GITHUB_ACTIONS:-}" == "true" ]] && return 0
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
-  hp=$(git config --type=path --get core.hooksPath 2>/dev/null) || hp=""
+  # --path, not --type=path, which git before 2.18 rejects.
+  hp=$(git config --path --get core.hooksPath 2>/dev/null) || hp=""
   if [[ -z "$hp" ]]; then
     echo "warning: core.hooksPath is not set for this clone, so the commit, merge, and push" \
       "checks in .githooks do not run. Run bash scripts/dev-setup.sh once; every worktree" \
       "of the clone shares the setting." >&2
     return 0
   fi
-  [[ "$hp" == /* ]] || hp="$top/$hp"
+  # A Windows drive path (C:/... or C:\...) is absolute too.
+  if ! [[ "$hp" == /* || "$hp" =~ ^[A-Za-z]:[/\\] ]]; then
+    hp="$top/$hp"
+  fi
   if ! got=$(cd "$hp" 2>/dev/null && pwd -P); then
     echo "warning: core.hooksPath points to a missing folder ($hp), so no git hook runs." \
       "Run bash scripts/dev-setup.sh." >&2
@@ -124,7 +128,8 @@ sub="${1:-all}"
 [[ $# -gt 0 ]] && shift
 
 case "$sub" in
-  all | fmt | lint | test | build) warn_hooks ;;
+  # In an || list errexit is off inside the function, so a failed write cannot stop the run.
+  all | fmt | lint | test | build) warn_hooks || true ;;
 esac
 
 case "$sub" in
