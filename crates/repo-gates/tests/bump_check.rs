@@ -2614,7 +2614,8 @@ fn moving_a_license_text_out_of_licenses_is_a_notice_change() {
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSES/");
 }
 
-/// Archive case 16: a file that turns into a symbolic link is a type change.
+/// Archive case 16: a file that turns into a symbolic link would let its target change
+/// unseen, so a link among the blob inputs stops the check.
 #[test]
 fn a_license_text_that_becomes_a_symlink_is_a_notice_change() {
     let f = ArchiveFixture::new();
@@ -2623,7 +2624,34 @@ fn a_license_text_that_becomes_a_symlink_is_a_notice_change() {
     fs::remove_file(f.repo.join("LICENSES/a.txt")).expect("remove");
     std::os::unix::fs::symlink("../docs/a.txt", f.repo.join("LICENSES/a.txt")).expect("link");
     f.commit("link the license text");
-    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSES/");
+    let r = f.check(&HEAD_RANGE);
+    assert_undecidable_with(
+        &r,
+        "the archive input LICENSES/ is or holds a symbolic link",
+    );
+    assert!(r.1.contains("    LICENSES/a.txt"), "{}", r.1);
+}
+
+/// A root notice file that is a symbolic link stops every run, so a later change of its
+/// target alone is not missed. The index is read in staged mode.
+#[test]
+fn a_root_notice_symlink_is_undecidable() {
+    let f = ArchiveFixture::new();
+    f.write("docs/license.txt", "MIT License\n");
+    fs::remove_file(f.repo.join("LICENSE")).expect("remove");
+    std::os::unix::fs::symlink("docs/license.txt", f.repo.join("LICENSE")).expect("link");
+    f.git(&["add", "-A"]);
+    assert_undecidable_with(
+        &f.check(&["--staged"]),
+        "the archive input LICENSE is or holds a symbolic link",
+    );
+    f.commit("link LICENSE");
+    f.write("docs/license.txt", "MIT License\n\nCopyright\n");
+    f.commit("change the link target alone");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "the archive input LICENSE is or holds",
+    );
 }
 
 /// Archive case 17: every file in LICENSES/ ships, Markdown too.
@@ -2735,6 +2763,54 @@ fn a_missing_closing_marker_is_undecidable() {
         "{text}"
     );
     assert!(text.contains("scripts/check.sh"), "{text}");
+}
+
+/// A trailing comment on a marker or on the key line of another job does not move a region:
+/// the publish job stays outside the package job, and the markers are still found.
+#[test]
+fn trailing_comments_on_region_markers_are_read() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        ".github/workflows/release.yml",
+        "  publish:\n",
+        "  publish:  # publication\n",
+    );
+    f.edit(
+        ".github/workflows/release.yml",
+        "echo publish",
+        "echo publish twice",
+    );
+    f.commit("comment the publish job and change it");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+
+    for (from, to) in [
+        ("env:\n", "env: # shared settings\n"),
+        ("  package:\n", "  package:   # builds the archives\n"),
+    ] {
+        f.edit(".github/workflows/release.yml", from, to);
+        f.commit("comment a marker");
+        assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
+    }
+
+    f.edit(
+        "scripts/check.sh",
+        "cmd_test() {\n",
+        "cmd_test() { # the tests\n",
+    );
+    f.edit(
+        "scripts/check.sh",
+        "  run cargo test \"$@\"\n}\n",
+        "  run cargo test \"$@\"\n}  # cmd_test\n",
+    );
+    f.commit("comment a left-out function");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+    f.edit(
+        "scripts/check.sh",
+        "cmd_build() {\n",
+        "cmd_build() { # the build\n",
+    );
+    f.commit("comment cmd_build");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
 }
 
 /// Archive case 23: a .gitattributes in a crate changes how its shipped files check out.

@@ -4,7 +4,8 @@
 # tasty-plugin.toml needs a version bump, once per release (see docs/ci.md). Fields are
 # separated by tabs. A path that ends with "/" stands for every file under it.
 #
-#   blob    path                    compared by path, file mode, and blob id
+#   blob    path                    compared by path, file mode, and blob id; a symbolic link
+#                                   stops the check
 #   script  path                    compared without whole-line comments and blank lines;
 #                                   the first line stays when it starts with #!
 #   except  path  how  pattern      a part of a script path that does not build or pack the
@@ -15,7 +16,8 @@
 #   region  path  how  open  close  only the parts that packaging runs, compared like a
 #                                   script; every region line of a path is one comparison
 #
-# A region is found by extended regular expressions on whole lines:
+# A region is found by extended regular expressions on whole lines; a trailing comment and
+# trailing blanks do not count, for the markers and for the end of a top or job region:
 #   block  from the line that matches open to the next line that matches close
 #   line   every line that matches open
 #   top    a top-level YAML key: from open to the next line that starts in column 0

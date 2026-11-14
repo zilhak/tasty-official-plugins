@@ -1573,17 +1573,19 @@ region_of() {  # <ref> <path> <regions file> <out file>
             function keep(s) { if (s !~ /^[[:space:]]*(#|$)/) print s }
             BEGIN { how = ENVIRON["R_HOW"]; opn = ENVIRON["R_OPEN"]; cls = ENVIRON["R_CLOSE"]
                     print "@ " opn }
-            how == "line" { if ($0 ~ opn) { found = 1; keep($0) } next }
-            state == 0 { if ($0 ~ opn) { state = 1; found = 1; keep($0) } next }
+            # Markers and boundaries are read without a trailing comment and trailing blanks.
+            { b = $0; sub(/[[:space:]]+#.*$/, "", b); sub(/[[:space:]]+$/, "", b) }
+            how == "line" { if (b ~ opn) { found = 1; keep($0) } next }
+            state == 0 { if (b ~ opn) { state = 1; found = 1; keep($0) } next }
             state != 1 { next }
             how == "block" {
-                if ($0 ~ cls) { keep($0); state = 2; next }
+                if (b ~ cls) { keep($0); state = 2; next }
                 # A new function or array starts: this block was not closed.
                 if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*(=\(|[[:space:]]*\(\))/) { bad = NR; exit }
                 keep($0); next
             }
             how == "top" && /^[^[:space:]#]/ { state = 2; next }
-            how == "job" && (/^  [A-Za-z0-9_-]+:[[:space:]]*$/ || /^[^[:space:]#]/) { state = 2; next }
+            how == "job" && (b ~ /^  [A-Za-z0-9_-]+:$/ || /^[^[:space:]#]/) { state = 2; next }
             { keep($0) }
             END {
                 if (!found) { print "cannot find the line " opn > "/dev/stderr"; exit 3 }
@@ -1637,6 +1639,19 @@ excepts_in() {  # <list file> <path> <out file>
 check_archive_structure() {
     local kind path how ref names ln target line
     names=$(awk -F '\t' '$1 == "blob" || $1 == "script" || $1 == "region" { print $2 }' "$WORK/list.after" | sort -u)
+    # The packaging copies a blob input with cp, which follows a symbolic link, so a link would
+    # let the target change without a change of the listed path.
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        archive_blob_id after "$path" | awk '$2 == "120000" { print "    " $1 }' > "$WORK/structure.links" \
+            || die "cannot list $path (after)."
+        if [ -s "$WORK/structure.links" ]; then
+            die "the archive input $path is or holds a symbolic link, which the archive would follow to a file the gate does not judge; judge the plugin versions by hand:
+$(cat "$WORK/structure.links")"
+        fi
+    done <<EOF2
+$(awk -F '\t' '$1 == "blob" { print $2 }' "$WORK/list.before" "$WORK/list.after" | sort -u)
+EOF2
     while IFS="$TAB" read -r kind path how; do
         [ -n "$path" ] || continue
         ref=$(after_ref "$path")
