@@ -3117,3 +3117,460 @@ fn an_unreadable_root_manifest_side_is_undecidable() {
         "the root Cargo.toml is missing on one side of the range",
     );
 }
+
+// ── [patch] ──────────────────────────────────────────────────────────────────
+// ExtFixture with [patch.crates-io] ext taken from a git repository (patch-src) that holds
+// ext 1.0.0 and devx 1.0.0, or from a path outside the repository (local-ext). alpha and
+// beta link ext; gamma does not.
+
+impl ExtFixture {
+    fn side_dir(&self, name: &str) -> std::path::PathBuf {
+        self.repo.parent().expect("temp dir").join(name)
+    }
+
+    /// The git repository that patches come from: its file:// url and its HEAD.
+    fn patch_source(&self) -> (String, String) {
+        let src = self.side_dir("patch-src");
+        if !src.join(".git").exists() {
+            fs::create_dir_all(&src).expect("patch source");
+            init_repo(&src);
+            for name in ["ext", "devx"] {
+                write(
+                    &src,
+                    &format!("crates/{name}/Cargo.toml"),
+                    &format!(
+                        "[package]\nname = \"{name}\"\nversion = \"1.0.0\"\nedition = \"2021\"\n"
+                    ),
+                );
+                write(
+                    &src,
+                    &format!("crates/{name}/src/lib.rs"),
+                    "pub fn f() {}\n",
+                );
+            }
+            commit_all(&src, "patched copies");
+        }
+        (
+            format!("file://{}", src.display()),
+            git_out(&src, &["rev-parse", "HEAD"]),
+        )
+    }
+
+    /// Commits `body` to `rel` in the patch source and returns the new commit.
+    fn patch_source_commit(&self, rel: &str, body: &str) -> String {
+        self.patch_source();
+        let src = self.side_dir("patch-src");
+        write(&src, rel, body);
+        commit_all(&src, "change the patched copy");
+        git_out(&src, &["rev-parse", "HEAD"])
+    }
+
+    /// A copy of ext outside the repository, for path patches.
+    fn local_ext(&self) -> String {
+        let dir = self.side_dir("local-ext");
+        write(
+            &dir,
+            "Cargo.toml",
+            "[package]\nname = \"ext\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+        );
+        write(&dir, "src/lib.rs", "pub fn f() {}\n");
+        "../local-ext".into()
+    }
+
+    /// Sets the [patch.crates-io] table of the root Cargo.toml to `entries` (none when
+    /// empty), optionally updating the lock.
+    fn set_patch(&self, entries: &str, lock: bool) {
+        let body = fs::read_to_string(self.repo.join("Cargo.toml")).expect("read");
+        let base = body
+            .split("\n[patch.crates-io]\n")
+            .next()
+            .expect("manifest");
+        let out = if entries.is_empty() {
+            format!("{}\n", base.trim_end())
+        } else {
+            format!("{}\n\n[patch.crates-io]\n{entries}", base.trim_end())
+        };
+        write(&self.repo, "Cargo.toml", &out);
+        if lock {
+            self.cargo(&["metadata", "--format-version", "1"]);
+        }
+    }
+
+    fn git_patch(&self, rev: &str) -> String {
+        let (url, _) = self.patch_source();
+        format!("ext = {{ git = \"{url}\", rev = \"{rev}\" }}\n")
+    }
+
+    fn commit(&self, msg: &str) {
+        commit_all(&self.repo, msg);
+    }
+}
+
+/// An ExtFixture whose ext comes from the patch source at its first commit.
+fn git_patched() -> (ExtFixture, String) {
+    let f = ExtFixture::new();
+    let (_, rev) = f.patch_source();
+    f.set_patch(&f.git_patch(&rev), true);
+    f.commit("patch ext from git");
+    (f, rev)
+}
+
+/// The reason lines under the violation of <plugin>.
+fn reasons_of(text: &str, plugin: &str) -> Vec<String> {
+    let head = format!("crates/tasty-plugin-{plugin}: shipped content changed");
+    let block = text.split_once(&head).expect("the violation").1;
+    let block = block.split_once("    fix:").expect("the fix line").0;
+    block
+        .lines()
+        .filter(|l| l.starts_with("      "))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+fn assert_path_patch_rejected((code, text): &(i32, String), file: &str) {
+    assert_eq!(*code, 2, "{text}");
+    assert!(
+        text.contains("is not reproducible in a clean clone"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("{file}: patch.crates-io.ext")),
+        "{text}"
+    );
+    assert!(text.contains("scripts/dev-bundle.sh"), "{text}");
+}
+
+/// [patch] case 42.
+#[test]
+fn a_git_to_path_patch_is_rejected() {
+    let (f, _) = git_patched();
+    let path = f.local_ext();
+    f.set_patch(&format!("ext = {{ path = \"{path}\" }}\n"), true);
+    f.commit("patch ext from a local copy");
+    assert_path_patch_rejected(&f.check(&HEAD_RANGE), "Cargo.toml");
+}
+
+/// [patch] case 43: the repository cargo config and what it includes are read too.
+#[test]
+fn a_path_patch_or_paths_in_the_cargo_config_is_rejected() {
+    let f = ExtFixture::new();
+    f.write_config(
+        ".cargo/config.toml",
+        "[patch.crates-io]\next = { path = \"../local-ext\" }\n",
+    );
+    assert_path_patch_rejected(&f.check(&HEAD_RANGE), ".cargo/config.toml");
+
+    f.write_config(".cargo/config.toml", "paths = [\"../x\"]\n");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains(".cargo/config.toml: paths = [\"../x\"]"),
+        "{text}"
+    );
+
+    f.write_config(
+        ".cargo/config.toml",
+        "include = [{ path = \"extra.toml\", optional = true }]\n",
+    );
+    f.write_config(
+        ".cargo/extra.toml",
+        "[patch.crates-io.ext]\npath = \"../local-ext\"\n",
+    );
+    assert_path_patch_rejected(&f.check(&HEAD_RANGE), ".cargo/extra.toml");
+
+    // Two files that include each other are each read once.
+    f.write_config(
+        ".cargo/extra.toml",
+        "include = \"config.toml\"\n[build]\njobs = 2\n",
+    );
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains(".cargo/extra.toml (build settings)"),
+        "{text}"
+    );
+}
+
+impl ExtFixture {
+    fn write_config(&self, rel: &str, body: &str) {
+        write(&self.repo, rel, body);
+        self.commit("change the cargo config");
+    }
+}
+
+/// [patch] case 44: a path patch committed earlier blocks a commit that does not touch it.
+#[test]
+fn an_existing_path_patch_blocks_an_unrelated_commit() {
+    let f = ExtFixture::new();
+    let path = f.local_ext();
+    f.set_patch(&format!("ext = {{ path = \"{path}\" }}\n"), true);
+    f.commit("patch ext from a local copy, without the hooks");
+    write(
+        &f.repo,
+        "crates/tasty-plugin-alpha/src/main.rs",
+        "fn main() {\n    println!(\"x\");\n}\n",
+    );
+    f.commit("change alpha");
+    assert_path_patch_rejected(&f.check(&HEAD_RANGE), "Cargo.toml");
+}
+
+/// [patch] case 45: from a path back to git, the lock shows a new git source; that rule
+/// alone flags the plugins that link ext, with no relief and no second reason.
+#[test]
+fn moving_a_path_patch_back_to_git_is_judged_as_a_new_git_source() {
+    let f = ExtFixture::new();
+    let path = f.local_ext();
+    f.set_patch(&format!("ext = {{ path = \"{path}\" }}\n"), true);
+    f.commit("patch ext from a local copy, without the hooks");
+    release_at(&f.repo);
+    f.bump("alpha", "0.1.1");
+    f.commit("bump alpha");
+    let (_, rev) = f.patch_source();
+    f.set_patch(&f.git_patch(&rev), true);
+    f.commit("patch ext from git again");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    for p in ["alpha", "beta"] {
+        let reasons = reasons_of(&text, p);
+        assert_eq!(reasons.len(), 1, "{p}: {reasons:?}\n{text}");
+        assert!(reasons[0].contains("new in Cargo.lock"), "{text}");
+    }
+    assert!(!text.contains("crates/tasty-plugin-gamma:"), "{text}");
+    assert!(
+        text.contains("note: [patch] crates-io.ext changed; judged through Cargo.lock"),
+        "{text}"
+    );
+}
+
+/// [patch] case 46.
+#[test]
+fn a_patch_rev_move_is_judged_once_through_the_lock() {
+    let (f, _) = git_patched();
+    let rev = f.patch_source_commit("crates/ext/src/lib.rs", "pub fn f() {}\npub fn g() {}\n");
+    f.set_patch(&f.git_patch(&rev), true);
+    f.commit("move the patch");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("2 violations"), "{text}");
+    for p in ["alpha", "beta"] {
+        let reasons = reasons_of(&text, p);
+        assert_eq!(reasons.len(), 1, "{p}: {reasons:?}\n{text}");
+        assert!(
+            reasons[0].contains("changed: crates/ext/src/lib.rs"),
+            "{text}"
+        );
+    }
+    assert!(
+        text.contains("note: [patch] crates-io.ext changed; judged through Cargo.lock"),
+        "{text}"
+    );
+}
+
+/// [patch] case 47.
+#[test]
+fn a_patch_rev_move_without_content_change_needs_no_bump() {
+    let (f, _) = git_patched();
+    let rev = f.patch_source_commit("README.md", "outside the crates\n");
+    f.set_patch(&f.git_patch(&rev), true);
+    f.commit("move the patch");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("nothing to judge"), "{text}");
+}
+
+/// [patch] case 48: back to crates.io is a registry update, once per release.
+#[test]
+fn removing_a_git_patch_back_to_crates_io_follows_the_lock_rule() {
+    let (f, _) = git_patched();
+    f.set_patch("", true);
+    f.commit("drop the patch");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("ext <none> → 1.0.0 (Cargo.lock)"), "{text}");
+
+    let (f, rev) = git_patched();
+    release_at(&f.repo);
+    f.bump("alpha", "0.1.1");
+    f.commit("bump alpha");
+    f.set_patch("", true);
+    f.commit("drop the patch");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        !text.contains("crates/tasty-plugin-alpha:"),
+        "{rev}\n{text}"
+    );
+    assert!(
+        text.contains("crates/tasty-plugin-beta: shipped content changed"),
+        "{text}"
+    );
+}
+
+/// [patch] case 49.
+#[test]
+fn an_unused_or_unlocked_patch_entry() {
+    // devx is locked but no plugin links it.
+    let (f, rev) = git_patched();
+    let (url, _) = f.patch_source();
+    f.set_patch(
+        &format!(
+            "{}devx = {{ git = \"{url}\", rev = \"{rev}\" }}\n",
+            f.git_patch(&rev)
+        ),
+        true,
+    );
+    f.commit("patch devx too");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("note: [patch] crates-io.devx changed"),
+        "{text}"
+    );
+
+    // A name in no lock.
+    let (f, rev) = git_patched();
+    let (url, _) = f.patch_source();
+    f.set_patch(
+        &format!(
+            "{}nothere = {{ git = \"{url}\", rev = \"{rev}\" }}\n",
+            f.git_patch(&rev)
+        ),
+        false,
+    );
+    f.commit("patch a crate that is not locked");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "no package nothere is in Cargo.lock");
+
+    // Only the spelling changed.
+    let (f, rev) = git_patched();
+    let (url, _) = f.patch_source();
+    f.set_patch(
+        &format!("ext = {{ rev = \"{rev}\", git = \"{url}\" }}\n"),
+        false,
+    );
+    f.commit("reorder the patch keys");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("note: [patch] crates-io.ext changed, but Cargo.lock locks ext the same"),
+        "{text}"
+    );
+}
+
+/// [patch] case 50.
+#[test]
+fn a_package_rename_in_a_patch_judges_both_packages() {
+    let (f, rev) = git_patched();
+    let (url, _) = f.patch_source();
+    f.set_patch(
+        &format!("ext = {{ git = \"{url}\", rev = \"{rev}\", package = \"devx\" }}\n"),
+        false,
+    );
+    f.commit("name another package");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    for pkg in ["ext", "devx"] {
+        assert!(
+            text.contains(&format!("Cargo.lock locks {pkg} the same")),
+            "{text}"
+        );
+    }
+
+    f.set_patch(
+        &format!("ext = {{ git = \"{url}\", rev = \"{rev}\", package = \"nothere\" }}\n"),
+        false,
+    );
+    f.commit("name a package that is not locked");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "no package nothere is in Cargo.lock");
+}
+
+/// [patch] case 51: the pin rule pairs git packages by name, so two git sources of ext would
+/// be compared with each other.
+#[test]
+fn two_git_sources_for_one_patched_name_are_undecidable() {
+    let (f, _) = git_patched();
+    let other = f.side_dir("ext-two");
+    fs::create_dir_all(&other).expect("second source");
+    init_repo(&other);
+    write(
+        &other,
+        "Cargo.toml",
+        "[package]\nname = \"ext\"\nversion = \"2.0.0\"\nedition = \"2021\"\n",
+    );
+    write(&other, "src/lib.rs", "pub fn two() {}\n");
+    commit_all(&other, "ext 2");
+    let rev_b = git_out(&other, &["rev-parse", "HEAD"]);
+    let body = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &body.replacen(
+            "devx = \"1\"\n",
+            &format!(
+                "devx = \"1\"\nextb = {{ git = \"file://{}\", rev = \"{rev_b}\", package = \"ext\" }}\n",
+                other.display()
+            ),
+            1,
+        ),
+    );
+    write(
+        &f.repo,
+        "crates/tasty-plugin-beta/Cargo.toml",
+        "[package]\nname = \"tasty-plugin-beta\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
+         [dependencies]\next.workspace = true\nextb.workspace = true\n",
+    );
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("beta links ext 2 from a second source");
+    let lock = fs::read_to_string(f.repo.join("Cargo.lock")).expect("lock");
+    assert_eq!(lock.matches("name = \"ext\"").count(), 2, "{lock}");
+
+    let rev = f.patch_source_commit("crates/ext/src/lib.rs", "pub fn f() {}\npub fn g() {}\n");
+    f.set_patch(&f.git_patch(&rev), true);
+    f.commit("move the patch of ext 1");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "has ext from 2 git sources");
+}
+
+/// [patch] case 52.
+#[test]
+fn unsupported_patch_table_spellings_are_undecidable() {
+    for (from, to) in [
+        ("\n[patch.crates-io]\n", "\n[\"patch\".\"crates-io\"]\n"),
+        ("\n[patch.crates-io]\next = ", "\n[patch]\ncrates-io.ext = "),
+    ] {
+        let (f, _) = git_patched();
+        let body = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+        assert_eq!(body.matches(from).count(), 1, "{from:?}");
+        write(&f.repo, "Cargo.toml", &body.replacen(from, to, 1));
+        f.commit("spell the patch table another way");
+        assert_undecidable_with(&f.check(&HEAD_RANGE), "cannot read a [patch] table");
+    }
+
+    let (f, rev) = git_patched();
+    let (url, _) = f.patch_source();
+    let body = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &format!(
+            "{body}\n[patch.\"https://example.invalid/x\"]\next = {{ git = \"{url}\", rev = \"{rev}\" }}\n"
+        ),
+    );
+    f.commit("patch a git source");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("note: [patch] https://example.invalid/x.ext changed"),
+        "{text}"
+    );
+}
+
+/// [patch] case 53.
+#[test]
+fn staged_mode_rejects_a_path_patch_too() {
+    let (f, _) = git_patched();
+    let path = f.local_ext();
+    f.set_patch(&format!("ext = {{ path = \"{path}\" }}\n"), true);
+    run_git(&f.repo, &["add", "-A"]);
+    assert_path_patch_rejected(&f.check(&["--staged"]), "Cargo.toml");
+}

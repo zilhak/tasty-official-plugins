@@ -990,7 +990,7 @@ config_includes() {  # <lines file>
             v = trim(substr(v, 2, length(v) - 2))
             while (v != "") {
                 if (match(v, /^("[^"]*"|\047[^\047]*\047|\{[^}]*\})/)) {
-                    entry(substr(v, 1, RLENGTH)); v = trim(substr(v, RLENGTH + 1))
+                    len = RLENGTH; entry(substr(v, 1, len)); v = trim(substr(v, len + 1))
                     sub(/^,[[:space:]]*/, "", v)
                 } else { print "<bad>\tan include value that is not read: " line; break }
             }
@@ -1211,6 +1211,141 @@ $(printf '%s\n' .cargo/config.toml .cargo/config rust-toolchain.toml rust-toolch
 EOF2
 }
 
+# ── [patch] ──────────────────────────────────────────────────────────────────
+# A [patch] entry changes where a crate comes from. Cargo.lock shows the result, and the lock
+# rules above judge it (a git source each commit, crates.io once per release), so a patch
+# entry adds no reason of its own: it is checked against the lock. A path patch is not
+# reproducible in a clean clone or in CI and is rejected.
+
+# The entries of the [patch.<source>] tables of a toml_lines file as
+# "source<TAB>name<TAB>value", rev kept. Dotted keys (name.git = ...) and
+# [patch.<source>.<name>] tables are folded into the value of <name>; a quoted source name
+# loses its quotes. Other spellings ([patch] with dotted keys, a quoted "patch", a top-level
+# patch key) come out as "<unparsed><TAB><TAB>line".
+patch_entries() {  # <lines file>
+    awk -F '\t' "$TOML_KEY_AWK"'
+        function add(src, name, sk, v,    k) {
+            k = src "\t" name; seen[k] = 1
+            if (sk == "") plain[k] = v
+            else tab[k] = tab[k] " " sk " = " v ","
+        }
+        {
+            sec = $1; line = substr($0, length($1) + 2)
+            if (sec == "<unreadable>") { print "<unparsed>\t\t" line; next }
+            e = eq_at(line)
+            if (sec == "") {
+                if (e && split_key(substr(line, 1, e - 1), kp) && kp[1] == "patch") print "<unparsed>\t\t" line
+                next
+            }
+            ns = split_key(sec, sp)
+            if (sp[1] != "patch") next
+            if (QUOTED[1] || ns == 1 || ns > 3 || !e) { print "<unparsed>\t\t[" sec "] " line; next }
+            src = sp[2]; name = sp[3]
+            nk = split_key(substr(line, 1, e - 1), kp); val = trim(substr(line, e + 1))
+            if (ns == 2) add(src, kp[1], join_parts(kp, 2, nk), val)
+            else add(src, name, join_parts(kp, 1, nk), val)
+        }
+        END {
+            for (k in seen) {
+                v = plain[k]
+                if (k in tab) v = v (v == "" ? "" : " + ") "{" tab[k] " }"
+                print k "\t" v
+            }
+        }' "$1" | sort
+}
+
+# Stops when the after side declares a path [patch] in the root Cargo.toml or in a
+# repository cargo config file (with its includes), or a paths override. Read on every run,
+# not only when these files change, so a path patch committed earlier blocks every commit.
+reject_path_patches() {
+    local f bad="" what
+    : > "$WORK/reject.found"
+    if exists_at "$(after_ref Cargo.toml)"; then
+        toml_lines "$(after_ref Cargo.toml)" > "$WORK/reject.lines" || die "cannot read the root Cargo.toml."
+        if grep -q '^<unreadable>' "$WORK/reject.lines"; then
+            die "cannot read the root Cargo.toml; judge the plugin versions by hand:
+$(grep '^<unreadable>' "$WORK/reject.lines" | cut -f2- | sort -u | sed 's/^/    /')"
+        fi
+        printf 'Cargo.toml\n' > "$WORK/reject.files"
+        cp "$WORK/reject.lines" "$WORK/reject.lines.1"
+    else
+        : > "$WORK/reject.files"
+    fi
+    cargo_config_files after "$WORK/reject.configs"
+    cat "$WORK/reject.configs" >> "$WORK/reject.files"
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if [ "$f" != Cargo.toml ]; then
+            toml_lines_to "$(after_ref "$f")" "$WORK/reject.lines.1" "the cargo config $f"
+        fi
+        patch_entries "$WORK/reject.lines.1" > "$WORK/reject.patch" || die "cannot read the [patch] tables of $f."
+        if grep -q '^<unparsed>' "$WORK/reject.patch"; then
+            die "cannot read a [patch] table of $f, so a path patch cannot be ruled out; only [patch.<source>] tables with name = { ... } entries or dotted keys, and [patch.<source>.<name>] tables, are read:
+$(grep '^<unparsed>' "$WORK/reject.patch" | cut -f3- | sed 's/^/    /')"
+        fi
+        what=$(awk -F '\t' -v f="$f" '$3 ~ /(^|[{ ,])path[[:space:]]*=/ { print "    " f ": patch." $1 "." $2 " = " $3 }' "$WORK/reject.patch")
+        [ -z "$what" ] || bad="$bad
+$what"
+        if [ "$f" != Cargo.toml ]; then
+            what=$(awk -F '\t' -v f="$f" "$TOML_KEY_AWK"'
+                $1 == "" { e = eq_at($2); if (e && split_key(substr($2, 1, e - 1), kp) == 1 && kp[1] == "paths") print "    " f ": " $2 }' "$WORK/reject.lines.1")
+            [ -z "$what" ] || bad="$bad
+$what"
+        fi
+    done < "$WORK/reject.files"
+    [ -z "$bad" ] || die "a path [patch] or paths override is not reproducible in a clean clone or in CI, which do not have the path:$bad
+    Use git with the pinned rev, or pass the path with cargo --config as scripts/dev-bundle.sh --tasty does."
+}
+
+# The [patch] entries of the root Cargo.toml that changed, checked against Cargo.lock: the
+# lock rules judge what the lock shows, so this only notes, or stops when the lock cannot
+# show it. The lock rows of judge_pin_moves are used, or read here.
+judge_patch_entries() {
+    local src name vb va pkgs pkg rb ra n side
+    patch_entries "$WORK/root.before" > "$WORK/patch.before" || die "cannot read the [patch] tables."
+    patch_entries "$WORK/root.after" > "$WORK/patch.after" || die "cannot read the [patch] tables."
+    if grep -q '^<unparsed>' "$WORK/patch.before" "$WORK/patch.after"; then
+        die "cannot read a [patch] table of the root Cargo.toml; judge the plugin versions by hand:
+$(grep -h '^<unparsed>' "$WORK/patch.before" "$WORK/patch.after" | cut -f3- | sort -u | sed 's/^/    /')"
+    fi
+    comm -3 "$WORK/patch.before" "$WORK/patch.after" | awk '{ sub(/^\t/, ""); print }' \
+        | cut -f1-2 | sort -u > "$WORK/patch.changed"
+    [ -s "$WORK/patch.changed" ] || return 0
+    for side in before after; do
+        [ -f "$WORK/lock.$side" ] && continue
+        exists_at "$(side_ref "$side" Cargo.lock)" || die "[patch] changed, but there is no Cargo.lock on the $side side."
+        lock_rows "$(side_ref "$side" Cargo.lock)" > "$WORK/lock.$side" || die "cannot read Cargo.lock ($side)."
+    done
+    while IFS="$TAB" read -r src name; do
+        [ -n "$name" ] || continue
+        vb=$(awk -F '\t' -v s="$src" -v n="$name" '$1 == s && $2 == n { print $3 }' "$WORK/patch.before")
+        va=$(awk -F '\t' -v s="$src" -v n="$name" '$1 == s && $2 == n { print $3 }' "$WORK/patch.after")
+        pkgs=$(printf '%s\n%s\n' "$vb" "$va" | sed -n 's/.*package[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')
+        [ -n "$(printf '%s\n%s\n' "$vb" "$va" | grep -v 'package[[:space:]]*=' | sed -n '/./p')" ] \
+            && pkgs="$pkgs
+$name"
+        [ -n "$pkgs" ] || pkgs="$name"
+        for pkg in $(printf '%s\n' "$pkgs" | sed -n '/./p' | sort -u); do
+            # The pin rule pairs git packages by name only, so two git sources of one name
+            # would be compared with each other.
+            for side in before after; do
+                n=$(awk -F '\t' -v p="$pkg" '$1 == p && $3 ~ /^git\+/ { print $3 }' "$WORK/lock.$side" | sort -u | wc -l)
+                [ "$n" -le 1 ] || die "[patch] $src.$name changed, and Cargo.lock ($side) has $pkg from $n git sources, which the lock rules cannot tell apart; judge the plugin versions by hand."
+            done
+            rb=$(awk -F '\t' -v p="$pkg" '$1 == p { print $1 "\t" $2 "\t" $3 }' "$WORK/lock.before" | sort)
+            ra=$(awk -F '\t' -v p="$pkg" '$1 == p { print $1 "\t" $2 "\t" $3 }' "$WORK/lock.after" | sort)
+            if [ -z "$rb" ] && [ -z "$ra" ]; then
+                die "[patch] $src.$name changed in the root Cargo.toml, but no package $pkg is in Cargo.lock; judge the plugin versions by hand."
+            fi
+            if [ "$rb" != "$ra" ]; then
+                note "[patch] $src.$name changed; judged through Cargo.lock ($pkg)."
+            else
+                note "[patch] $src.$name changed, but Cargo.lock locks $pkg the same; no bump needed for it."
+            fi
+        done
+    done < "$WORK/patch.changed"
+}
+
 judge_root_manifest() {
     local before="$BEFORE_REV:Cargo.toml" after sec key pkg val_b val_a p
     after=$(after_ref Cargo.toml)
@@ -1234,7 +1369,7 @@ $(grep -h '^<unreadable>' "$WORK/root.before" "$WORK/root.after" | cut -f2- | so
         case "$nsec" in
             workspace.dependencies|workspace.dependencies.*) ;;  # by entry, below
             profile|profile.*) profiles_changed=1 ;;  # by profile, below
-            patch|patch.*) ;;  # the lock shows what it moves
+            patch.*) ;;  # by entry, below
             workspace.lints|workspace.lints.*) ;;
             *) die "[${sec:-top level}] changed in the root Cargo.toml; judge the plugin versions by hand." ;;
         esac
@@ -1242,6 +1377,7 @@ $(grep -h '^<unreadable>' "$WORK/root.before" "$WORK/root.after" | cut -f2- | so
 $(cut -f1 "$WORK/root.before" "$WORK/root.after" | sort -u)
 EOF2
     [ "$profiles_changed" = 0 ] || judge_profiles
+    judge_patch_entries
     dep_entries "$WORK/root.before" > "$WORK/deps.before"
     dep_entries "$WORK/root.after" > "$WORK/deps.after"
     while IFS= read -r key; do
@@ -1384,12 +1520,14 @@ judge_archive_inputs() {
     ARCHIVE_SUMMARY="$changed"
 }
 
+reject_path_patches
+# The root manifest first: its [patch] check stops on a lock that the pin rule would misread.
+if outside_has Cargo.toml; then
+    judge_root_manifest
+fi
 if outside_has Cargo.lock; then
     judge_pin_moves
     judge_external_lock
-fi
-if outside_has Cargo.toml; then
-    judge_root_manifest
 fi
 judge_build_config
 judge_archive_inputs
