@@ -182,7 +182,9 @@ cmd_stage() {
       continue
     fi
     id=$(manifest_string id "$manifest")
-    exe=$(printf '%s\n' "$artifacts" | awk -F'\t' -v c="$crate" '$1 == c { print $2; exit }')
+    # A here-string, not a pipe: awk stops at the first match, and with pipefail the
+    # SIGPIPE of a printf still writing would fail the assignment under set -e.
+    exe=$(awk -F'\t' -v c="$crate" '$1 == c { print $2; exit }' <<<"$artifacts")
     [[ -n "$exe" ]] || die "cargo reported no executable for $crate"
     exe=$(to_unix_path "$exe")
     [[ -f "$exe" ]] || die "executable missing: $exe"
