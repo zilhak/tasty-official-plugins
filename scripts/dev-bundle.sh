@@ -164,10 +164,28 @@ artifacts=$(
 )
 
 if [[ -n "$TASTY" ]]; then
-  # A patch that cargo did not use leaves the git copy in the build; fail instead of
-  # handing out plugins built against the pinned tasty commit.
-  left=$(tasty_git_packages "$build_dir")
-  [[ -z "$left" ]] || die "still built from $TASTY_GIT, not from $tasty: $(tr '\n' ' ' <<<"$left")"
+  # Every patched package must resolve to the local checkout: a lock entry without a
+  # source line. A patch that cargo did not use is listed under [[patch.unused]], and the
+  # package then comes from git, or for a [patch.crates-io] name from crates.io (cargo
+  # only warns). Fail instead of handing out plugins built against another copy.
+  wrong=$(awk -v names="$(tr '\n' ' ' <<<"$packages")" '
+    BEGIN { n = split(names, a, " "); for (i = 1; i <= n; i++) patched[a[i]] = 1 }
+    function flush() {
+      if (kind == "unused") print "  " name " " version ": patch not used"
+      else if (kind == "package" && (name in patched) && src != "") print "  " name " " version ": from " src
+      kind = ""; name = ""; version = ""; src = ""
+    }
+    /^\[\[package\]\]/ { flush(); kind = "package"; next }
+    /^\[\[patch\.unused\]\]/ { flush(); kind = "unused"; next }
+    /^\[/ { flush(); next }
+    /^name = / { name = $3; gsub(/"/, "", name) }
+    /^version = / { version = $3; gsub(/"/, "", version) }
+    /^source = / { src = $3; gsub(/"/, "", src) }
+    END { flush() }
+  ' "$build_dir/Cargo.lock")
+  [[ -z "$wrong" ]] || die "not built from $tasty:
+$wrong
+A version in $tasty that the requirements here do not accept leaves its patch unused."
 fi
 
 staging=""
