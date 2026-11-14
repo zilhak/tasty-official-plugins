@@ -250,6 +250,41 @@ jobs:
       - name: cargo audit
         run: scripts/check.sh audit
 
+  # Separate job: the license result depends only on the commit, while audit can fail on a
+  # new advisory. Only the license policy in deny.toml is checked; see docs/ci.md.
+  licenses:
+    name: cargo deny licenses
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The runner service may start without the rustup proxies on PATH, as on
+      # tasty's Linux runners.
+      - name: Setup PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # The toolchain in rust-toolchain.toml must already be on the runner; see
+      # docs/ci.md. Jobs do not install toolchains, targets, or packages.
+      - name: Show toolchain
+        run: |
+          if ! rustup show active-toolchain || ! cargo --version; then
+            echo "::error::The toolchain in rust-toolchain.toml is not installed on this runner; see docs/ci.md#what-the-runners-need"
+            exit 1
+          fi
+
+      - name: Install cargo-deny (runner tool cache)
+        run: |
+          dir=$(bash scripts/install-cargo-deny.sh)
+          if [ -z "$dir" ] || [ ! -x "$dir/cargo-deny" ]; then
+            echo "::error::install-cargo-deny.sh gave no runnable cargo-deny: '$dir'"
+            exit 1
+          fi
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: cargo deny check licenses
+        run: scripts/check.sh licenses
+
   build:
     name: build ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}

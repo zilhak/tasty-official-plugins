@@ -10,6 +10,7 @@
 #                                   as-is, e.g. --release, --profile dist,
 #                                   --target aarch64-pc-windows-msvc
 #   scripts/check.sh audit          cargo audit on Cargo.lock; needs cargo-audit, not in all
+#   scripts/check.sh licenses       cargo deny license policy (deny.toml); needs cargo-deny
 #   scripts/check.sh list-plugins   print the plugin crates to build, one per line
 #   scripts/check.sh list-bins      print the plugin crates that produce a binary
 #
@@ -66,6 +67,9 @@ cmd_test() {
   run cargo test --workspace --locked "$@"
 }
 cmd_audit() { run cargo audit --file Cargo.lock; }
+# Only the license check: advisories stay with cargo audit, and bans and sources are not
+# checked (see deny.toml). --workspace takes every member as a root.
+cmd_licenses() { run cargo deny --locked --workspace check licenses; }
 
 cmd_build() {
   local args=()
@@ -144,10 +148,11 @@ case "$sub" in
   test) cmd_test "$@" ;;
   build) cmd_build "$@" ;;
   audit) cmd_audit ;;
+  licenses) cmd_licenses ;;
   list-plugins) cmd_list_plugins ;;
   list-bins) cmd_list_bins ;;
   -h | --help | help)
-    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "unknown subcommand: $sub (see scripts/check.sh help)" >&2
