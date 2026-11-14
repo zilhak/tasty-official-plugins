@@ -657,15 +657,18 @@ NOTES=""
 note() { NOTES="$NOTES
 [plugin-version] note: $*"; }
 
-# The latest release tag reachable from main (or origin/main), or nothing.
+# The latest release tag reachable from origin/main, or nothing. A local main is used only
+# when origin/main does not exist: it is rarely updated, so an old local main would take an
+# older release as the baseline and pass versions that were already published.
 release_tag() {
-    local ref t
-    for ref in main origin/main; do
-        git rev-parse --verify --quiet "$ref^{commit}" >/dev/null || continue
-        t=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$ref" 2>/dev/null) || continue
-        [ -n "$t" ] && { printf '%s' "$t"; return 0; }
-    done
-    return 1
+    local ref=origin/main t
+    if ! git rev-parse --verify --quiet "$ref^{commit}" >/dev/null; then
+        ref=main
+        git rev-parse --verify --quiet "$ref^{commit}" >/dev/null || return 1
+    fi
+    t=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$ref" 2>/dev/null) || return 1
+    [ -n "$t" ] || return 1
+    printf '%s' "$t"
 }
 
 # Whether an external crate update (Cargo.lock only) needs a version bump of <plugin dir>.
