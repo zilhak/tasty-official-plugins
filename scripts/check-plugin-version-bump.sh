@@ -1778,6 +1778,15 @@ BEHIND=0
 CHANGED_CRATES=""
 while IFS= read -r f; do
     [ -z "$f" ] && continue
+    # A folder in SCAN_ROOT without a Cargo.toml on either side is no crate, so no plugin
+    # version would cover a change in it.
+    case "$f" in
+        "$SCAN_ROOT"/*/*)
+            c=${f#"$SCAN_ROOT"/}; c="$SCAN_ROOT/${c%%/*}"
+            exists_at "$BEFORE_REV:$c/Cargo.toml" || exists_at "$(after_ref "$c/Cargo.toml")" \
+                || die "$f is in $c, which has no Cargo.toml on either side, so it belongs to no crate and no plugin version covers it; judge the plugin versions by hand."
+            ;;
+    esac
     build_affecting "$f" || continue
     # Files directly in SCAN_ROOT are judged as archive inputs above.
     case "$f" in "$SCAN_ROOT"/*/*) ;; "$SCAN_ROOT"/*) continue ;; esac

@@ -3334,6 +3334,45 @@ fn a_gitattributes_directly_in_crates_flags_every_archived_plugin() {
     assert_only_alpha(&f.check(&HEAD_RANGE));
 }
 
+/// A folder in crates/ without a Cargo.toml on either side belongs to no crate, so a change
+/// in it stops the check instead of being dropped. A crate that is added has its Cargo.toml
+/// on the after side.
+#[test]
+fn a_change_in_a_crates_folder_that_is_no_crate_is_undecidable() {
+    let f = ArchiveFixture::new();
+    f.write("crates/shared/x.txt", "shared\n");
+    f.commit("add a shared folder");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "crates/shared/x.txt is in crates/shared, which has no Cargo.toml on either side",
+    );
+    f.write("crates/shared/x.txt", "shared 2\n");
+    f.commit("change the shared file");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "crates/shared/x.txt is in crates/shared",
+    );
+    f.write("crates/shared/x.txt", "shared 3\n");
+    f.git(&["add", "-A"]);
+    assert_undecidable_with(
+        &f.check(&["--staged"]),
+        "crates/shared/x.txt is in crates/shared",
+    );
+
+    let f = ArchiveFixture::new();
+    f.write(
+        "crates/tasty-plugin-alpha/lang/de.toml",
+        "hello = \"Hallo\"\n",
+    );
+    f.write(
+        "crates/tasty-plugin-gamma/Cargo.toml",
+        "[package]\nname = \"tasty-plugin-gamma\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    f.write("crates/tasty-plugin-gamma/src/lib.rs", "pub fn g() {}\n");
+    f.commit("add a lang file and a crate");
+    assert_only_alpha(&f.check(&HEAD_RANGE));
+}
+
 // ── Build settings: profiles, toolchain, cargo config ───────────────────────
 // PinFixture's root Cargo.toml has [profile.release] opt-level = 3 and [profile.dist]
 // inherits = "release", like this repository.
