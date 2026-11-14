@@ -364,11 +364,18 @@ would leave that range unchecked.
     `</dev/null`, `&>x`, with the target attached or next). Quoted text, text after an
     unquoted `#`, braces inside a word (`find ... -exec rm {} \;`), the words after a
     substitution that ends inside a word (`echo $(pwd) a\ b`), case patterns, and the
-    bodies of here-documents (`<<WORD`, `<<-WORD`, quoted words, several on one line; not
-    `<<<`) are not commands, so a comment, a string, or a here-document that mentions a
-    source does not stop the check; a here-document without its end word does. A quoted
-    target (`. "scripts/lib/x.sh"`) is read as its path. `release.yml` is no shell region
-    file and is not read this way.
+    bodies of here-documents (`<<WORD`, `<<-WORD`, quoted words, several on one line, and
+    `<<` attached anywhere in a word: `cat<<EOF`, `cmd>f<<EOF`; not `<<<`) are not
+    commands, so a comment, a string, or a here-document that mentions a source does not
+    stop the check; a here-document without its end word does, and so does a quote that
+    is still open at the end of the file (the message names the file and the line where it
+    opens). Arithmetic (`$(( ))`, `(( ))`, `for (( ))`) is not commands either: `<<` and
+    `<<=` in it are shifts, not here-documents, and its parentheses are counted, while a
+    `$( )` inside it is read as commands. Inside an unquoted `${ }` (`${x:-$(. x)}`), a
+    `$( )` and a backtick substitution are read as commands too; the rest of `${ }`
+    (`${#x}`, `${x%%*/}`, `${x:-a b}`) is one word. A quoted target
+    (`. "scripts/lib/x.sh"`) is read as its path. `release.yml` is no shell region file
+    and is not read this way.
   - a word in command position written with a backslash or with `$'...'` or `$"..."`
     quoting (`\. x`, `sou\rce x`, `$'.' x`). The check does not take such words apart;
     the message names the file and the line.
@@ -381,11 +388,13 @@ would leave that range unchecked.
     and a value, and only that structure is checked: an explicit key (`? uses`), a
     double-quoted key with a backslash escape (`"u\x73es"`), a merge key (`<<:`), a key
     or an item that starts with a tag (`!!str uses:`), an anchor (`&name`), an alias
-    (`*name`), or a flow collection, and a value that starts with one of these. A one-line
+    (`*name`), or a flow collection, and a value that starts with one of these. So is a
+    quote in the place of a key (at the start of a line or after `- `) that its line does
+    not close: a quoted key does not run over several lines in a workflow. A one-line
     flow sequence of plain words (`[self-hosted, Linux, X64]`, as in the runner lists of
     the matrix) cannot hold a key and passes. Text inside a scalar value (JSON in a `run:`
     line, `"a: *b"`, `*.sha256,*.txt`) is not read, nor are the body of a block scalar
-    (`run: |`, skipped by its indentation) and the rest of a quoted scalar over several
+    (`run: |`, skipped by its indentation) and the rest of a quoted value over several
     lines.
   - a change under `crates/<dir>/` where `<dir>` has no `Cargo.toml` on either side. Such
     a folder is no crate, so no plugin version would cover the change. A file directly in
@@ -399,7 +408,8 @@ would leave that range unchecked.
   the call needs a bump, but later changes of that file alone are not seen. Review adds
   such a file to the list. Today the only such call runs `scripts/check.sh`, which is
   listed. The same holds for a source inside a quoted command substitution
-  (`"$(. x.sh)"`), since quoted text is not read as commands.
+  (`"$(. x.sh)"`, also inside a quoted `"${x:-$(. x.sh)}"`), since quoted text is not read
+  as commands.
 - The list is read from both trees that are compared: the before rev, and the after rev or
   the index. Its blob and script lines count from either side, so a commit cannot drop an
   input from the list and change it at once. When the region lines of a path differ
