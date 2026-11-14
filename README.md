@@ -26,7 +26,9 @@ packages are not signed. See [docs/ci.md](docs/ci.md#releases).
 MIT. See [LICENSE](LICENSE). Each plugin archive includes a copy as `<id>/LICENSE`, next
 to the third-party notices: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and the
 license texts in [LICENSES/](LICENSES), and the markdown archive also holds
-`<id>/NOTICE.md`, the sources of its bundled assets.
+`<id>/NOTICE.md`, the sources of its bundled assets. A change of these files or of the
+packaging code changes every archive and needs a patch bump of every plugin, once per
+release.
 
 ## Pinned tasty commit
 
@@ -68,8 +70,10 @@ rev, if a plugin crate is not a local workspace crate, or if the plugin list in
 a plugin manifest version differs from its crate version, if `epaint` does not come from
 the patched copy at the pin or `Cargo.lock` records an unused patch, if a crate of the
 egui family locks other versions than the tasty `Cargo.lock` at the pin, if `egui` or
-`epaint` is not locked, and if a plugin's `PLUGIN_ID` constant differs from the id in its
-manifest or is missing.
+`epaint` is not locked, if a plugin's `PLUGIN_ID` constant differs from the id in its
+manifest or is missing, if a package without a source comes from a folder that is not a
+tracked part of this repository, and if the root `Cargo.toml` or the committed cargo
+config declares a path `[patch]` or a `paths` override.
 
 ### Cargo.lock
 
@@ -85,6 +89,8 @@ versions tasty locked then.
   version check enforces this.
 - A new crate or dependency should add only its own packages to `Cargo.lock`; check the
   diff.
+- A `[patch]` entry is judged by the source change it makes in `Cargo.lock`. A path patch
+  cannot be committed; use a local tasty copy with `scripts/dev-bundle.sh --tasty`.
 
 The lock is not what Cargo would resolve from scratch. `cargo metadata --locked` accepts
 it and `cargo update --workspace --dry-run` changes nothing, but Cargo reports more than
@@ -126,6 +132,8 @@ The build matches tasty's own plugin build:
 - Toolchain: Rust 1.96.0 (`rust-toolchain.toml`).
 - Profiles: `release` and `dist` are the same as in tasty.
 - Windows MSVC targets link the C runtime statically (`.cargo/config.toml`).
+- Changing the toolchain, the release profiles, or `.cargo/config.toml` bumps every plugin
+  (once per release).
 - `tiny_http` is patched to the copy tasty vendors, which `tasty-plugin-agent-stream` uses
   for its SSE server. Cargo applies `[patch]` only from the root workspace, so tasty's
   patch does not reach this repository, which sets the same one.

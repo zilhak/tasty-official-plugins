@@ -13,7 +13,7 @@ workflow.
 |---|---|---|
 | `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: clippy, unit tests, and the `plugin-guards` source checks on Windows x64 and macOS arm64, and on macOS also the `repo-gates` integration tests. `lint` job: shellcheck on every shell script and actionlint on every workflow. `audit` job: runs `cargo audit` on `Cargo.lock`. `licenses` job: checks the dependency licenses against `deny.toml` with cargo-deny. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
 | `.github/workflows/release.yml` | push of a `v*` tag; manual (`workflow_dispatch`) | On a tag, releases the plugins on a GitHub Release of this repository (see [Releases](#releases)). A manual run builds the same release files as workflow artifacts and creates no Release |
-| `.github/workflows/plugin-version-check.yml` | push to `develop`, `release`, or `main`, pull request to one of them, for changes outside Markdown and `docs/`; manual | Checks that each plugin whose build output changed raised its version (see [Plugin version check](#plugin-version-check)), then runs the `repo-gates` tests |
+| `.github/workflows/plugin-version-check.yml` | push to `develop`, `release`, or `main`, pull request to one of them, for changes outside Markdown and `docs/` (the notice files `THIRD_PARTY_LICENSES.md` and `LICENSES/` count); manual | Checks that each plugin whose build output changed raised its version (see [Plugin version check](#plugin-version-check)), then runs the `repo-gates` tests |
 
 The workflows use `permissions: contents: read` by default. In `release.yml`, only the
 `create-release` and `publish` jobs get `contents: write`. In `ci.yml`, a new run waits
@@ -276,10 +276,11 @@ each archive. Run the check locally with
 `plugin-version-check.yml` runs `scripts/check-plugin-version-bump.sh --range` on the two
 commits of the event: the pull request base and head, or the push before and after
 (`HEAD^` and `HEAD` for a manual run). It runs for every change except Markdown outside
-`src`, `lang`, and `assets`, and `docs/`. A newer pull request run cancels the older one
-on the same ref. Push runs and manual runs are neither cancelled nor replaced: each run
-has a concurrency group of its own (its run id), because each one checks only its own
-before..after range and a cancelled or replaced run would leave that range unchecked.
+`src`, `lang`, `assets`, `THIRD_PARTY_LICENSES.md`, and `LICENSES/`, and `docs/`. A newer
+pull request run cancels the older one on the same ref. Push runs and manual runs are
+neither cancelled nor replaced: each run has a concurrency group of its own (its run id),
+because each one checks only its own before..after range and a cancelled or replaced run
+would leave that range unchecked.
 
 - `cargo fetch --locked` comes first, so `cargo tree --offline` works on a runner without
   a warm cache.
@@ -299,12 +300,54 @@ before..after range and a cancelled or replaced run would leave that range unche
   `origin/main`). `main` moves only for releases and hotfixes, so its tip is the published
   state, and tags are not read. A local check uses the `origin/main` the clone last
   fetched: if it was not fetched after a release, the baseline is older and a second
-  update can pass locally; the CI checkout fetches it on every run. `[profile.*]`,
-  `.cargo/config.toml`, and `rust-toolchain.toml` pass with a note; `[workspace]` and
+  update can pass locally; the CI checkout fetches it on every run. `[workspace]` and
   unknown sections are undecidable, and so is a changed `[workspace.dependencies]` line
   that cannot be read or that no package in `Cargo.lock` answers to. A root `Cargo.toml`
   with a multi-line string (`"""` or `'''`) or with unbalanced brackets is undecidable as
   a whole.
+- Build settings change every plugin binary, so a change asks every plugin with a
+  `tasty-plugin.toml` for a bump, once per release (the rule of a `Cargo.lock` update):
+  a `[profile.*]` table in the inheritance chain of the release profile `dist` (now
+  `dist` → `release`), `.cargo/config.toml` or `.cargo/config` and the files they
+  include, and `rust-toolchain.toml`. The chain is followed on both sides through
+  `inherits`, over the root `Cargo.toml` and the cargo config, which wins. A profile
+  outside the chain (`dev`, `test`), a cargo config change only in `[alias]`, `[term]`,
+  `[net]`, or `[http]`, and a toolchain change only in `components` or `profile` pass
+  with a note. A chain that cannot be followed (`dist` missing, a user profile without
+  `inherits`, a cycle, a profile that cannot be read) and an include outside the
+  repository or with a glob are undecidable. The gate, `release.yml`, and
+  `scripts/package-plugin.sh` name the same release profile; a `repo-gates` test checks
+  it.
+- Archive inputs outside the crates, listed in `scripts/lib/archive-inputs.txt`, also ask
+  every plugin with an archive for a bump, once per release: the notice set (`LICENSE`,
+  `THIRD_PARTY_LICENSES.md`, every file in `LICENSES/`), `.gitattributes`, and the
+  packaging code (`scripts/package-plugin.sh`, `scripts/lib/notice-set.sh`,
+  `scripts/lib/plugin-build.sh`, the build and list-bins parts of `scripts/check.sh`, and
+  the `package` job of `release.yml` with the top-level `env` and `defaults` it
+  inherits). The notice set and `.gitattributes` are compared by path, file mode, and
+  blob, so a move, a mode change, or a file that becomes a link counts. The scripts are
+  compared without whole-line comments and blank lines, so a comment change needs no
+  bump, while a comment after code still counts. A region of `check.sh` or `release.yml`
+  that cannot be found is undecidable. In a crate, `lang/`, `assets/NOTICE.md`, and
+  `.gitattributes` files are compared by mode and blob, so a final newline counts, and
+  the mode of `tasty-plugin.toml` counts too. The archive bytes are not compared: tar
+  keeps file times, so the same content packs differently every time.
+- A `[patch]` entry of the root `Cargo.toml` is judged by the change it makes in
+  `Cargo.lock`: a new or moved git source needs a bump of each plugin that links the
+  crate on every commit, and a move to crates.io once per release, as above. When the
+  lock rows of the patched package stay the same, no bump is needed. A patched package in
+  no lock, two git sources of one package name, and a `[patch]` spelling other than
+  `[patch.<source>]` entries, dotted keys, or `[patch.<source>.<name>]` tables are
+  undecidable.
+- A path `[patch]` in the root `Cargo.toml` or in the repository cargo config (and what it
+  includes), and a `paths` override, are undecidable on every check, not only when they
+  change: a clean clone and CI do not have the folder. Use git with the pinned rev, or
+  `scripts/dev-bundle.sh --tasty`, which passes a local tasty copy with `cargo --config`
+  in a copy of the repository. Two `pin` tests in `crates/plugin-pin-check/tests/pin.rs`
+  reject the same: `no_path_patch_in_the_committed_cargo_config` reads the declarations,
+  and `no_path_sources_outside_the_repository` fails on any package without a source whose
+  manifest is not a tracked file of this repository. They run in the `check` job of
+  `ci.yml` (`scripts/check.sh test`) on every push and pull request.
 - A plugin's dependency closure is its normal and build dependencies for all targets
   (`cargo tree --target all`), so a crate that only Windows or macOS links counts on the
   Linux runner too. Every judgement that reads a closure (a change in a path dependency
@@ -316,7 +359,8 @@ before..after range and a cancelled or replaced run would leave that range unche
 ## Static C runtime on Windows
 
 `.cargo/config.toml` adds `-C target-feature=+crt-static` for both Windows MSVC targets,
-so the plugins run without the VC++ Redistributable. On Windows, the CI build job
+so the plugins run without the VC++ Redistributable. Changing the file bumps every plugin
+(see [Plugin version check](#plugin-version-check)). On Windows, the CI build job
 collects the executables from cargo's `compiler-artifact` messages and runs
 `dumpbin /dependents` on each one. The job fails if any executable imports
 `vcruntime*.dll`, `msvcp*.dll`, or `api-ms-win-crt-*.dll`.

@@ -16,6 +16,7 @@
 - 플러그인 빌드 결과가 바뀌면 그 플러그인의 패치 버전을 하나 올린다. 크레이트 `Cargo.toml`과 `tasty-plugin.toml`의 `version`은 같이 움직인다.
 - 기준 tasty 커밋을 옮기면 바뀐 tasty 크레이트가 의존 폐포에 든 플러그인을 올린다. 이때 바뀐 crates.io 항목은 다음 항목을 따른다.
 - `Cargo.lock`의 crates.io 크레이트가 바뀌어도 그 크레이트가 의존 폐포에 든 플러그인의 패치 버전을 올린다. 한 릴리스 안의 여러 lock 변경은 한 번만 올린다.
+- 아카이브 내용(루트 고지 세트, `.gitattributes`, 아카이브를 정하는 패키징 코드)과 빌드 설정(릴리스 프로필 `dist`의 상속 사슬에 든 `[profile.*]`, `rust-toolchain.toml`, `.cargo/config.toml`)이 바뀌면 아카이브가 있는 플러그인 전부를 올리고, 한 릴리스 안에서는 한 번만 올린다. 루트 `[patch]` 항목 변경은 `Cargo.lock`에 보이는 원천 변경으로 판정한다(lock이 같으면 올리지 않는다). path `[patch]`는 커밋하지 않는다.
 - 검사는 `scripts/check-plugin-version-bump.sh`(git 훅)와 `.github/workflows/plugin-version-check.yml`이 한다. 자세한 규칙은 [docs/branching.md](docs/branching.md)와 [docs/ci.md](docs/ci.md#plugin-version-check)에 있다.
 
 ## Git 규칙

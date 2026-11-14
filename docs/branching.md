@@ -99,7 +99,12 @@ commits. A clone without the hooks can push a merge commit outside this table, s
 - Each plugin's patch version goes up in the commit that changes its build output,
   including a pin move that changes a tasty crate in its dependency closure and an update
   of a crates.io crate in that closure (one bump per release covers several such updates:
-  a plugin already above its version at the tip of `origin/main` needs no other bump);
+  a plugin already above its version at the tip of `origin/main` needs no other bump).
+  Every plugin with an archive goes up, once per release in the same way, when an archive
+  input outside the crates changes (the notice set, `.gitattributes`, the packaging code)
+  or a build setting does (a profile in the chain of the release profile `dist`,
+  `rust-toolchain.toml`, the repository cargo config). A `[patch]` entry is judged by
+  what it changes in `Cargo.lock`;
   the `pre-commit` hook and the Plugin version check workflow check this. Lane worktrees
   may defer it with `git config --worktree tasty.pluginBump deferred`; the merge step runs
   `scripts/plugin-bump-fixup.sh` per commit and checks each commit again. The loop stops
