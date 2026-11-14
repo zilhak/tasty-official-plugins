@@ -2186,6 +2186,15 @@ run() {
   "$@"
 }
 
+cmd_fmt() { run cargo fmt --all --check; }
+cmd_test() {
+  local a
+  for a in "$@"; do
+    echo "$a"
+  done
+  run cargo test "$@"
+}
+
 cmd_list_bins() {
   echo tasty-plugin-alpha
   echo tasty-plugin-beta
@@ -2199,6 +2208,13 @@ cmd_audit() { run cargo audit; }
 
 sub="${1:-all}"
 case "$sub" in
+  all)
+    cmd_fmt
+    cmd_test
+    cmd_build "$@"
+    ;;
+  fmt) cmd_fmt ;;
+  test) cmd_test "$@" ;;
   build) cmd_build "$@" ;;
   list-bins) cmd_list_bins ;;
   audit) cmd_audit ;;
@@ -2444,7 +2460,7 @@ fn a_code_change_in_a_packaging_script_flags_every_archived_plugin() {
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/package-plugin.sh");
 }
 
-/// Archive case 7.
+/// Archive case 7: check.sh is compared without the parts the list leaves out.
 #[test]
 fn a_check_sh_change_outside_the_build_blocks_needs_no_bump() {
     let f = ArchiveFixture::new();
@@ -2505,16 +2521,21 @@ fn a_release_workflow_package_job_change_flags_every_archived_plugin() {
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
 }
 
-/// Archive case 10.
+/// Archive case 10. check.sh has no regions any more: a renamed function there is a change.
 #[test]
 fn a_missing_region_marker_is_undecidable() {
     let f = ArchiveFixture::new();
-    f.edit("scripts/check.sh", "cmd_build() {\n", "build_all() {\n");
-    f.commit("rename cmd_build");
+    f.edit(".github/workflows/release.yml", "  package:\n", "  pack:\n");
+    f.commit("rename the package job");
     let (code, text) = f.check(&HEAD_RANGE);
     assert_eq!(code, 2, "{text}");
-    assert!(text.contains("scripts/check.sh"), "{text}");
-    assert!(text.contains("cannot find the line ^cmd_build"), "{text}");
+    assert!(text.contains(".github/workflows/release.yml"), "{text}");
+    assert!(text.contains("cannot find the line ^  package:"), "{text}");
+
+    let f = ArchiveFixture::new();
+    f.edit("scripts/check.sh", "cmd_build() {\n", "build_all() {\n");
+    f.commit("rename cmd_build");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
 }
 
 /// Archive case 11: like a lock update, one bump per release covers the archive inputs.
@@ -2694,20 +2715,26 @@ fn a_release_workflow_top_level_env_change_flags_every_archived_plugin() {
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
 }
 
-/// Archive case 22: a die inside the region reader ends the check, not only a subshell.
+/// Archive case 22: a die inside the reader of a left-out function ends the check, not only
+/// a subshell. A function that is not closed before the next definition is not closed, so
+/// the reader does not take the closing brace of the next function (cmd_list_bins, which has
+/// several lines) and leave it out with it.
 #[test]
 fn a_missing_closing_marker_is_undecidable() {
     let f = ArchiveFixture::new();
     f.edit(
         "scripts/check.sh",
-        "  run cargo build --locked \"$@\"\n}\n",
-        "  run cargo build --locked \"$@\"\n",
+        "  run cargo test \"$@\"\n}\n",
+        "  run cargo test \"$@\"\n",
     );
-    f.commit("drop the closing brace of cmd_build");
+    f.commit("drop the closing brace of cmd_test");
     let (code, text) = f.check(&HEAD_RANGE);
     assert_eq!(code, 2, "{text}");
-    assert!(text.contains("is not closed"), "{text}");
-    assert!(text.contains("^cmd_build"), "{text}");
+    assert!(
+        text.contains("the function cmd_test is not closed before line"),
+        "{text}"
+    );
+    assert!(text.contains("scripts/check.sh"), "{text}");
 }
 
 /// Archive case 23: a .gitattributes in a crate changes how its shipped files check out.
@@ -2724,6 +2751,206 @@ fn a_crate_gitattributes_change_flags_its_plugin() {
     f.write("crates/tasty-plugin-alpha/.gitattributes", "* -text\n");
     f.commit("check out alpha as binary");
     assert_only_alpha(&f.check(&HEAD_RANGE));
+}
+
+/// Changes like the ones that added the license check and the hook warning to check.sh
+/// leave out functions and branches that do not build or pack, so they need no bump. A new
+/// cmd_* function is compared, which is deliberate.
+#[test]
+fn check_sh_changes_like_the_license_and_hook_lanes_need_no_bump() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/check.sh",
+        "cmd_audit() { run cargo audit; }\n",
+        "cmd_audit() { run cargo audit; }\n# Only the license check.\n\
+         cmd_licenses() { run cargo deny --locked --workspace check licenses; }\n",
+    );
+    f.edit(
+        "scripts/check.sh",
+        "  audit) cmd_audit ;;\n",
+        "  audit) cmd_audit ;;\n  licenses) cmd_licenses ;;\n",
+    );
+    f.commit("add the license check");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+
+    f.edit(
+        "scripts/check.sh",
+        "sub=\"${1:-all}\"\n",
+        "# Warns when the hooks do not run.\nwarn_hooks() {\n  local hp\n  \
+         hp=$(git config --path --get core.hooksPath 2>/dev/null) || hp=\"\"\n  \
+         if [[ -z \"$hp\" ]]; then\n    echo \"warning: no hooks\" >&2\n  fi\n  return 0\n}\n\n\
+         sub=\"${1:-all}\"\n\ncase \"$sub\" in\n  # Never stops the run.\n  \
+         all | fmt | test | build) warn_hooks || true ;;\nesac\n",
+    );
+    f.commit("warn when the hooks do not run");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+
+    f.edit(
+        "scripts/check.sh",
+        "fmt --all --check",
+        "fmt --all --check --verbose",
+    );
+    f.edit(
+        "scripts/check.sh",
+        "    echo \"$a\"\n",
+        "    echo \"arg: $a\"\n",
+    );
+    f.edit(
+        "scripts/check.sh",
+        "warning: no hooks",
+        "warning: the hooks do not run",
+    );
+    f.commit("change the left-out functions");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+
+    f.edit(
+        "scripts/check.sh",
+        "cmd_audit() { run cargo audit; }\n",
+        "cmd_audit() { run cargo audit; }\ncmd_doc() { run cargo doc; }\n",
+    );
+    f.commit("add a doc subcommand");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
+}
+
+/// What runs for check.sh build outside the named functions counts: top-level statements and
+/// a change of an array outside its declaration.
+#[test]
+fn a_top_level_check_sh_change_flags_every_archived_plugin() {
+    for (what, from, to) in [
+        (
+            "export RUSTFLAGS",
+            "set -euo pipefail\n",
+            "set -euo pipefail\nexport RUSTFLAGS=\"-C debuginfo=2\"\n",
+        ),
+        (
+            "PLUGINS+=",
+            "run() {\n",
+            "PLUGINS+=(tasty-plugin-extra)\nrun() {\n",
+        ),
+    ] {
+        let f = ArchiveFixture::new();
+        f.edit("scripts/check.sh", from, to);
+        f.commit(what);
+        assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
+    }
+}
+
+/// A second definition replaces the first, so a left-out or a compared function defined twice
+/// stops the check, also on a later commit that does not touch check.sh.
+#[test]
+fn a_function_defined_twice_in_check_sh_is_undecidable() {
+    for (name, def) in [
+        (
+            "cmd_build",
+            "cmd_build() { run cargo build --locked -p tasty-plugin-alpha \"$@\"; }\n",
+        ),
+        ("cmd_fmt", "cmd_fmt() { run cargo build --locked; }\n"),
+    ] {
+        let f = ArchiveFixture::new();
+        f.edit(
+            "scripts/check.sh",
+            "cmd_audit() { run cargo audit; }\n",
+            &format!("cmd_audit() {{ run cargo audit; }}\n{def}"),
+        );
+        f.commit("define a function again");
+        let r = f.check(&HEAD_RANGE);
+        assert_undecidable_with(&r, "scripts/check.sh defines a function twice");
+        assert!(r.1.contains(&format!("{name} on lines ")), "{}", r.1);
+        f.write("NOTES.txt", "notes\n");
+        f.commit("an unrelated change");
+        assert_undecidable_with(&f.check(&HEAD_RANGE), "defines a function twice");
+    }
+}
+
+/// A one-line left-out function that carries more code on its line is not left out quietly.
+#[test]
+fn a_left_out_definition_with_more_code_on_its_line_is_undecidable() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/check.sh",
+        "cmd_fmt() { run cargo fmt --all --check; }\n",
+        "cmd_fmt() { run cargo fmt --all --check; }; export RUSTFLAGS=\"-C opt-level=0\"\n",
+    );
+    f.commit("hide a statement after cmd_fmt");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "cannot read the definition of cmd_fmt on line",
+    );
+}
+
+/// A sourced file must be in the list, by a path written out, so its later changes are
+/// judged. The check runs on every commit.
+#[test]
+fn a_source_outside_the_list_is_undecidable() {
+    let f = ArchiveFixture::new();
+    f.write(
+        "scripts/lib/extra.sh",
+        "export CARGO_PROFILE_DIST_OPT_LEVEL=0\n",
+    );
+    f.edit(
+        "scripts/lib/notice-set.sh",
+        "# The notice set.\n",
+        "# The notice set.\n. scripts/lib/extra.sh\n",
+    );
+    f.commit("source a helper");
+    let r = f.check(&HEAD_RANGE);
+    assert_undecidable_with(
+        &r,
+        "scripts/lib/notice-set.sh line 2 sources scripts/lib/extra.sh",
+    );
+    assert!(r.1.contains("does not list"), "{}", r.1);
+    f.write(
+        "scripts/lib/extra.sh",
+        "export CARGO_PROFILE_DIST_OPT_LEVEL=1\n",
+    );
+    f.commit("change the helper alone");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "sources scripts/lib/extra.sh");
+
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/package-plugin.sh",
+        "stage() {\n",
+        "if true; then source \"$(dirname \"$0\")/lib/x.sh\"; fi\nstage() {\n",
+    );
+    f.commit("source by a computed path");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "whose path is not written out");
+
+    // A listed file may be sourced; the change itself is judged as usual.
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/package-plugin.sh",
+        "stage() {\n",
+        ". ./scripts/lib/notice-set.sh\nstage() {\n",
+    );
+    f.commit("source the notice set");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/package-plugin.sh");
+}
+
+/// The package job must not hand the build to a local action or workflow, whose content the
+/// list does not judge. Another job may.
+#[test]
+fn a_local_action_in_the_package_job_is_undecidable() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        ".github/workflows/release.yml",
+        "      - run: bash scripts/package-plugin.sh stage --all --profile dist\n",
+        "      - run: bash scripts/package-plugin.sh stage --all --profile dist\n      \
+         - uses: ./.github/actions/pack\n",
+    );
+    f.commit("pack with a local action");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "uses a local action or workflow (./)",
+    );
+
+    let f = ArchiveFixture::new();
+    f.edit(
+        ".github/workflows/release.yml",
+        "      - run: echo publish\n",
+        "      - run: echo publish\n      - uses: './.github/actions/notify'\n",
+    );
+    f.commit("notify with a local action");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
 }
 
 /// The list is read from both judged trees: a commit that drops an input from the list and
@@ -2759,8 +2986,8 @@ fn dropping_an_input_from_the_list_does_not_hide_its_change() {
     assert_nothing_to_judge(&f.check(&["--staged"]));
 }
 
-/// The region lines of a path that differ between the two lists count as a change of that
-/// path, also when the file itself did not change.
+/// The region or except lines of a path that differ between the two lists count as a change
+/// of that path, also when the file itself did not change.
 #[test]
 fn a_changed_region_line_counts_as_a_change_of_its_file() {
     let f = ArchiveFixture::new();
@@ -2776,6 +3003,14 @@ fn a_changed_region_line_counts_as_a_change_of_its_file() {
     );
     f.commit("look at another job");
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
+
+    f.edit(
+        ARCHIVE_LIST,
+        "except\tscripts/check.sh\tfunction\tcmd_audit\n",
+        "except\tscripts/check.sh\tfunction\tcmd_audit\nexcept\tscripts/check.sh\tfunction\tcmd_build\n",
+    );
+    f.commit("leave cmd_build out");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
 }
 
 /// A side without the list uses the list of the other side; without a list on either side
