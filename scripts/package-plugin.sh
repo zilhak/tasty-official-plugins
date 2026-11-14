@@ -12,8 +12,9 @@
 #
 # stage   Builds with `scripts/check.sh build` (profile dist by default) and copies
 #         each plugin into DIR/NAME/stage/<id>/: the executable, tasty-plugin.toml,
-#         and lang/. Plugins whose manifest says `bundle = false` are skipped
-#         unless --all is given, as in tasty's own packaging scripts.
+#         lang/, and the repository LICENSE. Plugins whose manifest says
+#         `bundle = false` are skipped unless --all is given, as in tasty's own
+#         packaging scripts.
 # pack    Writes DIR/NAME/dist/<id>-<version>-NAME.tar.gz for each staged plugin,
 #         then DIR/NAME/dist/SHA256SUMS-NAME.txt (sha256sum format) and
 #         DIR/NAME/dist/plugins-NAME.tsv (id, version, platform, file, sha256).
@@ -35,7 +36,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
@@ -147,6 +148,7 @@ for line in sys.stdin:
     mkdir -p "$STAGE_DIR/$id"
     cp "$exe" "$STAGE_DIR/$id/"
     cp "$manifest" "$STAGE_DIR/$id/tasty-plugin.toml"
+    cp LICENSE "$STAGE_DIR/$id/LICENSE"
     if [[ -d "$src/lang" ]]; then
       cp -R "$src/lang" "$STAGE_DIR/$id/lang"
     fi
