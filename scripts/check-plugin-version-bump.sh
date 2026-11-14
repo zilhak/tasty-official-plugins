@@ -85,12 +85,16 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Caches the normal/build dependency list. Called without command substitution so that die
 # ends the main shell. Empty or failed results are not cached, and Cargo's stderr is shown.
+# --target all: the plugins ship for several platforms, so a crate that only one platform
+# links (cfg(windows), cfg(target_os = "macos")) is part of the closure too. Every closure
+# below (plugin content, pin moves, root inputs, skipping crates outside the plugins) comes
+# from here.
 closure_of() {
     local pname="$1" cache="$WORK/closure.$1"
     CLOSURE_FILE="$cache"
     CLOSURE_PATHS="$cache.paths"
     [ -f "$cache" ] && return 0
-    if ! cargo tree -p "$pname" -e normal,build --prefix none --offline 2>"$cache.err" \
+    if ! cargo tree -p "$pname" -e normal,build --target all --prefix none --offline 2>"$cache.err" \
         > "$cache.raw"; then
         die "cargo tree failed ($pname). cargo's stderr:
 $(cat "$cache.err")"

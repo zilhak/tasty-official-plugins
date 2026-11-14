@@ -2101,3 +2101,31 @@ fn an_entry_used_only_outside_the_plugins_passes_in_a_large_lock() {
     assert_eq!(code, 0, "{text}");
     assert!(text.contains("nothing to judge"), "{text}");
 }
+
+/// The plugins ship for several platforms, so a crate that only Windows links is in the
+/// closure on any host: its lock update needs a bump of the plugin that links it.
+#[test]
+fn a_lock_update_of_a_platform_only_crate_flags_its_plugin() {
+    let f = ExtFixture::new();
+    f.stock("winx", "1.0.0");
+    write(
+        &f.repo,
+        "crates/tasty-plugin-gamma/Cargo.toml",
+        "[package]\nname = \"tasty-plugin-gamma\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
+         [target.'cfg(windows)'.dependencies]\nwinx = \"1\"\n",
+    );
+    f.cargo(&["metadata", "--offline", "--format-version", "1"]);
+    f.bump("gamma", "0.1.1");
+    commit_all(&f.repo, "gamma links winx on Windows");
+    f.update("winx", "1.0.1");
+    commit_all(&f.repo, "update winx");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-gamma: shipped content changed"),
+        "{text}"
+    );
+    assert!(text.contains("winx 1.0.0 → 1.0.1 (Cargo.lock)"), "{text}");
+    assert!(!text.contains("crates/tasty-plugin-alpha:"), "{text}");
+}

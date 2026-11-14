@@ -159,6 +159,9 @@ before..after range and a cancelled run would leave that range unchecked.
   a note; `[workspace]` and unknown sections are undecidable, and so is a changed
   `[workspace.dependencies]` line that cannot be read or that no package in `Cargo.lock`
   answers to.
+- A plugin's dependency closure is its normal and build dependencies for all targets
+  (`cargo tree --target all`), so a crate that only Windows or macOS links counts on the
+  Linux runner too.
 
 ## Static C runtime on Windows
 
