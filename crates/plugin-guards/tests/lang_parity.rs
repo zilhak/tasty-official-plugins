@@ -826,12 +826,21 @@ fn brace_counts(line: &str) -> (i32, i32) {
     (opens, closes)
 }
 
-/// The translation entry points that take a key as their first argument. The functions are
-/// declared in tasty-i18n and the plugin SDK, which this repository reads as a pinned
-/// dependency, so the list is written out here; the floor below shows that plugin sources
-/// still call them.
-const TRANSLATION_ENTRY_POINTS: &[&str] =
-    &["t", "t_args", "t_fmt", "t_fmt2", "t_fmt_fit", "t_replace"];
+/// The translation entry points that take a key as their first argument. They are the
+/// `pub fn` named `t` or starting with `t_` in crates/tasty-i18n/src/lib.rs and
+/// crates/tasty-plugin-sdk/src/i18n.rs at the pinned tasty commit: 8 names, read on
+/// 2026-11-14. This repository reads those crates as a pinned dependency, so the list is
+/// written out here; the floor below shows that plugin sources still call them.
+const TRANSLATION_ENTRY_POINTS: &[&str] = &[
+    "t",
+    "t_args",
+    "t_count",
+    "t_count_template",
+    "t_fmt",
+    "t_fmt2",
+    "t_fmt_fit",
+    "t_replace",
+];
 
 /// Call prefixes, longest first, so that `t_fmt2(` is not read as `t_fmt(`.
 fn translation_call_prefixes() -> Vec<String> {
@@ -899,7 +908,7 @@ fn a_key_wrapped_to_the_next_line_is_still_seen() {
     );
 }
 
-/// Literal key calls in the shipping plugin sources: 332 measured on 2026-11-14 at 50b6411.
+/// Literal key calls in the shipping plugin sources: 335 measured on 2026-11-14 at e09f14d.
 /// The floor shows that the fixed entry point list still matches what the plugins call.
 const MIN_LITERAL_KEY_CALLS: usize = 250;
 
