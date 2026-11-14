@@ -78,14 +78,16 @@ Merge commits are made only in these cases:
 | `release` | `develop` | promotion |
 | `main` | `release` | promotion |
 
-The `pre-merge-commit` and `pre-commit` hooks enforce this table (install with
-`bash scripts/dev-setup.sh`).
+The `pre-merge-commit` and `pre-commit` hooks enforce this table. Install them with
+`bash scripts/dev-setup.sh`, which sets `core.hooksPath` to `.githooks` and then runs
+`cargo fetch --locked` for the plugin version check.
 
 ## What differs from tasty
 
-- The repository version in `VERSION` names the release and its tag only. Each plugin
-  keeps its own version, the `version` in its crate's `Cargo.toml` and
-  `tasty-plugin.toml`, and a release does not change it.
+- Releases are tagged with the repository's own semver, `v` + `VERSION`, starting at
+  `v0.1.0`. The repository version in `VERSION` names the release and its tag only.
+  Each plugin keeps its own version, the `version` in its crate's `Cargo.toml` and
+  `tasty-plugin.toml`, which move in lockstep, and a release does not change it.
 - Each plugin's patch version goes up in the commit that changes its build output,
   including a pin move that changes a tasty crate in its dependency closure and an update
   of a crates.io crate in that closure (one bump per release covers several such updates:
@@ -99,6 +101,10 @@ The `pre-merge-commit` and `pre-commit` hooks enforce this table (install with
   git rebase --exec 'bash scripts/plugin-bump-fixup.sh' <base>
   for c in $(git rev-list --reverse <base>..HEAD); do bash scripts/check-plugin-version-bump.sh --range "$c^" "$c" || exit 1; done
   ```
+- The git hooks are in `.githooks/`, as in tasty, with fewer checks: `pre-commit` checks
+  merge commits, formatting, and plugin versions, `pre-merge-commit` blocks merge commits
+  outside the table above, and `pre-push` compares the plugin versions of the commits to
+  push with what the remote already has.
 - A manual run of `release.yml` builds the release files as workflow artifacts with the
   tag `unreleased` in `release-meta.toml` and creates no Release.
 
