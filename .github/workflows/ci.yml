@@ -148,7 +148,8 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           command -v bash
-          bash --version | head -n 1
+          # sed reads all of its input; head could exit while bash still writes.
+          bash --version | sed -n 1p
 
       # The toolchain in rust-toolchain.toml must already be on the runner; see
       # docs/ci.md. Jobs do not install toolchains, targets, or packages.
@@ -267,7 +268,8 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           command -v bash
-          bash --version | head -n 1
+          # sed reads all of its input; head could exit while bash still writes.
+          bash --version | sed -n 1p
 
       # The runner service may start without the rustup proxies on PATH, as on
       # tasty's Linux runners.
@@ -287,7 +289,10 @@ jobs:
       # windows-arm64 is cross-built on an x64 Windows host, as in tasty.
       - name: Check target
         run: |
-          rustup target list --installed | tr -d '\r' | grep -qx '${{ matrix.target }}' || {
+          # Read first, then grep: with pipefail, grep -q ending early can make the
+          # listing die of SIGPIPE and turn a match into a failure.
+          targets=$(rustup target list --installed | tr -d '\r')
+          grep -qx '${{ matrix.target }}' <<<"$targets" || {
             echo "::error::Rust target ${{ matrix.target }} is not installed on this runner; see docs/ci.md"
             exit 1
           }

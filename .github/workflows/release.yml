@@ -224,7 +224,8 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           command -v bash
-          bash --version | head -n 1
+          # sed reads all of its input; head could exit while bash still writes.
+          bash --version | sed -n 1p
 
       # The runner service may start without the rustup proxies on PATH, as on
       # tasty's Linux runners.
