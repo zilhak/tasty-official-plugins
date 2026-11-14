@@ -51,7 +51,8 @@ To move the pin:
    because the egui-mesh wire passes their types as raw bytes. A pin test checks this.
 3. Update the sha in this README and run `scripts/check.sh`.
 4. Bump the patch version of each plugin whose dependency closure holds a tasty crate
-   that changed between the two commits, and only those. The version check reports them
+   that changed between the two commits, or a crates.io package whose `Cargo.lock` entry
+   the move changed. The version check reports them
    (`bash scripts/check-plugin-version-bump.sh --staged`).
 
 If Cargo reports `patch location ... does not contain packages matching epaint`, tasty
