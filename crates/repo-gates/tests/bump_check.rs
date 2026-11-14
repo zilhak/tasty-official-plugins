@@ -994,3 +994,404 @@ fn no_mode_argument_is_undecidable_not_a_pass() {
     );
     assert!(text.contains("--staged or --range"), "{text}");
 }
+
+// ── tasty pin moves ──────────────────────────────────────────────────────────
+// A synthetic "tasty" repository is a git dependency through a file:// URL. CARGO_HOME is a
+// temporary directory, so the user's cache is not touched, and the gate reads the commits from
+// the cargo git database that `cargo metadata` fills.
+
+/// - tasty-a: used by alpha, reads themes/x.toml inside its crate.
+/// - tasty-b: used by beta.
+/// - tasty-i18n: used by alpha, reads lang/en.toml at the tasty root (listed in
+///   scripts/lib/tasty-extra-inputs.txt).
+struct PinFixture {
+    _tmp: tempfile::TempDir,
+    tasty: std::path::PathBuf,
+    repo: std::path::PathBuf,
+    cargo_home: std::path::PathBuf,
+}
+
+fn real_cargo() -> String {
+    std::env::var("CARGO").unwrap_or_else(|_| "cargo".into())
+}
+
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = git_env::command("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("run git {args:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+const TASTY_A_LIB: &str = "pub const THEME: &str = include_str!(\"../themes/x.toml\");\n\
+pub fn a() -> u32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::a(), 1);\n    }\n}\n";
+
+impl PinFixture {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let tasty = tmp.path().join("tasty");
+        let repo = tmp.path().join("plugins");
+        let cargo_home = tmp.path().join("cargo-home");
+        fs::create_dir_all(&tasty).expect("tasty dir");
+        fs::create_dir_all(&repo).expect("plugins dir");
+        fs::create_dir_all(&cargo_home).expect("cargo home");
+
+        init_repo(&tasty);
+        write(
+            &tasty,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n",
+        );
+        for c in ["tasty-a", "tasty-b", "tasty-i18n"] {
+            write(
+                &tasty,
+                &format!("crates/{c}/Cargo.toml"),
+                &format!("[package]\nname = \"{c}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+            );
+        }
+        write(&tasty, "crates/tasty-a/src/lib.rs", TASTY_A_LIB);
+        write(&tasty, "crates/tasty-a/themes/x.toml", "accent = 1\n");
+        write(
+            &tasty,
+            "crates/tasty-b/src/lib.rs",
+            "pub fn b() -> u32 {\n    2\n}\n",
+        );
+        write(
+            &tasty,
+            "crates/tasty-i18n/src/lib.rs",
+            "pub const EN: &str = include_str!(\"../../../lang/en.toml\");\n",
+        );
+        write(&tasty, "lang/en.toml", "hello = \"Hello\"\n");
+        commit_all(&tasty, "tasty seed");
+        let t1 = git_out(&tasty, &["rev-parse", "HEAD"]);
+
+        init_repo(&repo);
+        write(&repo, ".gitignore", "target\n");
+        let url = format!("file://{}", tasty.display());
+        write(
+            &repo,
+            "Cargo.toml",
+            &format!(
+                "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n\n\
+                 [workspace.dependencies]\n\
+                 tasty-a = {{ git = \"{url}\", rev = \"{t1}\" }}\n\
+                 tasty-b = {{ git = \"{url}\", rev = \"{t1}\" }}\n\
+                 tasty-i18n = {{ git = \"{url}\", rev = \"{t1}\" }}\n\n\
+                 [profile.release]\nopt-level = 3\n"
+            ),
+        );
+        for (p, deps) in [
+            (
+                "alpha",
+                "tasty-a.workspace = true\ntasty-i18n.workspace = true\n",
+            ),
+            ("beta", "tasty-b.workspace = true\n"),
+        ] {
+            write(
+                &repo,
+                &format!("crates/tasty-plugin-{p}/Cargo.toml"),
+                &format!(
+                    "[package]\nname = \"tasty-plugin-{p}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
+                     [dependencies]\n{deps}"
+                ),
+            );
+            write(
+                &repo,
+                &format!("crates/tasty-plugin-{p}/tasty-plugin.toml"),
+                &format!("id = \"com.tasty.{p}\"\nversion = \"0.1.0\"\n"),
+            );
+            write(
+                &repo,
+                &format!("crates/tasty-plugin-{p}/src/main.rs"),
+                "fn main() {}\n",
+            );
+        }
+        let f = Self {
+            _tmp: tmp,
+            tasty,
+            repo,
+            cargo_home,
+        };
+        f.cargo(&["generate-lockfile"]);
+        commit_all(&f.repo, "seed");
+        f
+    }
+
+    fn cargo(&self, args: &[&str]) {
+        let out = git_env::command(real_cargo())
+            .args(args)
+            .current_dir(&self.repo)
+            .env("CARGO_HOME", &self.cargo_home)
+            .output()
+            .expect("run cargo");
+        assert!(
+            out.status.success(),
+            "cargo {args:?} failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn tasty_write(&self, rel: &str, body: &str) {
+        write(&self.tasty, rel, body);
+    }
+
+    fn tasty_commit(&self, msg: &str) -> String {
+        commit_all(&self.tasty, msg);
+        git_out(&self.tasty, &["rev-parse", "HEAD"])
+    }
+
+    /// Points every tasty entry at `rev`, lets Cargo update the lock, and commits.
+    fn move_pin(&self, rev: &str) {
+        let toml = fs::read_to_string(self.repo.join("Cargo.toml")).expect("read Cargo.toml");
+        let mut out = String::new();
+        for line in toml.lines() {
+            match line.split_once("rev = \"") {
+                Some((head, tail)) => {
+                    let rest = tail.split_once('"').expect("closing quote").1;
+                    out.push_str(&format!("{head}rev = \"{rev}\"{rest}\n"));
+                }
+                None => {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        write(&self.repo, "Cargo.toml", &out);
+        self.cargo(&["metadata", "--format-version", "1"]);
+    }
+
+    fn bump(&self, plugin: &str, v: &str) {
+        for rel in [
+            format!("crates/tasty-plugin-{plugin}/Cargo.toml"),
+            format!("crates/tasty-plugin-{plugin}/tasty-plugin.toml"),
+        ] {
+            let body = fs::read_to_string(self.repo.join(&rel)).expect("read");
+            let line = body
+                .lines()
+                .find(|l| l.starts_with("version"))
+                .expect("version line")
+                .to_string();
+            write(
+                &self.repo,
+                &rel,
+                &body.replacen(&line, &format!("version = \"{v}\""), 1),
+            );
+        }
+        self.cargo(&["metadata", "--format-version", "1"]);
+    }
+
+    fn commit(&self, msg: &str) {
+        commit_all(&self.repo, msg);
+    }
+
+    fn command(&self, judged: bool) -> Command {
+        let mut cmd = gate_command(&script(), &self.repo);
+        cmd.env("CARGO_HOME", &self.cargo_home)
+            .env_remove("TASTY_GIT_DIR");
+        if judged {
+            cmd.env("TASTY_STRIP_CFG_TEST_BIN", installed_judge());
+        }
+        cmd
+    }
+
+    fn check(&self, args: &[&str]) -> (i32, String) {
+        run(self.command(false), args)
+    }
+
+    fn check_judged(&self, args: &[&str]) -> (i32, String) {
+        run(self.command(true), args)
+    }
+}
+
+const HEAD_RANGE: [&str; 3] = ["--range", "HEAD^", "HEAD"];
+
+/// 1. A pin move that changes only a crate in alpha's closure.
+#[test]
+fn a_pin_move_flags_only_the_plugins_whose_closure_changed() {
+    let f = PinFixture::new();
+    f.tasty_write(
+        "crates/tasty-a/src/lib.rs",
+        &TASTY_A_LIB.replace("    1\n}\n\n#", "    10\n}\n\n#"),
+    );
+    let t2 = f.tasty_commit("change a");
+    f.move_pin(&t2);
+    f.commit("move the pin");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-alpha: shipped content changed"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("crates/tasty-plugin-beta:"),
+        "beta does not link tasty-a:\n{text}"
+    );
+    // The cause names the crate with both lock versions, the pin move, and the plugins.
+    assert!(text.contains("tasty-a 0.1.0 → 0.1.0 (tasty "), "{text}");
+    assert!(text.contains("crates/tasty-a/src/lib.rs"), "{text}");
+    assert!(
+        text.contains("plugins: crates/tasty-plugin-alpha"),
+        "{text}"
+    );
+}
+
+/// 2. The same move with alpha's patch version raised passes.
+#[test]
+fn a_pin_move_with_the_bump_passes() {
+    let f = PinFixture::new();
+    f.tasty_write(
+        "crates/tasty-a/src/lib.rs",
+        &TASTY_A_LIB.replace("    1\n}\n\n#", "    10\n}\n\n#"),
+    );
+    let t2 = f.tasty_commit("change a");
+    f.move_pin(&t2);
+    f.bump("alpha", "0.1.1");
+    f.commit("move the pin and bump alpha");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("pass — 1 judged"), "{text}");
+}
+
+/// 3. Only the #[cfg(test)] part changed; needs the real judge.
+#[test]
+fn a_pin_move_that_changes_only_test_code_needs_no_bump() {
+    let f = PinFixture::new();
+    f.tasty_write(
+        "crates/tasty-a/src/lib.rs",
+        &TASTY_A_LIB.replace(
+            "assert_eq!(super::a(), 1);",
+            "assert_eq!(super::a(), 1, \"a\");",
+        ),
+    );
+    let t2 = f.tasty_commit("change a test");
+    f.move_pin(&t2);
+    f.commit("move the pin");
+
+    let (code, text) = f.check_judged(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("nothing to judge"), "{text}");
+}
+
+/// 4. Only the formatting changed.
+#[test]
+fn a_pin_move_that_changes_only_formatting_needs_no_bump() {
+    let f = PinFixture::new();
+    f.tasty_write(
+        "crates/tasty-b/src/lib.rs",
+        "pub fn   b( ) -> u32\n{\n        2\n}\n",
+    );
+    let t2 = f.tasty_commit("reformat b");
+    f.move_pin(&t2);
+    f.commit("move the pin");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("nothing to judge"), "{text}");
+}
+
+/// 5. A file inside the crate but outside src/ (read with include_str!) is content.
+#[test]
+fn a_pin_move_that_changes_a_crate_file_outside_src_is_content() {
+    let f = PinFixture::new();
+    f.tasty_write("crates/tasty-a/themes/x.toml", "accent = 2\n");
+    let t2 = f.tasty_commit("change a theme");
+    f.move_pin(&t2);
+    f.commit("move the pin");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("crates/tasty-a/themes/x.toml"), "{text}");
+    assert!(!text.contains("crates/tasty-plugin-beta:"), "{text}");
+}
+
+/// 6. A listed input at the tasty root (lang/) reaches only the plugins that link its crate.
+#[test]
+fn a_pin_move_that_changes_a_listed_root_input_flags_its_crate() {
+    let f = PinFixture::new();
+    f.tasty_write("lang/en.toml", "hello = \"Hi\"\n");
+    let t2 = f.tasty_commit("change a string");
+    f.move_pin(&t2);
+    f.commit("move the pin");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("tasty-i18n 0.1.0 → 0.1.0"), "{text}");
+    assert!(text.contains("lang/en.toml"), "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-alpha: shipped content changed"),
+        "{text}"
+    );
+    assert!(!text.contains("crates/tasty-plugin-beta:"), "{text}");
+}
+
+/// 7. An unlisted path outside a crate stops the check.
+#[test]
+fn a_pin_move_with_an_unlisted_outside_input_is_undecidable() {
+    let f = PinFixture::new();
+    f.tasty_write("other/x.txt", "data\n");
+    f.tasty_write(
+        "crates/tasty-b/src/lib.rs",
+        "pub const X: &str = include_str!(\"../../../other/x.txt\");\npub fn b() -> u32 {\n    2\n}\n",
+    );
+    let t2 = f.tasty_commit("read a file outside the crate");
+    f.move_pin(&t2);
+    f.commit("move the pin");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("tasty-b reads other/x.txt outside its crate"),
+        "{text}"
+    );
+    assert!(text.contains("tasty-extra-inputs.txt"), "{text}");
+}
+
+/// 8. The old commit cannot be found anywhere (no TASTY_GIT_DIR, not in the cargo database,
+/// and the URL does not have it).
+#[test]
+fn a_pin_move_from_an_unreadable_commit_is_undecidable() {
+    let f = PinFixture::new();
+    let t1 = git_out(&f.tasty, &["rev-parse", "HEAD"]);
+    let lock = fs::read_to_string(f.repo.join("Cargo.lock")).expect("read lock");
+    let gone = "1111111111111111111111111111111111111111";
+    write(&f.repo, "Cargo.lock", &lock.replace(&t1, gone));
+    f.commit("a lock that names a commit nobody has");
+    write(&f.repo, "Cargo.lock", &lock);
+    f.commit("back to the real commit");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("cannot read file://"), "{text}");
+    assert!(text.contains("11111111"), "{text}");
+}
+
+/// 15. A lower version together with a pin move is undecidable, not a pass.
+#[test]
+fn a_pin_move_with_a_lower_version_is_undecidable() {
+    let f = PinFixture::new();
+    f.bump("alpha", "0.1.5");
+    f.commit("alpha at 0.1.5");
+    f.tasty_write(
+        "crates/tasty-a/src/lib.rs",
+        &TASTY_A_LIB.replace("    1\n}\n\n#", "    10\n}\n\n#"),
+    );
+    let t2 = f.tasty_commit("change a");
+    f.move_pin(&t2);
+    f.bump("alpha", "0.1.4");
+    f.commit("move the pin and lower alpha");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("the start of this range is newer than its end"),
+        "{text}"
+    );
+}

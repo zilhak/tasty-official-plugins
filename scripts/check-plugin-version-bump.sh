@@ -276,8 +276,383 @@ $OUTSIDE_BUILD
 EOF2
 fi
 
-# Plugins that must be judged for a reason outside their files: directory and reason, one per line.
+# Plugins that must be judged for a reason outside their files: directory, tab, reason; one per line.
 EXTRA_DIRTY=""
+add_dirty() {  # <plugin dir> <reason>
+    EXTRA_DIRTY="$EXTRA_DIRTY
+$1	$2"
+}
+
+# ── Cargo.lock: tasty pin moves ──────────────────────────────────────────────
+# The tasty crates come from git, so their content does not show up as a path in this
+# repository. When Cargo.lock moves a git package to another commit, the two commits are
+# compared crate by crate, and a plugin whose dependency closure holds a changed crate must
+# go up. See docs/branching.md.
+
+LIB_DIR="$(cd "$(dirname "$0")" && pwd)/lib"
+EXTRA_INPUTS="$LIB_DIR/tasty-extra-inputs.txt"
+LOCAL_GIT_VARS=$(git rev-parse --local-env-vars)
+
+# git on another repository, without the variables that point at this one (set inside hooks).
+xgit() {
+    (
+        for v in $LOCAL_GIT_VARS; do unset "$v"; done
+        exec git "$@"
+    )
+}
+
+outside_has() { printf '%s\n' "$OUTSIDE" | grep -qxF "$1"; }
+
+# name, version, source of every package in the Cargo.lock at <ref>, tab separated.
+lock_rows() {
+    git show "$1" | awk '
+        function flush() { if (name != "") print name "\t" ver "\t" src; name = ver = src = "" }
+        /^\[\[package\]\]/ { flush(); next }
+        /^\[/ { flush(); next }
+        /^name = /    { name = $3; gsub(/"/, "", name); next }
+        /^version = / { ver = $3; gsub(/"/, "", ver); next }
+        /^source = /  { src = $3; gsub(/"/, "", src); next }
+        END { flush() }'
+}
+
+# The plugin directories, one per line.
+plugin_dirs() {
+    local man
+    for man in "$ROOT/$SCAN_ROOT"/*/tasty-plugin.toml; do
+        [ -f "$man" ] && printf '%s\n' "$SCAN_ROOT/$(basename "$(dirname "$man")")"
+    done
+    return 0
+}
+
+# Sets LINKED to the plugin directories whose normal/build closure holds package <name>.
+plugins_linking() {
+    local p
+    LINKED=""
+    for p in $(plugin_dirs); do
+        closure_of "$(basename "$p")"
+        if grep -qxF "$1" "$CLOSURE_FILE"; then LINKED="$LINKED $p"; fi
+    done
+}
+
+# Finds a git directory that has every commit given after the url; sets PIN_SRC.
+# Order: TASTY_GIT_DIR, the cargo git databases, then a shallow fetch of the url.
+PIN_FETCHES=0
+pin_source() {  # <url> <commit>...
+    local url="$1" d
+    shift
+    has_all() {
+        local dir="$1" c
+        shift
+        for c in "$@"; do
+            xgit -C "$dir" cat-file -e "$c^{commit}" 2>/dev/null || return 1
+        done
+    }
+    PIN_SRC=""
+    if [ -n "${TASTY_GIT_DIR:-}" ] && has_all "$TASTY_GIT_DIR" "$@"; then
+        PIN_SRC="$TASTY_GIT_DIR"; return 0
+    fi
+    for d in "${CARGO_HOME:-$HOME/.cargo}"/git/db/*/; do
+        [ -d "$d" ] || continue
+        if has_all "$d" "$@"; then PIN_SRC="${d%/}"; return 0; fi
+    done
+    PIN_FETCHES=$((PIN_FETCHES + 1))
+    d="$WORK/git-src.$PIN_FETCHES"
+    if xgit init -q --bare "$d" \
+        && xgit -C "$d" fetch -q --no-tags --depth=1 "$url" "$@" 2>"$WORK/fetch.err" \
+        && has_all "$d" "$@"; then
+        PIN_SRC="$d"; return 0
+    fi
+    return 1
+}
+
+# Writes "name<TAB>dir" for every package manifest in <src> at <commit> to <file>.
+package_dirs_at() {  # <src> <commit> <file>
+    local f n dir
+    : > "$3"
+    while IFS= read -r f; do
+        n=$(xgit -C "$1" show "$2:$f" | awk '
+            /^\[/ { in_pkg = ($0 == "[package]") }
+            in_pkg && /^name[[:space:]]*=/ { sub(/^name[[:space:]]*=[[:space:]]*"/, ""); sub(/".*/, ""); print; exit }')
+        [ -n "$n" ] || continue
+        dir=$(dirname "$f")
+        printf '%s\t%s\n' "$n" "$dir" >> "$3"
+    done <<EOF2
+$(xgit -C "$1" ls-tree -r --name-only "$2" | grep -E '(^|/)Cargo\.toml$')
+EOF2
+}
+
+# Sets PKG_DIR to the directory of package <name> in <file>; returns 1 when missing,
+# 2 when several manifests carry the name.
+package_dir_in() {  # <file> <name>
+    local hits
+    hits=$(awk -F '\t' -v n="$2" '$1 == n { print $2 }' "$1")
+    PKG_DIR="$hits"
+    [ -n "$hits" ] || return 1
+    [ "$(printf '%s\n' "$hits" | wc -l)" -eq 1 ] || return 2
+}
+
+# Paths that tasty-extra-inputs.txt lists for <package> with <kind> (use or ignore).
+extra_inputs_of() {  # <package> <kind>
+    [ -f "$EXTRA_INPUTS" ] || return 0
+    awk -v p="$1" -v k="$2" '/^[[:space:]]*(#|$)/ { next } $1 == p && $2 == k { print $3 }' "$EXTRA_INPUTS"
+}
+
+# Whether <path> is listed for <package> (use or ignore). A listed directory ends with "/".
+extra_input_listed() {  # <package> <path>
+    local e
+    for e in $(extra_inputs_of "$1" use) $(extra_inputs_of "$1" ignore); do
+        [ "$2" = "$e" ] && return 0
+        case "$e" in */) case "$2" in "$e"*) return 0 ;; esac ;; esac
+        case "$2" in */) case "$e" in "$2"*) return 0 ;; esac ;; esac
+    done
+    return 1
+}
+
+# Resolves "." and ".." in a relative path; keeps a trailing "/". Prints nothing when the
+# path climbs above the root.
+norm_path() {
+    printf '%s\n' "$1" | awk '{
+        n = split($0, part, "/"); top = 0; bad = 0
+        for (i = 1; i <= n; i++) {
+            if (part[i] == "" || part[i] == ".") continue
+            if (part[i] == "..") { if (top == 0) { bad = 1; break } top--; continue }
+            stack[++top] = part[i]
+        }
+        if (bad) exit
+        out = ""
+        for (i = 1; i <= top; i++) out = out (i > 1 ? "/" : "") stack[i]
+        if ($0 ~ /\/$/ && out != "") out = out "/"
+        print out
+    }'
+}
+
+# Stops as undecidable when package <name> in <dir> reads a file outside its directory that
+# tasty-extra-inputs.txt does not list. Test files and comment lines are skipped.
+pin_check_outside_inputs() {  # <src> <commit> <dir> <name>
+    local src="$1" c="$2" dir="$3" name="$4" hits line rest file content lit base resolved
+    hits=$(xgit -C "$src" grep -nE '(include_(str|bytes)!|concat!|rerun-if-changed).*\.\./' "$c" -- \
+        "$dir" ":(exclude)$dir/tests" ":(exclude)$dir/**/tests.rs" ":(exclude)$dir/**/tests/**" \
+        ":(exclude)$dir/benches" ":(exclude)$dir/examples")
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        rest=${line#"$c":}
+        file=${rest%%:*}
+        content=${rest#*:}
+        content=${content#*:}
+        case "$content" in *[![:space:]]*) ;; *) continue ;; esac
+        if printf '%s\n' "$content" | grep -qE '^[[:space:]]*//'; then continue; fi
+        lit=$(printf '%s\n' "$content" | grep -oE '"[^"]*\.\./[^"]*"' | sed -n '1p')
+        lit=${lit#\"}; lit=${lit%\"}
+        case "$lit" in *rerun-if-changed=*) lit=${lit#*rerun-if-changed=}; base="$dir" ;;
+            *) base=$(dirname "$file") ;; esac
+        lit=${lit%%\{*}
+        resolved=$(norm_path "$base/$lit")
+        [ -n "$resolved" ] || die "$name reads a path above the source root ($file: $lit)"
+        case "$resolved" in "$dir"/*) continue ;; esac
+        extra_input_listed "$name" "$resolved" \
+            || die "$name reads $resolved outside its crate ($file); add it to scripts/lib/tasty-extra-inputs.txt"
+    done <<EOF2
+$hits
+EOF2
+}
+
+# Reads the edition from the manifest of <dir> at <commit>; stops when it cannot.
+pin_edition() {  # <src> <commit> <dir> <name>
+    local e
+    e=$(xgit -C "$1" show "$2:$3/Cargo.toml" \
+        | sed -n 's/^edition[[:space:]]*=[[:space:]]*"\([0-9]*\)".*/\1/p' | sed -n '1p')
+    [ -n "$e" ] || die "cannot read the edition of $4 ($3/Cargo.toml at ${2:0:8})"
+    PIN_EDITION="$e"
+}
+
+# The shipped content of one file of an extracted tree: Rust after the judge and rustfmt
+# without blank lines, the crate manifest without its version line, anything else as is.
+pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
+    local f="$1/$3" out fmt vline
+    [ -f "$f" ] || { printf '<absent>'; return; }
+    case "$3" in
+        *.rs)
+            if [ -f "$2/$3" ]; then out=$(cat "$2/$3"); else out=$(cat "$f"); fi
+            fmt=$(printf '%s' "$out" | rustfmt --edition "$5" --emit stdout 2>/dev/null)
+            [ -n "$fmt" ] && out="$fmt"
+            out=$(printf '%s' "$out" | sed '/^[[:space:]]*$/d')
+            [ -n "$out" ] || { printf '<no-ship>'; return; }
+            printf '%s' "$out" | cksum
+            ;;
+        "$4/Cargo.toml")
+            out=$(cat "$f")
+            vline=$(printf '%s' "$out" | version_line_no)
+            [ -n "$vline" ] && out=$(printf '%s' "$out" | sed "${vline}d")
+            printf '%s' "$out" | cksum
+            ;;
+        *) cksum < "$f" ;;
+    esac
+}
+
+# Whether package <name> in <dir> ships other content at <new> than at <old>. Sets PIN_FILES
+# to the changed paths. Tests, benches, examples and Markdown are left out.
+PIN_SEQ=0
+pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
+    local src="$1" old="$2" new="$3" dir="$4" name="$5" ed="$6" paths=("$4") e f
+    local present side k raw cooked has_rs=0 a b c
+    PIN_FILES=""
+    for e in $(extra_inputs_of "$name" use); do paths+=("${e%/}"); done
+    local diffs=()
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        case "$f" in
+            "$dir"/tests/*|"$dir"/benches/*|"$dir"/examples/*|*.md) continue ;;
+        esac
+        diffs+=("$f")
+        case "$f" in *.rs) has_rs=1 ;; esac
+    done <<EOF2
+$(xgit -C "$src" diff --name-only "$old" "$new" -- "${paths[@]}")
+EOF2
+    [ "${#diffs[@]}" -gt 0 ] || return 1
+    PIN_SEQ=$((PIN_SEQ + 1))
+    k="pin.$PIN_SEQ"
+    for side in old new; do
+        if [ "$side" = old ]; then c="$old"; else c="$new"; fi
+        raw="$WORK/$k.$side.raw"; cooked="$WORK/$k.$side.cooked"
+        mkdir -p "$raw" "$cooked" || die "cannot create the work directory."
+        present=()
+        for f in "${paths[@]}"; do
+            xgit -C "$src" cat-file -e "$c:$f" 2>/dev/null && present+=("$f")
+        done
+        if [ "${#present[@]}" -gt 0 ]; then
+            xgit -C "$src" archive --format=tar "$c" -- "${present[@]}" | tar -x -C "$raw" \
+                || die "cannot extract $name at ${c:0:8}."
+        fi
+        if [ "$has_rs" = 1 ] && [ -n "$STRIP_BIN" ] && [ -d "$raw/$dir" ]; then
+            "$STRIP_BIN" --blank-test-only-files "$cooked" "$raw" "$dir" >/dev/null \
+                || die "the test-only code remover failed ($name at ${c:0:8})."
+        fi
+    done
+    for f in "${diffs[@]}"; do
+        a=$(pin_sum "$WORK/$k.old.raw" "$WORK/$k.old.cooked" "$f" "$dir" "$ed")
+        b=$(pin_sum "$WORK/$k.new.raw" "$WORK/$k.new.cooked" "$f" "$dir" "$ed")
+        [ "$a" = "$b" ] || PIN_FILES="$PIN_FILES $f"
+    done
+    [ -n "$PIN_FILES" ]
+}
+
+# Whether the [workspace.dependencies] or [workspace.package] sections of the tasty root
+# Cargo.toml differ between two commits. Only matters to a crate that inherits from them.
+pin_root_inherited_changed() {  # <src> <old> <new>
+    local s c
+    for c in "$2" "$3"; do
+        s=$(xgit -C "$1" show "$c:Cargo.toml" 2>/dev/null | awk '
+            /^\[/ { keep = ($0 ~ /^\[workspace\.(dependencies|package)/) }
+            keep { print }')
+        printf '%s' "$s" | cksum > "$WORK/root-inherit.$c"
+    done
+    ! cmp -s "$WORK/root-inherit.$2" "$WORK/root-inherit.$3"
+}
+
+# Whether the manifest of <dir> inherits something other than lints from the workspace.
+pin_inherits() {  # <src> <commit> <dir>
+    xgit -C "$1" show "$2:$3/Cargo.toml" | awk '
+        /^\[/ { lints = ($0 ~ /^\[lints/) }
+        !lints && /workspace[[:space:]]*=[[:space:]]*true/ { found = 1 }
+        END { exit found ? 0 : 1 }'
+}
+
+# One summary line per changed crate and the plugins it reaches, for the messages.
+PIN_SUMMARY=""
+
+judge_pin_moves() {
+    local before_lock="$BEFORE_REV:Cargo.lock" after_lock key url old new names name
+    local dirs_old dirs_new d_old d_new rc reason vb va label plugins p
+    exists_at "$before_lock" || die "cannot read Cargo.lock at $BEFORE_REV."
+    exists_at "$(after_ref Cargo.lock)" \
+        || die "cannot read Cargo.lock at ${AFTER_PREFIX:-the index}."
+    after_lock=$(after_ref Cargo.lock)
+    lock_rows "$before_lock" > "$WORK/lock.before" || die "cannot read Cargo.lock at $BEFORE_REV."
+    lock_rows "$after_lock" > "$WORK/lock.after" || die "cannot read Cargo.lock at ${AFTER_PREFIX:-the index}."
+    # url, old sha ("-" when new), new sha, name: git packages whose commit changed or appeared.
+    awk -F '\t' '
+        function split_src(s,   u, h) {
+            sub(/^git\+/, "", s); h = s; sub(/^.*#/, "", h); u = s; sub(/[?#].*$/, "", u)
+            URL = u; SHA = h
+        }
+        NR == FNR { if ($3 ~ /^git\+/) { split_src($3); old[$1] = SHA } next }
+        $3 ~ /^git\+/ {
+            split_src($3)
+            o = ($1 in old) ? old[$1] : "-"
+            if (o != SHA) print URL "\t" o "\t" SHA "\t" $1 "\t" $2
+        }' "$WORK/lock.before" "$WORK/lock.after" | sort > "$WORK/pin.moves"
+    [ -s "$WORK/pin.moves" ] || return 0
+
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        url=$(printf '%s' "$key" | cut -f1); old=$(printf '%s' "$key" | cut -f2)
+        new=$(printf '%s' "$key" | cut -f3)
+        label="$(basename "$url" .git) ${old:0:8} → ${new:0:8}"
+        [ "$old" = "-" ] && label="$(basename "$url" .git) (new) → ${new:0:8}"
+        # Only packages that some plugin links matter.
+        names=""
+        while IFS="$(printf '\t')" read -r _ _ _ name _; do
+            plugins_linking "$name"
+            [ -n "$LINKED" ] && names="$names $name"
+        done <<EOF2
+$(awk -F '\t' -v k="$key" '($1 "\t" $2 "\t" $3) == k' "$WORK/pin.moves")
+EOF2
+        [ -n "$names" ] || continue
+        if [ "$old" = "-" ]; then
+            pin_source "$url" "$new" || die "cannot read $url at ${new:0:8}: $(cat "$WORK/fetch.err" 2>/dev/null)"
+        else
+            pin_source "$url" "$old" "$new" \
+                || die "cannot read $url at ${old:0:8} and ${new:0:8}: $(cat "$WORK/fetch.err" 2>/dev/null)"
+        fi
+        dirs_new="$WORK/dirs.${new}"
+        [ -f "$dirs_new" ] || package_dirs_at "$PIN_SRC" "$new" "$dirs_new"
+        if [ "$old" != "-" ]; then
+            dirs_old="$WORK/dirs.${old}"
+            [ -f "$dirs_old" ] || package_dirs_at "$PIN_SRC" "$old" "$dirs_old"
+        fi
+        for name in $names; do
+            rc=0; package_dir_in "$dirs_new" "$name" || rc=$?
+            [ "$rc" -eq 0 ] || die "cannot find the directory of $name in $url at ${new:0:8}$([ "$rc" -eq 2 ] && printf ' (several manifests: %s)' "$(printf '%s' "$PKG_DIR" | tr '\n' ' ')")"
+            d_new="$PKG_DIR"
+            pin_edition "$PIN_SRC" "$new" "$d_new" "$name"
+            pin_check_outside_inputs "$PIN_SRC" "$new" "$d_new" "$name"
+            reason=""
+            if [ "$old" = "-" ]; then
+                reason="new in Cargo.lock"
+            else
+                rc=0; package_dir_in "$dirs_old" "$name" || rc=$?
+                d_old="$PKG_DIR"
+                if [ "$rc" -ne 0 ] || [ "$d_old" != "$d_new" ]; then
+                    reason="moved to $d_new"
+                elif pin_package_changed "$PIN_SRC" "$old" "$new" "$d_new" "$name" "$PIN_EDITION"; then
+                    reason="changed:$PIN_FILES"
+                elif pin_inherits "$PIN_SRC" "$new" "$d_new" \
+                    && pin_root_inherited_changed "$PIN_SRC" "$old" "$new"; then
+                    reason="the inherited [workspace.dependencies] or [workspace.package] changed"
+                fi
+            fi
+            [ -n "$reason" ] || continue
+            vb=$(awk -F '\t' -v n="$name" '$1 == n { print $2; exit }' "$WORK/lock.before")
+            va=$(awk -F '\t' -v n="$name" '$1 == n { print $2; exit }' "$WORK/lock.after")
+            plugins_linking "$name"
+            plugins="${LINKED# }"
+            PIN_SUMMARY="$PIN_SUMMARY
+    $name ${vb:-<none>} → ${va:-<none>} ($label; ${reason}); plugins: $plugins"
+            for p in $LINKED; do
+                add_dirty "$p" "$name ${vb:-<none>} → ${va:-<none>} ($label; $reason)"
+            done
+        done
+    done <<EOF2
+$(cut -f1-3 "$WORK/pin.moves" | sort -u)
+EOF2
+}
+
+if outside_has Cargo.lock; then
+    judge_pin_moves
+fi
+if [ -n "$PIN_SUMMARY" ]; then
+    printf '[plugin-version] crates that changed in a plugin dependency closure:%s\n' "$PIN_SUMMARY" >&2
+fi
 
 crate_dir_of() {
     local r

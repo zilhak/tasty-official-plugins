@@ -1,0 +1,13 @@
+# Build inputs of tasty crates that sit outside the crate directory, for the pin move check
+# in scripts/check-plugin-version-bump.sh. A pin move compares each tasty crate in a plugin's
+# dependency closure; a `use` path is compared with the crate. When the check finds an
+# include_str!, include_bytes!, concat! or rerun-if-changed path outside a crate that is not
+# listed here, it stops as undecidable. List it with `use`, or with `ignore` when only tests
+# read it.
+#
+# <package> use|ignore <path relative to the tasty source root>  # reason
+tasty-i18n            use    lang/
+tasty-i18n            use    crates/tasty-font/assets/D2Coding-ligature-Regular.ttf
+tasty-egui-theme      use    crates/tasty-font/assets/D2Coding-ligature-Regular.ttf
+tasty-ui-widgets      use    assets/icons/icon_256.png
+tasty-plugin-manifest ignore crates/tasty-plugin-markdown/tasty-plugin.toml  # src/tests.rs only
