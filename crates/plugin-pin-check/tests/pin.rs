@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
+use tasty_doc_guards::floored_walk::{CountedOn, Descend, Floor, Walked, walk_with_floor};
 use tasty_plugin_manifest::Manifest;
 
 const TASTY_GIT: &str = "https://github.com/zilhak/tasty";
@@ -324,46 +325,39 @@ fn egui_family_matches_the_tasty_lock_at_the_pin() {
     }
 }
 
-/// Rust files under crates/*/src: 147 measured on 2026-11-14 at 25f4750. The floor
-/// leaves room for files being merged or split and fails when the walk loses a large
-/// plugin.
-const MIN_CRATE_SOURCES: usize = 110;
+/// Rust files under crates/*/src: 147 measured on 2026-11-14 at 25f4750.
+const CRATES_FLOOR: Floor = Floor {
+    min: 110,
+    measured: 147,
+    measured_on: "2026-11-14",
+    counted_on: CountedOn::Tree("25f4750 — Rust files under crates/*/src"),
+    why_this_gap: "The floor leaves room for files being merged or split and fails when the \
+                   walk loses a large plugin.",
+};
 
 /// A crate source as (path relative to the workspace root with `/`, text).
 type Source = (String, String);
 
-/// The Rust files under crates/<crate>/src, skipping build output.
+/// The Rust files under crates/<crate>/src, through the shared walk that skips symbolic
+/// links, build caches, and dependency trees.
 fn crate_sources() -> Vec<Source> {
     let root = workspace_root();
-    let mut out = Vec::new();
-    let mut stack = vec![root.join("crates")];
-    while let Some(dir) = stack.pop() {
-        let entries =
-            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
-        for entry in entries {
-            let path = entry.expect("directory entry").path();
-            if path.is_dir() {
-                // A build directory, named target or marked by CACHEDIR.TAG.
-                if path.file_name().is_some_and(|n| n == "target")
-                    || path.join("CACHEDIR.TAG").is_file()
-                {
-                    continue;
-                }
-                stack.push(path);
-                continue;
-            }
-            let rel = path
-                .strip_prefix(&root)
-                .expect("under the workspace root")
-                .to_string_lossy()
-                .replace('\\', "/");
-            if rel.ends_with(".rs") && rel.contains("/src/") {
-                let text = std::fs::read_to_string(&path).unwrap_or_default();
-                out.push((rel, text));
-            }
-        }
-    }
-    out
+    walk_with_floor(
+        &root.join("crates"),
+        &root,
+        &CRATES_FLOOR,
+        Descend::SkipBuildCaches,
+        &|w: &Walked| w.rel.ends_with(".rs") && w.rel.contains("/src/"),
+    )
+    .unwrap_or_else(|why| panic!("{why}"))
+    .iter()
+    .map(|w| {
+        (
+            w.rel.clone(),
+            std::fs::read_to_string(&w.path).unwrap_or_default(),
+        )
+    })
+    .collect()
 }
 
 /// The value of a `const PLUGIN_ID: ... = "..."` declaration. The colon after the name
@@ -412,11 +406,6 @@ fn id_scan(sources: &[Source], plugins: &[(String, String)]) -> IdScan {
 #[test]
 fn manifest_id_matches_the_plugin_id_constant() {
     let sources = crate_sources();
-    assert!(
-        sources.len() >= MIN_CRATE_SOURCES,
-        "collected only {} Rust files under crates/*/src (floor {MIN_CRATE_SOURCES}). Check the walk.",
-        sources.len()
-    );
     let crates = workspace_root().join("crates");
     let plugins: Vec<(String, String)> = script_plugins()
         .into_iter()

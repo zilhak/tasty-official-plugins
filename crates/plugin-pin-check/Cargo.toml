@@ -10,6 +10,7 @@ description = "Checks the plugin build list, the tasty pin, and the plugin manif
 serde_json.workspace = true
 toml.workspace = true
 tasty-plugin-manifest.workspace = true
+tasty-doc-guards.workspace = true
 
 [lints]
 workspace = true

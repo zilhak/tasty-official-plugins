@@ -1657,6 +1657,7 @@ name = "plugin-pin-check"
 version = "0.0.0"
 dependencies = [
  "serde_json",
+ "tasty-doc-guards",
  "tasty-plugin-manifest",
  "toml",
 ]
