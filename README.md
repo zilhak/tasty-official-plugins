@@ -128,7 +128,8 @@ scripts/dev-bundle.sh --out DIR [--profile debug|release|dist] [--tasty DIR] [--
 `bundle = false`, and puts each one in `DIR/<id>/` with its executable,
 `tasty-plugin.toml`, and `lang/`, the layout of tasty's `builtin-plugins` folder. It
 replaces only those `<id>` folders and leaves anything else in `DIR` alone. `debug`, the
-default, is cargo's dev profile.
+default, is cargo's dev profile. Relative paths in `--out`, `--tasty`, and
+`CARGO_TARGET_DIR` are taken from the directory the script is run from.
 
 Without `--tasty`, the plugins are built against the tasty commit that `Cargo.lock` pins,
 with `--locked`. With `--tasty`, every package that `Cargo.lock` takes from the tasty git

@@ -27,8 +27,19 @@
 # Windows.
 set -euo pipefail
 
-# --out and --tasty are relative to where the script is run from.
+# --out, --tasty, and CARGO_TARGET_DIR are relative to where the script is run from.
+# They are made absolute before the script changes directory.
 caller=$PWD
+abs_path() {
+  case "$1" in
+    /* | [A-Za-z]:[\\/]*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$caller" "$1" ;;
+  esac
+}
+if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+  CARGO_TARGET_DIR=$(abs_path "$CARGO_TARGET_DIR")
+  export CARGO_TARGET_DIR
+fi
 cd "$(dirname "$0")/.."
 repo=$PWD
 
@@ -62,10 +73,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$OUT" ]] || die "--out is required"
-case "$OUT" in /*) ;; *) OUT="$caller/$OUT" ;; esac
-if [[ -n "$TASTY" ]]; then
-  case "$TASTY" in /*) ;; *) TASTY="$caller/$TASTY" ;; esac
-fi
+OUT=$(abs_path "$OUT")
+if [[ -n "$TASTY" ]]; then TASTY=$(abs_path "$TASTY"); fi
 
 # cargo has no profile named debug: the debug build is the dev profile, chosen by
 # passing no profile at all.
