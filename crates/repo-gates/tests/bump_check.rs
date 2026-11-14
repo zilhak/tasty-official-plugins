@@ -2938,7 +2938,8 @@ fn review_bypasses_of_left_out_check_sh_parts_flag_every_archived_plugin() {
     let warn = "warn_hooks() {\n  echo \"warning: no hooks\" >&2\n}\n\nsub=\"${1:-all}\"\n\n\
                 case \"$sub\" in\n  all | fmt | test | build) ( warn_hooks ) || true ;;\nesac\n";
     // (name, edits committed first, edits of the judged commit)
-    let cases: [(&str, Vec<(&str, &str)>, Vec<(&str, &str)>); 7] = [
+    type Edits<'a> = Vec<(&'a str, &'a str)>;
+    let cases: [(&str, Edits, Edits); 7] = [
         (
             "N1 one-line help branch before build",
             vec![],
