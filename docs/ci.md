@@ -1,7 +1,9 @@
 # CI and release workflows
 
-This repository builds and tests the official Tasty plugins from the sources in
-`crates/`, against the tasty crates pinned in `Cargo.toml`. The workflows call `scripts/check.sh` and `scripts/package-plugin.sh`, so
+This repository builds and tests the official Tasty plugins from their sources in
+`crates/` of this repository. Only the tasty crates they depend on (the plugin SDK,
+protocol, manifest, and shared libraries) come from the tasty commit pinned in
+`Cargo.toml`. The workflows call `scripts/check.sh` and `scripts/package-plugin.sh`, so
 the steps that run in CI also run locally. The tasty sha is not repeated in any
 workflow.
 
@@ -14,10 +16,10 @@ workflow.
 | `.github/workflows/plugin-version-check.yml` | push to `develop`, `release`, or `main`, pull request to one of them, for changes outside Markdown and `docs/`; manual | Checks that each plugin whose build output changed raised its version (see [Plugin version check](#plugin-version-check)), then runs the `repo-gates` tests |
 
 The workflows use `permissions: contents: read` by default. In `release.yml`, only the
-`create-release` and `publish` jobs get `contents: write`. In `ci.yml`, a new run waits for the
-older run on the same ref instead of cancelling it, as in tasty: on the self-hosted
-runners a run can take longer than the time between pushes, and a waiting run is
-replaced by the newer push. Pull request runs cancel the older run. A run never waits
+`create-release` and `publish` jobs get `contents: write`. In `ci.yml`, a new run waits
+for the older run on the same ref instead of cancelling it, as in tasty: on the
+self-hosted runners a run can take longer than the time between pushes, and a waiting run
+is replaced by the newer push. Pull request runs cancel the older run. A run never waits
 for a run on another ref. Every job has `timeout-minutes`.
 
 The same jobs run on `develop`, `release`, and `main`. A commit fast-forwarded from
@@ -40,8 +42,8 @@ they are not shared with tasty.
 | `linux-x64` | `x86_64-unknown-linux-gnu` | `[self-hosted, Linux, X64]` |
 | `linux-arm64` | `aarch64-unknown-linux-gnu` | `[self-hosted, Linux, ARM64]` |
 
-The `check`, `lint`, and `audit` jobs run on `[self-hosted, Linux, X64]`, and the `test` job on
-the Windows x64 and macOS runners.
+The `check`, `lint`, and `audit` jobs run on `[self-hosted, Linux, X64]`, and the `test`
+job on the Windows x64 and macOS runners.
 
 These are the same five platforms that tasty releases. Linux ARM64 is included because
 tasty ships a Linux ARM64 package, and the full-package lock file needs a plugin hash
@@ -93,10 +95,10 @@ The `--lib --bins` scope is the one tasty uses for its Windows and macOS unit te
 
 The `repo-gates` integration tests run the plugin version check, its fixup, and the git
 hooks on fixture repositories. On macOS they run those shell scripts with the BSD tools
-(`sed`, `awk`, `comm`, `mktemp`) and the bash on `PATH`, which Linux does not
-cover. Before them the job runs `cargo fetch --locked`, because the fixtures resolve with
-`cargo --offline`, and installs `strip-cfg-test` as `plugin-version-check.yml` does. They do
-not run on Windows.
+(`sed`, `awk`, `comm`, `mktemp`) and the bash on `PATH`, which Linux does not cover.
+Before them the job runs `cargo fetch --locked`, because the fixtures resolve with `cargo
+--offline`, and installs `strip-cfg-test` as `plugin-version-check.yml` does. They do not
+run on Windows.
 
 Clippy (`scripts/check.sh lint`) runs natively on `linux-x64` (`check` job),
 `windows-x64`, and `macos-arm64` (`test` job). It does not run for `windows-arm64` or
@@ -120,30 +122,30 @@ because it builds no dev-dependencies.
 
 ## Static checks
 
-The `lint` job in `ci.yml` runs `scripts/install-lint-tools.sh`, which downloads shellcheck
-and actionlint from their GitHub release pages into the runner tool cache
+The `lint` job in `ci.yml` runs `scripts/install-lint-tools.sh`, which downloads
+shellcheck and actionlint from their GitHub release pages into the runner tool cache
 (`$RUNNER_TOOL_CACHE/lint-tools/shellcheck-<version>-actionlint-<version>-<arch>`), and
 then `scripts/lint-scripts.sh`. The versions and the SHA-256 sums of the release archives
 are pinned in `install-lint-tools.sh`: an archive with another sum fails the job, and an
-install that is already there and reports the pinned versions is reused. To update a
-tool, change its version and sums together. actionlint publishes its sums in the release's
+install that is already there and reports the pinned versions is reused. To update a tool,
+change its version and sums together. actionlint publishes its sums in the release's
 `checksums.txt`; shellcheck publishes none, so take the sum of the downloaded archive.
 
 Jobs that share a tool cache can install at the same time without a lock. Each run
 downloads, checks, and unpacks into a folder of its own next to the install
-(`.shellcheck-<version>-actionlint-<version>-<arch>.<random>`) and publishes it by creating
-the install name as a symlink to that folder with `ln -sn`, which fails when the name
-exists. A run that loses uses the install that won. The script
-prints the folder the link points at, not the link, so a job keeps its tools when another
-run replaces the link later. When the link points at a folder whose tools fail the version
-check, or the name is a plain directory from an earlier version of the script, the run
-renames it aside to `.broken.<name>.<pid>.<attempt>` and creates the link again. No run
-deletes a folder that another run may use: once a run has tried `ln`, it keeps its own
-folder, because the link may have been made and another run may have printed that folder.
-When the download or its sum check fails, the run removes its own folder and the install
-name is not created. Replaced folders, the `.broken.*` entries, the folders of runs that
-lost the race (each run says so in its log), and the folder of a run that was killed
-(`.shellcheck-*`) may remain; remove them by hand when no job is running.
+(`.shellcheck-<version>-actionlint-<version>-<arch>.<random>`) and publishes it by
+creating the install name as a symlink to that folder with `ln -sn`, which fails when the
+name exists. A run that loses uses the install that won. The script prints the folder the
+link points at, not the link, so a job keeps its tools when another run replaces the link
+later. When the link points at a folder whose tools fail the version check, or the name is
+a plain directory from an earlier version of the script, the run renames it aside to
+`.broken.<name>.<pid>.<attempt>` and creates the link again. No run deletes a folder that
+another run may use: once a run has tried `ln`, it keeps its own folder, because the link
+may have been made and another run may have printed that folder. When the download or its
+sum check fails, the run removes its own folder and the install name is not created.
+Replaced folders, the `.broken.*` entries, the folders of runs that lost the race (each
+run says so in its log), and the folder of a run that was killed (`.shellcheck-*`) may
+remain; remove them by hand when no job is running.
 
 `lint-scripts.sh` finds the scripts instead of listing them: tracked files that end in
 `.sh`, the hooks in `.githooks`, and tracked files whose first line is a bash or sh
@@ -156,8 +158,8 @@ outside CI the tools go to `~/.cache/tasty-official-plugins/lint-tools`.
 
 The `plugin-guards` crate holds source checks that tasty ran on the plugin crates before
 they moved here. They are integration tests (`crates/plugin-guards/tests/`). They run in
-the `check` job with `scripts/check.sh test` on Linux, and in the `test` job on Windows and
-macOS in a step of their own, because the `--lib --bins` run leaves them out. Run them
+the `check` job with `scripts/check.sh test` on Linux, and in the `test` job on Windows
+and macOS in a step of their own, because the `--lib --bins` run leaves them out. Run them
 with `cargo test --locked -p plugin-guards`. They read the sources as text and use the
 source readers of `tasty-doc-guards` from the pinned tasty commit, a dev-dependency of
 this crate and of `plugin-pin-check` only, so it never enters a plugin build.
@@ -190,7 +192,10 @@ this crate and of `plugin-pin-check` only, so it never enters a plugin build.
   comment lines left out. A literal passed to an egui widget fails with two letters in a
   row or CJK, one passed to `hint_text` only with a sentence or CJK, and one passed to a
   native menu call, an `unwrap_or` fallback, or a print macro with a sentence, a
-  capitalized word, or CJK. Allowed tokens and one pending literal are listed in the test.
+  capitalized word, or CJK. The allowed tokens (such as key names, language names, units,
+  product names) are listed in the test and apply to the widget, menu, fallback, and
+  print rules only: a `hint_text` literal is judged without them. One pending literal is
+  listed in the test too.
 - `one_concept_one_word`: the plugin translation files use the canonical spellings of
   Pane and Window, and each Korean word for window that names a popup is registered with
   its phrase, count, and evidence.
@@ -207,19 +212,22 @@ The `audit` job in `ci.yml` installs `cargo-audit` at the version in `CARGO_AUDI
 into the runner tool cache (`$RUNNER_TOOL_CACHE/cargo-audit/<version>`) when it is not
 there yet, and runs `scripts/check.sh audit`. To update the tool, change that value.
 
-`cargo audit` reads `Cargo.lock` directly, so it also checks the crates.io dependencies that
-only the bin-only plugin crates use. It matches advisories only against crates.io packages.
-The `tiny_http` and `epaint` copies and the tasty crates come from git and are not matched.
+`cargo audit` reads `Cargo.lock` directly, so it also checks the crates.io dependencies
+that only the plugin crates use. It matches advisories only against crates.io packages.
+The `tiny_http` and `epaint` copies and the tasty crates come from git and are not
+matched.
 
 Only a vulnerability fails the job. Unsound, unmaintained, and yanked results appear as
 warnings in the job log.
 
 The job fetches the advisory database on every run, and the database is not pinned. A new
 advisory can therefore fail the job on a commit that changed nothing related. This is
-intended, and `check` and `build` report their own results. Do not ignore a vulnerability:
-update a crates.io crate here with `cargo update -p <crate>`, and fix a tasty crate in tasty
-and move the pin. If the log shows that fetching the database failed, rerun
-the job.
+intended, and `check` and `build` report their own results. Do not ignore a
+vulnerability. This repository keeps its own `Cargo.lock`, so a crates.io crate is
+updated here with `cargo update -p <crate>`, with a patch bump of each plugin whose
+dependency closure holds it ([Plugin version check](#plugin-version-check)). A crate of
+the egui family and a tasty crate are fixed in tasty and arrive with a pin move. If the
+log shows that fetching the database failed, rerun the job.
 
 ## Plugin version check
 
@@ -242,18 +250,19 @@ before..after range and a cancelled or replaced run would leave that range unche
 - Exit codes: 0 pass or nothing to judge, 1 a plugin needs a version bump, 2 undecidable.
   Only 0 passes.
 - Besides the plugin directories and their path dependencies, the check judges the root
-  build inputs. A tasty pin move or a changed `[workspace.dependencies]` entry needs a bump
-  of each plugin whose dependency closure holds a changed crate. An update of a crates.io
-  crate in `Cargo.lock` needs one too, unless the plugin is already above its version at
-  the tip of `origin/main` (the local `main` only when there is no `origin/main`). `main`
-  moves only for releases and hotfixes, so its tip is the published state, and tags are
-  not read. A local check uses the `origin/main` the clone last fetched: if it was not
-  fetched after a release, the baseline is older and a second update can pass locally; the
-  CI checkout fetches it on every run. `[profile.*]`, `.cargo/config.toml`, and `rust-toolchain.toml` pass with
-  a note; `[workspace]` and unknown sections are undecidable, and so is a changed
-  `[workspace.dependencies]` line that cannot be read or that no package in `Cargo.lock`
-  answers to. A root `Cargo.toml` with a multi-line string (`"""` or `'''`) or with
-  unbalanced brackets is undecidable as a whole.
+  build inputs. A tasty pin move or a changed `[workspace.dependencies]` entry needs a
+  bump of each plugin whose dependency closure holds a changed crate. An update of a
+  crates.io crate in `Cargo.lock` needs one too, unless the plugin is already above its
+  version at the tip of `origin/main` (the local `main` only when there is no
+  `origin/main`). `main` moves only for releases and hotfixes, so its tip is the published
+  state, and tags are not read. A local check uses the `origin/main` the clone last
+  fetched: if it was not fetched after a release, the baseline is older and a second
+  update can pass locally; the CI checkout fetches it on every run. `[profile.*]`,
+  `.cargo/config.toml`, and `rust-toolchain.toml` pass with a note; `[workspace]` and
+  unknown sections are undecidable, and so is a changed `[workspace.dependencies]` line
+  that cannot be read or that no package in `Cargo.lock` answers to. A root `Cargo.toml`
+  with a multi-line string (`"""` or `'''`) or with unbalanced brackets is undecidable as
+  a whole.
 - A plugin's dependency closure is its normal and build dependencies for all targets
   (`cargo tree --target all`), so a crate that only Windows or macOS links counts on the
   Linux runner too. Every judgement that reads a closure (a change in a path dependency
@@ -310,8 +319,8 @@ Example:
 scripts/package-plugin.sh all --all --platform linux-x64 --target x86_64-unknown-linux-gnu --out target/package
 ```
 
-Each archive holds one folder, `<id>/`. For example, `com.tasty.claude-0.3.1-linux-arm64.tar.gz`
-lists:
+Each archive holds one folder, `<id>/`. For example,
+`com.tasty.claude-0.3.1-linux-arm64.tar.gz` lists:
 
 ```
 com.tasty.claude/
@@ -346,7 +355,10 @@ execution alias rather than a Python.
 
 The release workflow packages all eight plugin crates with `--all`, including
 `tasty-plugin-agent-stream`, whose manifest says `bundle = false`. The `bundle` value of
-each plugin is recorded in `release-meta.toml`, so tasty decides what to bundle.
+each plugin is recorded in `release-meta.toml`, so tasty decides what to bundle. The
+agent-stream archives are published on the Release with the others and have rows in
+`plugins-<platform>.tsv`, and `release-meta.toml` records `bundle = false` for them, so
+tasty's general package does not bundle agent-stream by default.
 `tasty-plugin-mesh-demo` stays in tasty as an SDK example and is not built here.
 
 ## Releases
@@ -434,10 +446,10 @@ bundle = true
 | `epaint_patch_tree` | The git tree id of tasty's `vendor/epaint` at `tasty_rev` |
 | `[[plugin]]` | `id`, `version`, and `bundle` from each plugin's `tasty-plugin.toml`. `bundle` is `true` unless the manifest says otherwise |
 
-The tasty values are read from Cargo's git checkout of the tasty crates, after the
-script checks that the checkout is at `tasty_rev`. The script reads cargo metadata with
-`jq`, or with Python 3 when `jq` is missing. It skips a `python3` or `python` that does not
-run, such as the Microsoft Store alias on Windows. To write the file locally:
+The tasty values are read from Cargo's git checkout of the tasty crates, after the script
+checks that the checkout is at `tasty_rev`. The script reads cargo metadata with `jq`, or
+with Python 3 when `jq` is missing. It skips a `python3` or `python` that does not run,
+such as the Microsoft Store alias on Windows. To write the file locally:
 
 ```
 scripts/release-meta.sh --tag unreleased --out target/release-meta.toml
@@ -452,8 +464,11 @@ them.
 
 ## Checks after the first push
 
-These checks ran on the earlier manual-only release workflow, which had placeholder
-signing steps and packaged seven plugins.
+These checks ran before the plugin sources moved here, on the earlier manual-only
+release workflow, which had placeholder signing steps and packaged seven plugins, and on
+the GitHub-hosted Linux runners that `ci.yml` used then. They are kept as a record. The
+release now runs on a `v*` tag push and publishes unsigned packages on a Release of this
+repository (see [Releases](#releases)); `v0.1.0` was the first.
 
 | Check | How | Result |
 |---|---|---|
@@ -461,4 +476,4 @@ signing steps and packaged seven plugins.
 | Static CRT on Windows | "Inspect DLL imports with dumpbin (Windows)" step in the two Windows build jobs | Passed on both Windows targets (CI run 42402231647) |
 | Release skeleton | `gh workflow run release.yml --ref main`, then `gh run download <id>`: each `plugins-<platform>` artifact holds the archives, `SHA256SUMS-<platform>.txt`, and `plugins-<platform>.tsv`. The signing step logs contain `unsigned:` | Passed: five artifacts, each with 7 archives, the SHA-256 list, and the TSV; `sha256sum -c` passed; every job logged `unsigned:` (release run 42402274255) |
 | No release created | `gh release list` is empty | Passed: no releases |
-| Extra system packages | Whether the Linux runners need packages beyond the image defaults. A local Linux ARM64 build needed none | None needed on the hosted Linux runners (CI run 42402231647). Since the plugin sources moved here, the plugin tests need WebKitGTK 4.1 and `xvfb` on the `check` runner (see [What the runners need](#what-the-runners-need)); the `build` jobs still need none |
+| Extra system packages | Whether the Linux runners need packages beyond the image defaults. A local Linux ARM64 build needed none | None needed on the GitHub-hosted Linux runners of that time (CI run 42402231647). Since the plugin sources moved here, the plugin tests need WebKitGTK 4.1 and `xvfb` on the `check` runner (see [What the runners need](#what-the-runners-need)); the `build` jobs still need none |
