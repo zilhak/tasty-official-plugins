@@ -3377,6 +3377,9 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
         "cat <<'EOF'\n$(. REVIEW_MARK)\nsource REVIEW_MARK\nEOF",
         "cat <<\"EOF\"\n$(. REVIEW_MARK)\nEOF",
         "cat <<\\EOF\n$(. REVIEW_MARK)\nEOF",
+        "cat << 'EOF'\n$(. REVIEW_MARK)\nEOF",
+        "cat << \"EOF\"\n$(. REVIEW_MARK)\nEOF",
+        "cat << \\EOF\n$(. REVIEW_MARK)\nEOF",
         "cat <<EOF\nsource REVIEW_MARK\nDon't panic\n\\$(. REVIEW_MARK)\n$(( 1 << 2 ))\n$(date)\nEOF",
     ] {
         let f = ArchiveFixture::new();
