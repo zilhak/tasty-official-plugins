@@ -1649,6 +1649,7 @@ version = "0.0.0"
 dependencies = [
  "tasty-doc-guards",
  "tasty-i18n",
+ "toml",
 ]
 
 [[package]]

@@ -9,6 +9,7 @@ description = "Source checks on the plugin crates: translation lists, literals, 
 [dev-dependencies]
 tasty-doc-guards.workspace = true
 tasty-i18n.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true
