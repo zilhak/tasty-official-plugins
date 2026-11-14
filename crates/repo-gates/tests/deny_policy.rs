@@ -3,7 +3,10 @@
 //! keys and values below: no advisories, bans, or sources settings, no exceptions,
 //! clarifications, private-crate skips, or graph exclusions, and the allow list of tasty's
 //! deny.toml. `scripts/check.sh licenses` is run with a cargo that records its arguments,
-//! and cargo must be called exactly once with `deny --locked --workspace check licenses`.
+//! with GITHUB_ACTIONS unset and set to true and with a fixed set of sample extra
+//! arguments. In each run cargo must be called exactly once with
+//! `deny --locked --workspace check licenses`, and a failing cargo must fail the run.
+//! This does not prove every branch on other arguments; CI calls the command without any.
 //! Advisories stay with cargo audit, and a crate outside the policy is updated or replaced,
 //! not excused.
 
