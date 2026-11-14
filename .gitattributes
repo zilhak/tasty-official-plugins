@@ -1,0 +1,2 @@
+# Check out with LF so tests that read sources as text behave the same on every platform.
+* text=auto eol=lf
