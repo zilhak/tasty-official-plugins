@@ -2,8 +2,13 @@
 # Installs shellcheck and actionlint from their official GitHub releases into a tool cache
 # and prints the directory that holds both. The versions and the SHA-256 sums of the release
 # archives are pinned here: an archive with another sum fails the install. An install that
-# is already there and reports the pinned versions is reused. Runs that share the cache
-# install one at a time and never delete a working install. Linux x86_64 and aarch64 only.
+# is already there and reports the pinned versions is reused. Linux x86_64 and aarch64 only.
+#
+# Concurrent runs need no lock. Each run downloads into a folder of its own in the cache and
+# publishes it by creating the symlink $dir, which fails when another run published first.
+# The script prints the folder the link points at, not the link, so a later replacement of
+# the link does not pull the tools from under a job that is using them. No run deletes a
+# folder that another run may use: a broken install is moved aside, not deleted.
 #
 # Usage: bash scripts/install-lint-tools.sh
 # The cache is $LINT_TOOL_CACHE, else $RUNNER_TOOL_CACHE/lint-tools, else
@@ -40,7 +45,9 @@ al_url="https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSI
 
 base="${LINT_TOOL_CACHE:-${RUNNER_TOOL_CACHE:+$RUNNER_TOOL_CACHE/lint-tools}}"
 base="${base:-${XDG_CACHE_HOME:-$HOME/.cache}/tasty-official-plugins/lint-tools}"
-dir="$base/shellcheck-$SHELLCHECK_VERSION-actionlint-$ACTIONLINT_VERSION-$sc_arch"
+case "$base" in /*) ;; *) base="$PWD/$base" ;; esac
+name="shellcheck-$SHELLCHECK_VERSION-actionlint-$ACTIONLINT_VERSION-$sc_arch"
+dir="$base/$name"
 
 # Whether both tools in $1 run and report the pinned versions.
 installed() {
@@ -51,11 +58,28 @@ installed() {
     grep -qx "version: $SHELLCHECK_VERSION" <<<"$sc" && grep -qx "$ACTIONLINT_VERSION" <<<"$al"
 }
 
-if installed "$dir"; then
-    printf '[install-lint-tools] already installed: %s\n' "$dir" >&2
-    printf '%s\n' "$dir"
+# Prints the folder that $dir stands for when it holds a working install: the target of the
+# link, or $dir itself when an earlier version of this script made it a plain directory.
+current_install() {
+    local real
+    if [ -L "$dir" ]; then
+        real=$(readlink "$dir") || return 1
+        case "$real" in /*) ;; *) real="$base/$real" ;; esac
+    elif [ -d "$dir" ]; then
+        real=$dir
+    else
+        return 1
+    fi
+    installed "$real" && printf '%s\n' "$real"
+}
+
+use() {  # <message> <folder>
+    printf '[install-lint-tools] %s: %s\n' "$1" "$2" >&2
+    printf '%s\n' "$2"
     exit 0
-fi
+}
+
+if real=$(current_install); then use "already installed" "$real"; fi
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -66,63 +90,12 @@ sha256_of() {
 }
 
 mkdir -p "$base" || die "cannot create the tool cache $base."
-
-# Runs that share the cache install one at a time: a lock directory next to the install,
-# taken with mkdir, which is atomic everywhere (flock is not on macOS). The holder writes
-# its pid into it. A lock whose pid no longer runs is left from a run that was killed and
-# is taken over; a lock without a pid yet, or with a live pid, is waited for.
-lock="$dir.lock"
-lock_wait="${LINT_TOOL_LOCK_WAIT:-300}"
-work=""
-have_lock=0
-cleanup() {
-    if [ -n "$work" ]; then rm -rf "$work"; fi
-    if [ "$have_lock" -eq 1 ]; then rm -rf "$lock"; fi
-}
-trap cleanup EXIT
+# This run's own folder, next to $dir on the same file system. Only this run writes to it,
+# and it is removed on exit unless it was published.
+work=$(mktemp -d "$base/.$name.XXXXXX")
+published=0
+trap '[ "$published" -eq 1 ] || rm -rf "$work"' EXIT
 trap 'exit 1' HUP INT TERM
-
-# kill -0 fails for a live process of another user, so ps confirms.
-alive() { kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1; }
-
-waited=0
-until mkdir "$lock" 2>/dev/null; do
-    owner=$(cat "$lock/pid" 2>/dev/null) || owner=""
-    if [ -n "$owner" ] && ! alive "$owner"; then
-        # Move it aside before deleting, and give it back if another run took it over
-        # in between, so a live run's lock is never deleted.
-        stale="$lock.stale.$$"
-        if mv "$lock" "$stale" 2>/dev/null; then
-            if [ "$(cat "$stale/pid" 2>/dev/null)" = "$owner" ]; then
-                printf '[install-lint-tools] removed the lock of run %s, which no longer runs\n' "$owner" >&2
-                rm -rf "$stale"
-            else
-                mv "$stale" "$lock" 2>/dev/null || rm -rf "$stale"
-            fi
-        fi
-        continue
-    fi
-    [ "$waited" -lt "$lock_wait" ] \
-        || die "waited ${lock_wait}s for $lock (pid ${owner:-not written}). Remove it if no install is running."
-    sleep 1
-    waited=$((waited + 1))
-done
-have_lock=1
-printf '%s\n' "$$" > "$lock/pid"
-
-# Another run may have installed while this one waited.
-if installed "$dir"; then
-    printf '[install-lint-tools] installed by another run: %s\n' "$dir" >&2
-    printf '%s\n' "$dir"
-    exit 0
-fi
-
-# Staged next to the install, on the same file system, so publishing is one rename. Only
-# the lock holder stages for $dir, so a staging folder already there was left by a killed run.
-for old in "$dir".staging.*; do
-    if [ -e "$old" ]; then rm -rf "$old"; fi
-done
-work=$(mktemp -d "$dir.staging.XXXXXX")
 
 fetch() {  # <url> <file> <sha256>
     local got
@@ -132,28 +105,44 @@ fetch() {  # <url> <file> <sha256>
 }
 
 printf '[install-lint-tools] downloading shellcheck %s and actionlint %s into %s\n' \
-    "$SHELLCHECK_VERSION" "$ACTIONLINT_VERSION" "$dir" >&2
-fetch "$sc_url" "$work/shellcheck.tar.xz" "$sc_sha256"
-fetch "$al_url" "$work/actionlint.tar.gz" "$al_sha256"
-
-mkdir -p "$work/sc" "$work/al" "$work/bin"
-tar -xJf "$work/shellcheck.tar.xz" -C "$work/sc" || die "cannot extract shellcheck (is xz installed?)."
-tar -xzf "$work/actionlint.tar.gz" -C "$work/al" || die "cannot extract actionlint."
-cp "$work/sc/shellcheck-v$SHELLCHECK_VERSION/shellcheck" "$work/bin/shellcheck" \
+    "$SHELLCHECK_VERSION" "$ACTIONLINT_VERSION" "$work" >&2
+dl="$work/download"
+mkdir -p "$dl/sc" "$dl/al"
+fetch "$sc_url" "$dl/shellcheck.tar.xz" "$sc_sha256"
+fetch "$al_url" "$dl/actionlint.tar.gz" "$al_sha256"
+tar -xJf "$dl/shellcheck.tar.xz" -C "$dl/sc" || die "cannot extract shellcheck (is xz installed?)."
+tar -xzf "$dl/actionlint.tar.gz" -C "$dl/al" || die "cannot extract actionlint."
+cp "$dl/sc/shellcheck-v$SHELLCHECK_VERSION/shellcheck" "$work/shellcheck" \
     || die "shellcheck is not where the release archive keeps it."
-cp "$work/al/actionlint" "$work/bin/actionlint" || die "actionlint is not in its release archive."
-chmod +x "$work/bin/shellcheck" "$work/bin/actionlint"
-installed "$work/bin" || die "the downloaded tools do not report the pinned versions."
+cp "$dl/al/actionlint" "$work/actionlint" || die "actionlint is not in its release archive."
+rm -rf "$dl"
+chmod +x "$work/shellcheck" "$work/actionlint"
+installed "$work" || die "the downloaded tools do not report the pinned versions."
 
-# Publish with a single rename, so a run that stops halfway leaves no partial install
-# behind. Under the lock, an existing $dir failed the check above: it is a broken install,
-# and only then is it replaced. mv into an existing directory would nest, so the rename
-# only happens when $dir is gone.
-if [ -e "$dir" ] || [ -L "$dir" ]; then
-    printf '[install-lint-tools] replacing the broken install in %s\n' "$dir" >&2
-    rm -rf "$dir"
-fi
-[ ! -e "$dir" ] || die "cannot remove the broken install in $dir."
-mv "$work/bin" "$dir" || die "cannot move the tools into $dir."
-installed "$dir" || die "the installed tools in $dir do not run."
-printf '%s\n' "$dir"
+# Publish: ln -sn fails when $dir exists, so exactly one run's link wins. Without -n, ln
+# would create the link inside the folder that an existing $dir points at, and succeed. -n
+# is in GNU, BSD (macOS), and busybox ln. It does not help when $dir is a plain directory,
+# so then ln is not tried before that directory has been checked and moved aside. A run that loses
+# uses the install that won. When $dir is broken (a link to a folder that fails the check,
+# or an old plain directory), it is renamed aside and the link is created again. mv onto an
+# existing link to a directory would move into that directory, so the broken one is never
+# replaced in place. Nothing is deleted: another job may still use the old folder.
+link=$(basename "$work")
+for attempt in 1 2 3; do
+    if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+        if ln -sn "$link" "$dir" 2>/dev/null; then
+            published=1
+            use "installed" "$work"
+        fi
+    fi
+    if real=$(current_install); then
+        use "installed by another run" "$real"
+    fi
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        aside="$base/.broken.$name.$$.$attempt"
+        if mv "$dir" "$aside" 2>/dev/null; then
+            printf '[install-lint-tools] moved the broken install aside: %s\n' "$aside" >&2
+        fi
+    fi
+done
+die "cannot publish $dir: it is still there and broken after three attempts."
