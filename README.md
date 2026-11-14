@@ -116,6 +116,33 @@ is bash and runs under Git Bash on Windows.
 The plugin list lives only in `scripts/check.sh`. A test checks that it matches the
 `tasty-plugin-*` workspace members and that `LIBS` lists the members without a binary.
 
+### Plugins for a tasty checkout
+
+```
+scripts/dev-bundle.sh --out ../tasty/target/debug/builtin-plugins
+scripts/dev-bundle.sh --out ../tasty/target/debug/builtin-plugins --tasty ../tasty
+scripts/dev-bundle.sh --out DIR [--profile debug|release|dist] [--tasty DIR] [--target TRIPLE]
+```
+
+`dev-bundle.sh` builds every plugin, including those whose manifest says
+`bundle = false`, and puts each one in `DIR/<id>/` with its executable,
+`tasty-plugin.toml`, and `lang/`, the layout of tasty's `builtin-plugins` folder. It
+replaces only those `<id>` folders and leaves anything else in `DIR` alone. `debug`, the
+default, is cargo's dev profile.
+
+Without `--tasty`, the plugins are built against the tasty commit that `Cargo.lock` pins,
+with `--locked`. With `--tasty`, every package that `Cargo.lock` takes from the tasty git
+repository, including the `tiny_http` and `epaint` copies, is built from that local
+checkout instead, so changes to the plugin SDK or protocol there reach the plugins. The
+build then runs in a copy of this repository under `target/dev-bundle/` with
+`cargo --config 'patch...'` options, so `Cargo.lock` here does not change, and it fails
+if any of those packages still comes from git.
+
+Nothing is signed and no `.sig` file is written. A tasty debug build does not check plugin
+signatures. A tasty release or dist build loads these plugins only after tasty signs their
+manifests with the key it was built with, for example with
+`scripts/sign-bundle.sh --key <key> --manifest DIR/<id>/tasty-plugin.toml` in tasty.
+
 ## Notes
 
 - `fmt`, `lint`, and `test` cover the plugin crates and `plugin-pin-check`. Cargo does
