@@ -29,6 +29,12 @@ fi
 
 chmod +x .githooks/* 2>/dev/null || true
 
+# The setting is shared by every worktree of the clone, and the relative path is taken from
+# each worktree's own top folder, so each one runs the hooks of its own branch.
+HOOKS_DIR="$(git rev-parse --git-path hooks)"
+WORKTREES="$(git worktree list --porcelain | grep -c '^worktree ')"
+echo "Hooks of this tree: $HOOKS_DIR. Every worktree of this clone ($WORKTREES now) uses .githooks of its own tree."
+
 # The version check reads the dependency closure of every target offline, and a build
 # fetches only the host's crates, so fetch them all once here.
 echo "Fetching the crates of every target for the version check: cargo fetch --locked"

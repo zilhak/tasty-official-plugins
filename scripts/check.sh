@@ -15,6 +15,7 @@
 #
 # Build and check commands use --locked and audit only reads Cargo.lock, so it never changes.
 # Runs under bash on Linux and macOS and under Git Bash on Windows.
+# fmt, lint, test, build, and all warn on stderr when this clone does not run .githooks.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -89,8 +90,42 @@ cmd_list_bins() {
   return 0
 }
 
+# Warns on stderr when the git hooks of this tree's .githooks do not run here: core.hooksPath
+# is not set (bash scripts/dev-setup.sh was not run in this clone), points to a missing
+# folder, or points to another tree. It never fails and does not change the exit code. CI
+# checkouts have no hooks, and a source tarball has no git, so both stay quiet.
+warn_hooks() {
+  local top hp got want
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]] && return 0
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  hp=$(git config --type=path --get core.hooksPath 2>/dev/null) || hp=""
+  if [[ -z "$hp" ]]; then
+    echo "warning: core.hooksPath is not set for this clone, so the commit, merge, and push" \
+      "checks in .githooks do not run. Run bash scripts/dev-setup.sh once; every worktree" \
+      "of the clone shares the setting." >&2
+    return 0
+  fi
+  [[ "$hp" == /* ]] || hp="$top/$hp"
+  if ! got=$(cd "$hp" 2>/dev/null && pwd -P); then
+    echo "warning: core.hooksPath points to a missing folder ($hp), so no git hook runs." \
+      "Run bash scripts/dev-setup.sh." >&2
+    return 0
+  fi
+  want=$(cd "$top/.githooks" 2>/dev/null && pwd -P) || want=""
+  if [[ "$got" != "$want" ]]; then
+    echo "warning: the git hooks come from $got, not from .githooks of this tree, so the" \
+      "hooks of another tree or branch run here. Run bash scripts/dev-setup.sh." >&2
+  fi
+  return 0
+}
+
 sub="${1:-all}"
 [[ $# -gt 0 ]] && shift
+
+case "$sub" in
+  all | fmt | lint | test | build) warn_hooks ;;
+esac
 
 case "$sub" in
   all)
@@ -107,7 +142,7 @@ case "$sub" in
   list-plugins) cmd_list_plugins ;;
   list-bins) cmd_list_bins ;;
   -h | --help | help)
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "unknown subcommand: $sub (see scripts/check.sh help)" >&2
