@@ -40,44 +40,42 @@ jobs:
         include:
           - platform: windows-x64
             target: x86_64-pc-windows-msvc
-            runner: windows-latest
+            runner: [self-hosted, Windows, X64]
           - platform: windows-arm64
             target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
+            runner: [win-arm64]
           - platform: macos-arm64
             target: aarch64-apple-darwin
-            runner: macos-latest
+            runner: [self-hosted, macOS, ARM64]
           - platform: linux-x64
             target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: [self-hosted, Linux, X64]
           - platform: linux-arm64
             target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, Linux, ARM64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install rustup if missing (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (Get-Command rustup -ErrorAction SilentlyContinue) { exit 0 }
-          $arch = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-          $init = Join-Path $env:RUNNER_TEMP 'rustup-init.exe'
-          Invoke-WebRequest "https://static.rust-lang.org/rustup/dist/$arch-pc-windows-msvc/rustup-init.exe" -OutFile $init
-          & $init -y --default-toolchain none --profile minimal
-          Add-Content $env:GITHUB_PATH (Join-Path $env:USERPROFILE '.cargo\bin')
-      - name: Install rustup if missing (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          command -v rustup >/dev/null && exit 0
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
-            sh -s -- -y --default-toolchain none --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      # The runner service may start without the rustup proxies on PATH, as on
+      # tasty's Linux runners.
+      - name: Setup PATH (Linux)
+        if: runner.os == 'Linux'
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Install toolchain and target
+      # The toolchain in rust-toolchain.toml must already be on the runner; see
+      # docs/ci.md. Jobs do not install toolchains, targets, or packages.
+      - name: Show toolchain
         run: |
-          rustup toolchain install || rustup show
-          rustup target add ${{ matrix.target }}
+          rustup show active-toolchain
+          cargo --version
+
+      # windows-arm64 is cross-built on an x64 Windows host, as in tasty.
+      - name: Check target
+        run: |
+          rustup target list --installed | tr -d '\r' | grep -qx '${{ matrix.target }}' || {
+            echo "::error::Rust target ${{ matrix.target }} is not installed on this runner; see docs/ci.md"
+            exit 1
+          }
 
       # 1. Build with the dist profile and stage <id>/ folders.
       - name: Build and stage

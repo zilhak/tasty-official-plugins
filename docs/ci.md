@@ -12,9 +12,11 @@ workflow.
 | `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: unit tests on Windows x64 and macOS arm64. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
 | `.github/workflows/release.yml` | manual only (`workflow_dispatch`); packages of the released version are built with `--ref main` | Builds with the `dist` profile, packages each plugin, runs the signing steps (skipped without secrets), and uploads the result as workflow artifacts. It does not create a GitHub Release |
 
-Both workflows use `permissions: contents: read`. `ci.yml` cancels an older run on the
-same ref, so a push to one branch never cancels a run on another. Every job has
-`timeout-minutes`.
+Both workflows use `permissions: contents: read`. In `ci.yml`, a new run waits for the
+older run on the same ref instead of cancelling it, as in tasty: on the self-hosted
+runners a run can take longer than the time between pushes, and a waiting run is
+replaced by the newer push. Pull request runs cancel the older run. A run never waits
+for a run on another ref. Every job has `timeout-minutes`.
 
 The same jobs run on `develop`, `release`, and `main`. A commit fast-forwarded from
 `develop` to `release` and `main` is checked again on each branch. A manual run without
@@ -23,39 +25,58 @@ The same jobs run on `develop`, `release`, and `main`. A commit fast-forwarded f
 
 ## Platforms and runners
 
-The repository has no self-hosted runners. tasty's self-hosted runners belong to the
-tasty repository and cannot be used here. This repository is public, so it uses
-GitHub-hosted runners at no cost.
+Every job runs on a self-hosted runner registered for this repository. The labels follow
+tasty's runners, and the runners live on the same machines as tasty's, in
+separate runner folders. Checkouts and the runner tool cache are per runner folder, so
+they are not shared with tasty.
 
-| Platform label | Target | Runner |
+| Platform label | Target | Runner labels |
 |---|---|---|
-| `windows-x64` | `x86_64-pc-windows-msvc` | `windows-latest` |
-| `windows-arm64` | `aarch64-pc-windows-msvc` | `windows-11-arm` |
-| `macos-arm64` | `aarch64-apple-darwin` | `macos-latest` (Apple Silicon) |
-| `linux-x64` | `x86_64-unknown-linux-gnu` | `ubuntu-latest` |
-| `linux-arm64` | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` |
+| `windows-x64` | `x86_64-pc-windows-msvc` | `[self-hosted, Windows, X64]` |
+| `windows-arm64` | `aarch64-pc-windows-msvc` | `[win-arm64]`, an x64 Windows host that cross-builds, as in tasty |
+| `macos-arm64` | `aarch64-apple-darwin` | `[self-hosted, macOS, ARM64]` |
+| `linux-x64` | `x86_64-unknown-linux-gnu` | `[self-hosted, Linux, X64]` |
+| `linux-arm64` | `aarch64-unknown-linux-gnu` | `[self-hosted, Linux, ARM64]` |
+
+The `check` and `audit` jobs run on `[self-hosted, Linux, X64]`, and the `test` job on
+the Windows x64 and macOS runners.
 
 These are the same five platforms that tasty releases. Linux ARM64 is included because
 tasty ships a Linux ARM64 package, and the full-package lock file needs a plugin hash
 for every platform.
 
-The `build` and `package` jobs pass `--target` explicitly, even on a native runner. The ARM64 runner
-images may not include rustup, so the workflows install it when it is missing. The
-toolchain itself comes from `rust-toolchain.toml`. If `windows-11-arm` stops being
-available, Windows ARM64 can be cross-built on `windows-latest` after
-`rustup target add aarch64-pc-windows-msvc`, as tasty does.
+The `build` and `package` jobs pass `--target` explicitly, even on a native runner.
 
-Self-hosted runners are possible later, but someone has to register them for this
-repository first. Then change `runner` in the matrix.
+A runner runs one job at a time, so jobs with the same labels wait for each other,
+including jobs from `ci.yml` and `release.yml`. The runners can run at the same time as
+tasty's runners on the same machine. GitHub concurrency groups do not reach across
+repositories, so the workflows here add no group for that: a group in this repository
+would only order runs of this repository, which the runner queue already does.
+
+### What the runners need
+
+Jobs do not change machine-wide state: they install no system packages, no toolchains
+or targets, and nothing into `~/.cargo/bin`. The jobs check for the toolchain, the
+build target, and the Linux WebKitGTK files, and fail with a message that points here
+when one is missing. Each runner needs:
+
+| Runner | Needs |
+|---|---|
+| All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, `tar`, `sha256sum` or `shasum`, and `jq` or Python 3 (`scripts/package-plugin.sh`). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
+| Windows (both) | Git for Windows (its bash runs `scripts/check.sh`), PowerShell 7 (`pwsh`), and Visual Studio Build Tools with the MSVC x64 tools, `vswhere.exe`, and `dumpbin.exe` |
+| `[win-arm64]` | In addition, the MSVC ARM64 build tools (C dependencies are compiled for ARM64) and the `aarch64-pc-windows-msvc` Rust target installed for the toolchain above |
+| `[self-hosted, Linux, X64]` | `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache |
+| `[self-hosted, Linux, ARM64]` | A C compiler |
+| `[self-hosted, macOS, ARM64]` | The Xcode command line tools |
 
 ## Tests by platform
 
 | Platform | Job | What runs |
 |---|---|---|
-| `linux-x64` | `check` on `ubuntu-latest` | `scripts/check.sh test`: every test of every workspace crate that is not `#[ignore]` (the eight `#[ignore]` tests of `tasty-plugin-codex` and the two WebKitGTK tests do not run here) |
+| `linux-x64` | `check` on `[self-hosted, Linux, X64]` | `scripts/check.sh test`: every test of every workspace crate that is not `#[ignore]` (the eight `#[ignore]` tests of `tasty-plugin-codex` and the two WebKitGTK tests do not run here) |
 | `linux-x64` | `check`, step "test (linux, webview layout)" | The two `#[ignore]` WebKitGTK tests of `tasty-plugin-markdown` under `xvfb-run`, with the same commands as tasty's `crossplatform-check.yml`. As in tasty, a failure is reported but does not fail the job yet |
-| `windows-x64` | `test` on `windows-latest` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |
-| `macos-arm64` | `test` on `macos-latest` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |
+| `windows-x64` | `test` on `[self-hosted, Windows, X64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |
+| `macos-arm64` | `test` on `[self-hosted, macOS, ARM64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |
 | `windows-arm64`, `linux-arm64` | `build` | Build only. The plugin code branches on the operating system, not the CPU, so the x64 test runs cover the same code paths |
 
 The `--lib --bins` scope is the one tasty uses for its Windows and macOS unit tests.
@@ -64,24 +85,27 @@ Clippy (`scripts/check.sh lint`) runs natively on `linux-x64` (`check` job),
 `windows-x64`, and `macos-arm64` (`test` job). It does not run for `windows-arm64` or
 `linux-arm64`.
 
-The `check` job installs `libwebkit2gtk-4.1-dev` and `xvfb`. The first brings the GTK 3,
-JavaScriptCore, and libsoup 3 headers that the `tasty-plugin-markdown` Linux
-dev-dependencies (`webkit2gtk`, `gtk`, `javascriptcore-rs`) link against. The `build`
-job needs no extra packages, because it builds no dev-dependencies.
+The `check` job checks that the WebKitGTK 4.1 development files are installed on the
+runner. The `tasty-plugin-markdown` Linux dev-dependencies (`webkit2gtk`, `gtk`,
+`javascriptcore-rs`) link against them. The `build` job needs no extra packages,
+because it builds no dev-dependencies.
 
 ## Actions and cache
 
 - Actions are pinned to a commit sha, with the version in a comment
-  (`actions/checkout` v7.0.1, `Swatinem/rust-cache` v2.9.3, `actions/upload-artifact`
-  v7.0.2). Update the sha and the comment together.
-- `Swatinem/rust-cache` builds its cache key from the hash of `Cargo.lock` and
-  `rust-toolchain.toml`. The build job adds the target triple to the key. The release
-  workflow does not use a cache, so release builds always start clean.
+  (`actions/checkout` v7.0.1, `actions/upload-artifact` v7.0.2). Update the sha and the
+  comment together.
+- The workflows use no build cache action, as in tasty. `actions/checkout` cleans the
+  runner's working directory with `git clean -ffdx`, which also removes `target/`, so
+  every job builds from scratch. Downloaded crates stay in the runner user's Cargo
+  home. `Swatinem/rust-cache` is not used because its save step cleans up the registry
+  in that Cargo home, which tasty's runners on the same machine may share.
 
 ## Advisory check
 
 The `audit` job in `ci.yml` installs `cargo-audit` at the version in `CARGO_AUDIT_VERSION`
-and runs `scripts/check.sh audit`. To update the tool, change that value.
+into the runner tool cache (`$RUNNER_TOOL_CACHE/cargo-audit/<version>`) when it is not
+there yet, and runs `scripts/check.sh audit`. To update the tool, change that value.
 
 `cargo audit` reads `Cargo.lock` directly, so it also checks the crates.io dependencies that
 only the bin-only plugin crates use. It matches advisories only against crates.io packages.
@@ -194,4 +218,4 @@ These depend on stage 2 decisions about the plugin contract and trust model:
 | Static CRT on Windows | "Inspect DLL imports with dumpbin (Windows)" step in the two Windows build jobs | Passed on both Windows targets (CI run 42402231647) |
 | Release skeleton | `gh workflow run release.yml --ref main`, then `gh run download <id>`: each `plugins-<platform>` artifact holds the archives, `SHA256SUMS-<platform>.txt`, and `plugins-<platform>.tsv`. The signing step logs contain `unsigned:` | Passed: five artifacts, each with 7 archives, the SHA-256 list, and the TSV; `sha256sum -c` passed; every job logged `unsigned:` (release run 42402274255) |
 | No release created | `gh release list` is empty | Passed: no releases |
-| Extra system packages | Whether the Linux runners need packages beyond the image defaults. A local Linux ARM64 build needed none | None needed on the hosted Linux runners (CI run 42402231647). Since the plugin sources moved here, the `check` job installs `libwebkit2gtk-4.1-dev` and `xvfb` for the plugin tests; the `build` jobs still need none |
+| Extra system packages | Whether the Linux runners need packages beyond the image defaults. A local Linux ARM64 build needed none | None needed on the hosted Linux runners (CI run 42402231647). Since the plugin sources moved here, the plugin tests need WebKitGTK 4.1 and `xvfb` on the `check` runner (see [What the runners need](#what-the-runners-need)); the `build` jobs still need none |

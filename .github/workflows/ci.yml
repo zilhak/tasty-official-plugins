@@ -15,9 +15,13 @@ on:
 permissions:
   contents: read
 
+# A push to a branch does not cancel the run in progress, as in tasty: on the
+# self-hosted runners a run can take longer than the time between pushes, and a
+# waiting run is replaced by the newer push anyway. Pull requests only need the
+# latest commit. The group only covers runs of this repository; see docs/ci.md.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,26 +34,33 @@ defaults:
 jobs:
   check:
     name: fmt, clippy, test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # rustup installs the toolchain named in rust-toolchain.toml.
-      - name: Install toolchain
-        run: rustup toolchain install || rustup show
+      # The runner service may start without the rustup proxies on PATH, as on
+      # tasty's Linux runners.
+      - name: Setup PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # The toolchain in rust-toolchain.toml must already be on the runner; see
+      # docs/ci.md. Jobs do not install toolchains, targets, or packages.
+      - name: Show toolchain
+        run: |
+          rustup show active-toolchain
+          cargo --version
 
       # tasty-plugin-markdown's Linux dev-dependencies (webkit2gtk, gtk,
-      # javascriptcore-rs) link against WebKitGTK 4.1; libwebkit2gtk-4.1-dev
-      # brings the GTK 3, JavaScriptCore, and libsoup 3 headers with it.
-      # xvfb runs the WebKitGTK tests below.
-      - name: Install system packages
+      # javascriptcore-rs) link against WebKitGTK 4.1 (libwebkit2gtk-4.1-dev, which
+      # brings the GTK 3, JavaScriptCore, and libsoup 3 headers). The packages must
+      # already be installed on the runner; this step only checks for them.
+      - name: Check system packages
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev xvfb
-
-      # The cache key includes the hash of Cargo.lock and rust-toolchain.toml.
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+          pkg-config --exists webkit2gtk-4.1 javascriptcoregtk-4.1 gtk+-3.0 libsoup-3.0 || {
+            echo "::error::WebKitGTK 4.1 development files are missing on this runner; see docs/ci.md"
+            exit 1
+          }
 
       - name: fmt
         run: scripts/check.sh fmt
@@ -86,18 +97,18 @@ jobs:
       matrix:
         include:
           - platform: windows-x64
-            runner: windows-latest
+            runner: [self-hosted, Windows, X64]
           - platform: macos-arm64
-            runner: macos-latest
+            runner: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install toolchain
-        run: rustup toolchain install || rustup show
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: test-${{ matrix.platform }}
+      # The toolchain in rust-toolchain.toml must already be on the runner; see
+      # docs/ci.md. Jobs do not install toolchains, targets, or packages.
+      - name: Show toolchain
+        run: |
+          rustup show active-toolchain
+          cargo --version
 
       - name: clippy
         run: scripts/check.sh lint
@@ -107,18 +118,34 @@ jobs:
   # Separate job: a new advisory fails this job without touching check and build.
   audit:
     name: cargo audit
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 15
     env:
       CARGO_AUDIT_VERSION: 0.22.2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install toolchain
-        run: rustup toolchain install || rustup show
+      # The runner service may start without the rustup proxies on PATH, as on
+      # tasty's Linux runners.
+      - name: Setup PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+      # The toolchain in rust-toolchain.toml must already be on the runner; see
+      # docs/ci.md. Jobs do not install toolchains, targets, or packages.
+      - name: Show toolchain
+        run: |
+          rustup show active-toolchain
+          cargo --version
+
+      # Installed under this runner's tool cache, not in ~/.cargo/bin, and reused
+      # by later runs of the same version.
+      - name: Install cargo-audit (runner tool cache)
+        run: |
+          root="$RUNNER_TOOL_CACHE/cargo-audit/$CARGO_AUDIT_VERSION"
+          if [ ! -x "$root/bin/cargo-audit" ]; then
+            cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked --root "$root"
+          fi
+          echo "$root/bin" >> "$GITHUB_PATH"
 
       - name: cargo audit
         run: scripts/check.sh audit
@@ -133,49 +160,42 @@ jobs:
         include:
           - platform: windows-x64
             target: x86_64-pc-windows-msvc
-            runner: windows-latest
+            runner: [self-hosted, Windows, X64]
           - platform: windows-arm64
             target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
+            runner: [win-arm64]
           - platform: macos-arm64
             target: aarch64-apple-darwin
-            runner: macos-latest
+            runner: [self-hosted, macOS, ARM64]
           - platform: linux-x64
             target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: [self-hosted, Linux, X64]
           - platform: linux-arm64
             target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, Linux, ARM64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Some partner runner images (ARM64) may not ship rustup.
-      - name: Install rustup if missing (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (Get-Command rustup -ErrorAction SilentlyContinue) { exit 0 }
-          $arch = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-          $init = Join-Path $env:RUNNER_TEMP 'rustup-init.exe'
-          Invoke-WebRequest "https://static.rust-lang.org/rustup/dist/$arch-pc-windows-msvc/rustup-init.exe" -OutFile $init
-          & $init -y --default-toolchain none --profile minimal
-          Add-Content $env:GITHUB_PATH (Join-Path $env:USERPROFILE '.cargo\bin')
-      - name: Install rustup if missing (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          command -v rustup >/dev/null && exit 0
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
-            sh -s -- -y --default-toolchain none --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      # The runner service may start without the rustup proxies on PATH, as on
+      # tasty's Linux runners.
+      - name: Setup PATH (Linux)
+        if: runner.os == 'Linux'
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Install toolchain and target
+      # The toolchain in rust-toolchain.toml must already be on the runner; see
+      # docs/ci.md. Jobs do not install toolchains, targets, or packages.
+      - name: Show toolchain
         run: |
-          rustup toolchain install || rustup show
-          rustup target add ${{ matrix.target }}
+          rustup show active-toolchain
+          cargo --version
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: ${{ matrix.target }}
+      # windows-arm64 is cross-built on an x64 Windows host, as in tasty.
+      - name: Check target
+        run: |
+          rustup target list --installed | tr -d '\r' | grep -qx '${{ matrix.target }}' || {
+            echo "::error::Rust target ${{ matrix.target }} is not installed on this runner; see docs/ci.md"
+            exit 1
+          }
 
       - name: Build plugins
         run: scripts/check.sh build --target ${{ matrix.target }}
