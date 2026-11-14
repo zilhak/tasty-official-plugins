@@ -14,6 +14,17 @@ tasty commit.
 candidates, and `main` holds the released version. Work branches start from `develop`,
 and pull requests target `develop`. See [docs/branching.md](docs/branching.md).
 
+## Releases
+
+A `v*` tag on `main` publishes the eight plugins for five platforms on a GitHub Release
+of this repository: one archive per plugin and platform, a SHA-256 list and a TSV list
+per platform, and `release-meta.toml`. The tag is `v` + the version in `VERSION`. The
+packages are not signed. See [docs/ci.md](docs/ci.md#releases).
+
+## License
+
+MIT. See [LICENSE](LICENSE). Each plugin archive includes a copy as `<id>/LICENSE`.
+
 ## Pinned tasty commit
 
 `e277fce41d9a2db8bf3c14fda8f56dd6415bfcbc`

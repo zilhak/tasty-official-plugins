@@ -10,6 +10,9 @@ which is the reference. This page summarizes them and lists what differs here.
 | `release` | Release candidate | A commit chosen from `develop`. Verification on real runs and release fixes. Back-merges from `main` |
 | `main` | Released version. Release tags (`v*`) go only on `main` commits | `release` at release time. Hotfixes |
 
+The repository version is in `VERSION`. A release tag is `v` + `VERSION`, for example
+`v0.1.0` for `0.1.0`.
+
 Because `develop` is the default branch, a new clone checks it out, pull requests
 target it, and a manual workflow run without `--ref` runs on it.
 
@@ -25,9 +28,9 @@ target it, and a manual workflow run without `--ref` runs on it.
 1. Move `release` to a commit chosen from `develop`. If `release` is an ancestor of that
    commit, use `git merge --ff-only <commit>`. Otherwise (a release fix is not yet on
    `develop`) merge it with a merge commit.
-2. Verify the candidate on `release`. Commit release fixes on `release`.
-3. Back-merge the fixes from `release` into `develop`. If `develop` is ahead, this is a
-   merge commit.
+2. Bump `VERSION` on `release` in its own commit.
+3. Verify the candidate on `release`. Commit release fixes on `release`.
+4. Back-merge `release` into `develop`. If `develop` is ahead, this is a merge commit.
 
 `release` takes no new features: only verification and release fixes.
 
@@ -35,25 +38,23 @@ target it, and a manual workflow run without `--ref` runs on it.
 
 1. Fast-forward `main` to `release` (`git merge --ff-only release`). If `main` has a
    hotfix that `release` lacks, back-merge `main` into `release` first.
-2. Push `release` and `main` together: `git push --atomic origin release main`.
-3. Build the packages of the released version from `main`:
-   `gh workflow run release.yml --ref main`.
+2. Tag the `main` commit with `v` + `VERSION`: `git tag -a vX.Y.Z -m vX.Y.Z`.
+3. Push `release`, `main`, and the tag together:
+   `git push --atomic origin release main vX.Y.Z`.
 
-This repository has no tag-triggered release yet (see [CI and release workflows](ci.md)).
-When tags are used, a tag goes on a `main` commit and is pushed in the same atomic push
-as `release` and `main`, as in tasty.
+The tag push starts `release.yml`, which checks that the tag commit is on `main` and
+that the tag equals `v` + `VERSION`, then publishes the Release of the tag
+([CI and release workflows](ci.md#releases)). If the run fails, the Release stays a
+draft; fix the cause and rerun the workflow for the same tag.
 
 ## Hotfixes
 
-1. Branch from `main`, fix, and land the fix on `main`. Push `main` alone; `release` is
-   not part of this push.
-2. After CI passes on `main`, build the packages from `main`:
-   `gh workflow run release.yml --ref main`.
+1. Branch from `main`, fix, and bump the patch number in `VERSION`. Land the fix and the
+   bump on `main`.
+2. Tag the `main` commit (`git tag -a vX.Y.Z -m vX.Y.Z`) and push `main` with the tag
+   only: `git push --atomic origin main vX.Y.Z`. `release` is not part of this push.
 3. Back-merge `main` into `release` and `develop`. If the target is ahead, this is a
    merge commit.
-
-When tags are used, the hotfix tag goes on the `main` commit and is pushed with `main`
-only (`git push --atomic origin main vX.Y.Z`), as in tasty.
 
 Do not back-merge with cherry-pick. A cherry-picked commit has a different hash, so the
 next `release` to `main` promotion cannot fast-forward.
@@ -75,11 +76,11 @@ table is kept by the merge procedure.
 
 ## What differs from tasty
 
-- This repository has no version of its own. Plugin versions are the `version` values in
-  each crate's `Cargo.toml` and `tasty-plugin.toml` in this repository. There is no version
-  commit on `release`.
-- The release workflow is manual only and has no tag trigger or publish job yet. The
-  tag-triggered release waits for the stage 2 release decisions in [ci.md](ci.md).
+- The repository version in `VERSION` names the release and its tag only. Each plugin
+  keeps its own version, the `version` in its crate's `Cargo.toml` and
+  `tasty-plugin.toml`, and a release does not change it.
+- A manual run of `release.yml` builds the release files as workflow artifacts with the
+  tag `unreleased` in `release-meta.toml` and creates no Release.
 - There are no git hooks.
 
 ## Branch protection

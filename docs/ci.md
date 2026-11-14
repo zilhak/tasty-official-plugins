@@ -10,9 +10,10 @@ workflow.
 | File | Trigger | What it does |
 |---|---|---|
 | `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: unit tests on Windows x64 and macOS arm64. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
-| `.github/workflows/release.yml` | manual only (`workflow_dispatch`); packages of the released version are built with `--ref main` | Builds with the `dist` profile, packages each plugin, runs the signing steps (skipped without secrets), and uploads the result as workflow artifacts. It does not create a GitHub Release |
+| `.github/workflows/release.yml` | push of a `v*` tag; manual (`workflow_dispatch`) | On a tag, releases the plugins on a GitHub Release of this repository (see [Releases](#releases)). A manual run builds the same release files as workflow artifacts and creates no Release |
 
-Both workflows use `permissions: contents: read`. In `ci.yml`, a new run waits for the
+Both workflows use `permissions: contents: read` by default. In `release.yml`, only the
+`create-release` and `publish` jobs get `contents: write`. In `ci.yml`, a new run waits for the
 older run on the same ref instead of cancelling it, as in tasty: on the self-hosted
 runners a run can take longer than the time between pushes, and a waiting run is
 replaced by the newer push. Pull request runs cancel the older run. A run never waits
@@ -70,10 +71,10 @@ Each runner needs:
 
 | Runner | Needs |
 |---|---|
-| All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, `tar`, `sha256sum` or `shasum`, and `jq` or Python 3 (`scripts/package-plugin.sh`). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
+| All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, `tar`, `sha256sum` or `shasum`, and `jq` or Python 3 (`scripts/package-plugin.sh`, `scripts/release-meta.sh`). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
 | Windows (both) | Git for Windows, whose bash runs `scripts/check.sh` (bash need not be on `PATH`: the jobs find `bin\bash.exe` from the location of `git` and put that folder first on `PATH`, ahead of the WSL bash in System32), PowerShell 7 (`pwsh`), and Visual Studio Build Tools with the MSVC x64 tools, `vswhere.exe`, and `dumpbin.exe` |
 | `[win-arm64]` | In addition, the MSVC ARM64 build tools (C dependencies are compiled for ARM64) and the `aarch64-pc-windows-msvc` Rust target installed for the toolchain above |
-| `[self-hosted, Linux, X64]` | `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache |
+| `[self-hosted, Linux, X64]` | `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `create-release` and `publish` jobs of `release.yml` need the GitHub CLI (`gh`) and `sha256sum` |
 | `[self-hosted, Linux, ARM64]` | A C compiler |
 | `[self-hosted, macOS, ARM64]` | The Xcode command line tools |
 
@@ -101,8 +102,8 @@ because it builds no dev-dependencies.
 ## Actions and cache
 
 - Actions are pinned to a commit sha, with the version in a comment
-  (`actions/checkout` v7.0.1, `actions/upload-artifact` v7.0.2). Update the sha and the
-  comment together.
+  (`actions/checkout` v7.0.1, `actions/upload-artifact` v7.0.2,
+  `actions/download-artifact` v8.0.2). Update the sha and the comment together.
 - The workflows use no build cache action, as in tasty. `actions/checkout` cleans the
   runner's working directory with `git clean -ffdx`, which also removes `target/`, so
   every job builds from scratch. Downloaded crates stay in the runner user's Cargo
@@ -153,25 +154,40 @@ order:
 
 1. `stage`: build with `scripts/check.sh build --profile dist --target <triple>`, then
    copy each plugin into `<out>/<platform>/stage/<id>/` with its executable,
-   `tasty-plugin.toml`, and `lang/`. `<id>` is the manifest `id`, for example
-   `com.tasty.claude`.
-2. Binary codesigning (workflow step, placeholder).
-3. `sign-manifests`: write `tasty-plugin.toml.sig` next to each staged manifest.
-4. `pack`: one `<id>-<version>-<platform>.tar.gz` per plugin. `<version>` is the
+   `tasty-plugin.toml`, `lang/`, and the repository `LICENSE`. `<id>` is the manifest
+   `id`, for example `com.tasty.claude`.
+2. `pack`: one `<id>-<version>-<platform>.tar.gz` per plugin. `<version>` is the
    manifest `version`.
-5. `pack` then writes `SHA256SUMS-<platform>.txt` (the `sha256sum` format) and
+3. `pack` then writes `SHA256SUMS-<platform>.txt` (the `sha256sum` format) and
    `plugins-<platform>.tsv` with the columns `id`, `version`, `platform`, `file`,
-   `sha256`. The hashes cover the archives after signing.
+   `sha256`.
+
+The packages are not signed. `pack` fails if the stage holds a `.sig` file or if an
+archive contains one.
 
 The script finds each executable through the `executable` field of cargo's
 `compiler-artifact` messages. It copies the manifest and `lang/` from `crates/<crate>/`
-in this repository. Signing works on the staged copies, not on the manifests in
-`crates/`.
+in this repository.
 
 Example:
 
 ```
-scripts/package-plugin.sh all --platform linux-x64 --target x86_64-unknown-linux-gnu --out target/package
+scripts/package-plugin.sh all --all --platform linux-x64 --target x86_64-unknown-linux-gnu --out target/package
+```
+
+Each archive holds one folder, `<id>/`. For example, `com.tasty.claude-0.3.0-linux-arm64.tar.gz`
+lists:
+
+```
+com.tasty.claude/
+com.tasty.claude/tasty-plugin-claude
+com.tasty.claude/tasty-plugin.toml
+com.tasty.claude/lang/
+com.tasty.claude/lang/en.toml
+com.tasty.claude/lang/ko.toml
+com.tasty.claude/lang/zh-Hans.toml
+com.tasty.claude/lang/ja.toml
+com.tasty.claude/LICENSE
 ```
 
 The archives are tar.gz on every platform, including Windows, so one format and one
@@ -180,45 +196,111 @@ hash list serve all platforms. The script needs bash, tar, `sha256sum` or `shasu
 
 ### Plugins in the packages
 
-The release workflow follows tasty's current rule: plugins whose manifest says
-`bundle = false` are left out. That leaves out
-`tasty-plugin-agent-stream`, so seven plugins are packaged. The `include_unbundled` input
-packages all eight. `tasty-plugin-mesh-demo` stays in tasty as an SDK example and is not
-built here.
+The release workflow packages all eight plugin crates with `--all`, including
+`tasty-plugin-agent-stream`, whose manifest says `bundle = false`. The `bundle` value of
+each plugin is recorded in `release-meta.toml`, so tasty decides what to bundle.
+`tasty-plugin-mesh-demo` stays in tasty as an SDK example and is not built here.
 
-Decided on 2026-11-08: downloadable packages leave out `bundle = false` plugins, as
-tasty does now.
+## Releases
 
-## Signing and release status
+The repository version is in `VERSION` (`MAJOR.MINOR.PATCH`). A release is the push of
+the tag `v` + `VERSION` on a `main` commit. The release steps are in
+[branching.md](branching.md).
 
-The signing steps are placeholders, and nothing is published.
+### Jobs
 
-| Step | Secret it reads | Without the secret | With the secret |
+| Job | Runner | Permissions | What it does |
 |---|---|---|---|
-| Manifest signature (`tasty-plugin.toml.sig`) | `PLUGIN_MANIFEST_SIGNING_KEY` (Ed25519 private key, PEM) | Logs `unsigned:` and continues | Signs the staged manifests the same way as tasty's `scripts/sign-bundle.sh`: Ed25519 over the SHA-256 digest of the manifest, raw 64 bytes |
-| macOS codesign and notarization | `APPLE_CODESIGN_CERTIFICATE_P12` | Logs `unsigned:` and continues | Fails: not implemented |
-| Windows Authenticode | `WINDOWS_CODESIGN_CERTIFICATE` | Logs `unsigned:` and continues | Fails: not implemented |
+| `create-release` | `[self-hosted, Linux, X64]` | `contents: write` | Tag runs only. Fails unless the tag commit is an ancestor of `origin/main` and the tag equals `v` + `VERSION`. Fails if a published Release with the tag exists. Reuses a draft Release only if its notes record the same commit (`Commit: <sha>`), and fails otherwise. Without a Release, creates a draft whose notes give the commit and the tasty rev |
+| `release-meta` | `[self-hosted, Linux, X64]` | `contents: read` | Writes `release-meta.toml` with `scripts/release-meta.sh` and uploads it as the artifact `release-meta` |
+| `package` | the five platform runners | `contents: read` | Builds and packages the eight plugins and uploads the artifact `plugins-<platform>` |
+| `publish` | `[self-hosted, Linux, X64]` | `contents: write` | Tag runs only. Downloads the artifacts, runs `sha256sum -c` for each platform, checks that each platform has 8 archives, 8 hash lines, and 8 TSV rows, that `release-meta.toml` names this tag, commit, and the 8 plugins, and that there are 51 files. Uploads them to the draft, then publishes the Release |
 
-GitHub Actions cannot use the `secrets` context in `if:`, so each step reads its secret
-through `env` and checks in the shell whether it is empty.
+On a tag run, `release-meta` and `package` start only after `create-release` succeeds.
 
-The release workflow has no tag trigger and no publish job. It uploads the packages
-only as workflow artifacts named `plugins-<platform>`. Packages of the released
-version are built from `main` (`gh workflow run release.yml --ref main`). Release tags
-go only on `main` commits ([branching.md](branching.md)). When a tag trigger is added,
-the workflow must first check that the tagged commit is an ancestor of `origin/main`,
-as tasty's release workflow does.
+### Release files
 
-These depend on stage 2 decisions about the plugin contract and trust model:
+| File | Count |
+|---|---|
+| `<id>-<version>-<platform>.tar.gz` | 8 plugins × 5 platforms = 40 |
+| `SHA256SUMS-<platform>.txt` | 5 |
+| `plugins-<platform>.tsv` | 5 |
+| `release-meta.toml` | 1 |
 
-- The long-term signing key, its secret name, and who holds it.
-- Signing scope: manifest only, or the binaries and archives as well.
-- Key rotation, and how the host trusts a new key.
-- The minimum host version a plugin package declares.
-- Where packages are published (tasty Releases, according to the current plan) and the
-  file names and hash list format the full-package lock file reads.
+The files are attached to the Release of the tag in this repository and are
+downloaded from
+`https://github.com/zilhak/tasty-official-plugins/releases/download/<tag>/<file>`.
+There is no merged hash list or TSV across platforms.
+
+### Failures and reruns
+
+If any job fails or is cancelled, the Release stays a draft and nothing is published.
+A rerun of the workflow for the same tag reuses the draft. `publish` does not overwrite
+an asset: an asset already on the draft is skipped if its SHA-256 equals the new file,
+and the job fails if it differs. The job also fails if the draft has an asset that is
+not one of the 51 files. In that case, delete the draft (or the asset) by hand and rerun.
+
+### release-meta.toml
+
+`scripts/release-meta.sh` writes the release metadata. tasty reads it with the
+`plugins-<platform>.tsv` files to build its official plugin lock file.
+
+```toml
+# Release metadata of zilhak/tasty-official-plugins. Written by scripts/release-meta.sh.
+schema = 1
+
+[release]
+repository = "zilhak/tasty-official-plugins"
+tag = "v0.1.0"
+commit = "<40-hex commit of this repository>"
+tasty_rev = "e277fce41d9a2db8bf3c14fda8f56dd6415bfcbc"
+host_api_version = "1"
+protocol_version = "0.2.16"
+manifest_version = 1
+epaint_version = "0.31.1"
+epaint_patch_tree = "37251c43b1d13d12fb6d4c81f3589ace67a0ac12"
+
+[[plugin]]
+id = "com.tasty.agent-stream"
+version = "0.2.0"
+bundle = false
+
+[[plugin]]
+id = "com.tasty.claude"
+version = "0.3.0"
+bundle = true
+
+# ... one [[plugin]] entry per plugin, eight in all
+```
+
+| Key | Source |
+|---|---|
+| `tag` | The release tag. A manual run and a local run without `--tag` write `unreleased` |
+| `commit` | The commit of this repository the packages were built from |
+| `tasty_rev` | The tasty rev pinned in the root `Cargo.toml` |
+| `host_api_version`, `manifest_version` | `HOST_API_VERSION` and `MANIFEST_VERSION` in tasty's `crates/tasty-plugin-manifest/src/types.rs` at `tasty_rev` |
+| `protocol_version` | The version of the `tasty-plugin-protocol` package at `tasty_rev` |
+| `epaint_version` | The `epaint` version in `Cargo.lock` |
+| `epaint_patch_tree` | The git tree id of tasty's `vendor/epaint` at `tasty_rev` |
+| `[[plugin]]` | `id`, `version`, and `bundle` from each plugin's `tasty-plugin.toml`. `bundle` is `true` unless the manifest says otherwise |
+
+The tasty values are read from Cargo's git checkout of the tasty crates, after the
+script checks that the checkout is at `tasty_rev`. To write the file locally:
+
+```
+scripts/release-meta.sh --tag unreleased --out target/release-meta.toml
+```
+
+### Not signed
+
+The packages, manifests, and binaries are not signed, and there is no macOS codesign or
+notarization and no Windows Authenticode step. The release needs no signing secrets.
+Whether and how to sign is left to the plugin trust model.
 
 ## Checks after the first push
+
+These checks ran on the earlier manual-only release workflow, which had placeholder
+signing steps and packaged seven plugins.
 
 | Check | How | Result |
 |---|---|---|
