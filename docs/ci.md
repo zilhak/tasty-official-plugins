@@ -54,11 +54,15 @@ repository first. Then change `runner` in the matrix.
 |---|---|---|
 | `linux-x64` | `check` on `ubuntu-latest` | `scripts/check.sh test`: every test of every workspace crate |
 | `linux-x64` | `check`, step "test (linux, webview layout)" | The two `#[ignore]` WebKitGTK tests of `tasty-plugin-markdown` under `xvfb-run`, with the same commands as tasty's `crossplatform-check.yml`. As in tasty, a failure is reported but does not fail the job yet |
-| `windows-x64` | `test` on `windows-latest` | `scripts/check.sh test --lib --bins --no-fail-fast` |
-| `macos-arm64` | `test` on `macos-latest` | `scripts/check.sh test --lib --bins --no-fail-fast` |
+| `windows-x64` | `test` on `windows-latest` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |
+| `macos-arm64` | `test` on `macos-latest` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |
 | `windows-arm64`, `linux-arm64` | `build` | Build only. The plugin code branches on the operating system, not the CPU, so the x64 test runs cover the same code paths |
 
 The `--lib --bins` scope is the one tasty uses for its Windows and macOS unit tests.
+
+Clippy (`scripts/check.sh lint`) runs natively on `linux-x64` (`check` job),
+`windows-x64`, and `macos-arm64` (`test` job). It does not run for `windows-arm64` or
+`linux-arm64`.
 
 The `check` job installs `libwebkit2gtk-4.1-dev` and `xvfb`. The first brings the GTK 3,
 JavaScriptCore, and libsoup 3 headers that the `tasty-plugin-markdown` Linux

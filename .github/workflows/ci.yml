@@ -99,6 +99,8 @@ jobs:
         with:
           key: test-${{ matrix.platform }}
 
+      - name: clippy
+        run: scripts/check.sh lint
       - name: test (lib, bins)
         run: scripts/check.sh test --lib --bins --no-fail-fast
 
