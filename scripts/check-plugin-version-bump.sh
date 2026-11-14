@@ -1641,7 +1641,8 @@ EOF2
     # An earlier format of the list left parts of a script out with except lines. Dropped on the
     # before side, they only widen the comparison; on the after side they are an unknown kind.
     awk -F '\t' '$1 != "except"' "$WORK/list.before" > "$WORK/list.before.kept" \
-        && mv "$WORK/list.before.kept" "$WORK/list.before" || die "cannot read $ARCHIVE_INPUTS (before)."
+        || die "cannot read $ARCHIVE_INPUTS (before)."
+    mv "$WORK/list.before.kept" "$WORK/list.before" || die "cannot read $ARCHIVE_INPUTS (before)."
     archive_list_at after "$WORK/list.after" || has_a=0
     if [ "$has_b" = 0 ] && [ "$has_a" = 1 ]; then cp "$WORK/list.after" "$WORK/list.before"; fi
     if [ "$has_a" = 0 ] && [ "$has_b" = 1 ]; then cp "$WORK/list.before" "$WORK/list.after"; fi
