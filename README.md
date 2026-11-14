@@ -23,7 +23,10 @@ packages are not signed. See [docs/ci.md](docs/ci.md#releases).
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Each plugin archive includes a copy as `<id>/LICENSE`.
+MIT. See [LICENSE](LICENSE). Each plugin archive includes a copy as `<id>/LICENSE`, next
+to the third-party notices: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and the
+license texts in [LICENSES/](LICENSES), and the markdown archive also holds
+`<id>/NOTICE.md`, the sources of its bundled assets.
 
 ## Pinned tasty commit
 

@@ -194,6 +194,8 @@ this crate and of `plugin-pin-check` only, so it never enters a plugin build.
 - `one_concept_one_word`: the plugin translation files use the canonical spellings of
   Pane and Window, and each Korean word for window that names a popup is registered with
   its phrase, count, and evidence.
+- `notice_set`: `LICENSES/` holds at least one license text, and `THIRD_PARTY_LICENSES.md`
+  links every file in `LICENSES/` and no file that is missing there.
 
 The checks that walk the sources fail when they find fewer files or plugins than a floor
 measured in this repository, so an empty walk does not pass.
@@ -283,8 +285,10 @@ order:
 
 1. `stage`: build with `scripts/check.sh build --profile dist --target <triple>`, then
    copy each plugin into `<out>/<platform>/stage/<id>/` with its executable,
-   `tasty-plugin.toml`, `lang/`, and the repository `LICENSE`. `<id>` is the manifest
-   `id`, for example `com.tasty.claude`.
+   `tasty-plugin.toml`, `lang/`, and the notice set of the repository: `LICENSE`,
+   `THIRD_PARTY_LICENSES.md`, and every file in `LICENSES/`, kept under `LICENSES/`. A
+   crate with an `assets/NOTICE.md` also gets it as `NOTICE.md`; now that is the markdown
+   plugin. `<id>` is the manifest `id`, for example `com.tasty.claude`.
 2. `pack`: one `<id>-<version>-<platform>.tar.gz` per plugin. `<version>` is the
    manifest `version`.
 3. `pack` then writes `SHA256SUMS-<platform>.txt` (the `sha256sum` format) and
@@ -292,7 +296,8 @@ order:
    `sha256`.
 
 The packages are not signed. `pack` fails if the stage holds a `.sig` file or if an
-archive contains one.
+archive contains one. It also fails if an archive lacks a file of the notice set, or the
+`NOTICE.md` of a crate that has one.
 
 The script finds each executable through the `executable` field of cargo's
 `compiler-artifact` messages. It copies the manifest and `lang/` from `crates/<crate>/`
@@ -304,7 +309,7 @@ Example:
 scripts/package-plugin.sh all --all --platform linux-x64 --target x86_64-unknown-linux-gnu --out target/package
 ```
 
-Each archive holds one folder, `<id>/`. For example, `com.tasty.claude-0.3.0-linux-arm64.tar.gz`
+Each archive holds one folder, `<id>/`. For example, `com.tasty.claude-0.3.1-linux-arm64.tar.gz`
 lists:
 
 ```
@@ -317,7 +322,18 @@ com.tasty.claude/lang/ko.toml
 com.tasty.claude/lang/zh-Hans.toml
 com.tasty.claude/lang/ja.toml
 com.tasty.claude/LICENSE
+com.tasty.claude/THIRD_PARTY_LICENSES.md
+com.tasty.claude/LICENSES/
+com.tasty.claude/LICENSES/Hack-MIT-Bitstream-Vera.txt
+com.tasty.claude/LICENSES/emoji-icon-font-MIT.txt
+com.tasty.claude/LICENSES/Ubuntu-Ubuntu-font-1.0.txt
+com.tasty.claude/LICENSES/NotoEmoji-OFL-1.1.txt
+com.tasty.claude/LICENSES/highlightjs-BSD-3-Clause.txt
+com.tasty.claude/LICENSES/mermaid-MIT.txt
+com.tasty.claude/LICENSES/KaTeX-MIT.txt
 ```
+
+The markdown archive also lists `com.tasty.markdown/NOTICE.md`.
 
 The archives are tar.gz on every platform, including Windows, so one format and one
 hash list serve all platforms. The script needs bash, tar, awk, and `sha256sum` or
