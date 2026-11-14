@@ -1,8 +1,9 @@
 name: CI
 
-# Checks and builds the pinned tasty plugin crates on every supported platform.
-# Every command goes through scripts/check.sh, so CI and local checks run the
-# same steps. Runners and action pins are described in docs/ci.md.
+# Checks, tests, and builds the plugin crates in this repository on every
+# supported platform. Every command except the WebKitGTK tests goes through
+# scripts/check.sh, so CI and local checks run the same steps. Runners and
+# action pins are described in docs/ci.md.
 
 on:
   push:
@@ -38,6 +39,15 @@ jobs:
       - name: Install toolchain
         run: rustup toolchain install || rustup show
 
+      # tasty-plugin-markdown's Linux dev-dependencies (webkit2gtk, gtk,
+      # javascriptcore-rs) link against WebKitGTK 4.1; libwebkit2gtk-4.1-dev
+      # brings the GTK 3, JavaScriptCore, and libsoup 3 headers with it.
+      # xvfb runs the WebKitGTK tests below.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev xvfb
+
       # The cache key includes the hash of Cargo.lock and rust-toolchain.toml.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
@@ -47,6 +57,50 @@ jobs:
         run: scripts/check.sh lint
       - name: test
         run: scripts/check.sh test
+
+      # The markdown address bar and focus sheet tests open a real WebKitGTK view
+      # (Linux only). They are #[ignore] and named here, with the same commands as
+      # tasty's crossplatform-check.yml. As in tasty, a failure is reported but does
+      # not fail the job yet.
+      - name: test (linux, webview layout)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          command -v xvfb-run || { echo "xvfb-run is missing on this runner"; exit 1; }
+          env -u WAYLAND_DISPLAY xvfb-run -a --server-args="-screen 0 1920x1080x24" \
+            cargo test -p tasty-plugin-markdown --locked --no-fail-fast -- --ignored --exact \
+              render::webview_layout_tests::address_bar_stays_on_top_in_webkitgtk
+          # GTK initializes on one thread per process, so each test runs on its own.
+          env -u WAYLAND_DISPLAY xvfb-run -a --server-args="-screen 0 1920x1080x24" \
+            cargo test -p tasty-plugin-markdown --locked --no-fail-fast -- --ignored --exact \
+              render::bed_focus_webkit_tests::bed_focus_sheet_switches_state_values_in_place
+
+  # Unit tests with the Windows and macOS code paths. The ARM64 targets are only
+  # cross-built in the build job; see docs/ci.md.
+  test:
+    name: test ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-latest
+          - platform: macos-arm64
+            runner: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install toolchain
+        run: rustup toolchain install || rustup show
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: test-${{ matrix.platform }}
+
+      - name: test (lib, bins)
+        run: scripts/check.sh test --lib --bins --no-fail-fast
 
   # Separate job: a new advisory fails this job without touching check and build.
   audit:

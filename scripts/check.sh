@@ -4,7 +4,8 @@
 #   scripts/check.sh [all]          fmt + lint + test + build (debug)
 #   scripts/check.sh fmt            cargo fmt --all --check
 #   scripts/check.sh lint           cargo clippy on workspace members, -D warnings
-#   scripts/check.sh test           cargo test on workspace members
+#   scripts/check.sh test [ARGS]    cargo test on workspace members; ARGS go to
+#                                   cargo test as-is, e.g. --lib --bins
 #   scripts/check.sh build [ARGS]   build the plugin crates; ARGS go to cargo build
 #                                   as-is, e.g. --release, --profile dist,
 #                                   --target aarch64-pc-windows-msvc
@@ -44,7 +45,7 @@ run() {
 
 cmd_fmt() { run cargo fmt --all --check; }
 cmd_lint() { run cargo clippy --workspace --all-targets --locked -- -D warnings; }
-cmd_test() { run cargo test --workspace --locked; }
+cmd_test() { run cargo test --workspace --locked "$@"; }
 cmd_audit() { run cargo audit --file Cargo.lock; }
 
 cmd_build() {
@@ -82,13 +83,13 @@ case "$sub" in
     ;;
   fmt) cmd_fmt ;;
   lint) cmd_lint ;;
-  test) cmd_test ;;
+  test) cmd_test "$@" ;;
   build) cmd_build "$@" ;;
   audit) cmd_audit ;;
   list-plugins) cmd_list_plugins ;;
   list-bins) cmd_list_bins ;;
   -h | --help | help)
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "unknown subcommand: $sub (see scripts/check.sh help)" >&2
