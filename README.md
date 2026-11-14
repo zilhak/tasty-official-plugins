@@ -32,22 +32,26 @@ license texts in [LICENSES/](LICENSES), and the markdown archive also holds
 
 `e277fce41d9a2db8bf3c14fda8f56dd6415bfcbc`
 
-All tasty crates come from this one commit. The pin is set in the root `Cargo.toml`:
-every entry under `[workspace.dependencies]` and `[patch.crates-io]` that points at
-`https://github.com/zilhak/tasty` uses the same `rev`.
+The plugin crates are workspace members (`members = ["crates/*"]`) and are not pinned.
+The tasty crates that stay in tasty come from this one commit: the plugin SDK, protocol,
+and manifest (`tasty-plugin-sdk`, `tasty-plugin-protocol`, `tasty-plugin-manifest`), the
+shared libraries the plugins link, such as `tasty-i18n`, `tasty-egui-theme`, and
+`tasty-git-core`, the dev-dependencies `tasty-test-support`, `tasty-themes`, and
+`tasty-doc-guards`, and the `tiny_http` and `epaint` copies. The pin is set in the root
+`Cargo.toml`: every entry under `[workspace.dependencies]` and `[patch.crates-io]` that
+points at `https://github.com/zilhak/tasty` uses the same `rev`, a commit and not a tag.
 
 To move the pin:
 
 1. Replace the rev in every tasty entry of `Cargo.toml`. Do not give crates different revs.
-   When tasty has a release tag to follow, `rev = "..."` can become `tag = "..."`.
-2. Start `Cargo.lock` from the tasty `Cargo.lock` at the new commit, then run
-   `cargo metadata --format-version 1 > /dev/null` so Cargo trims it to this workspace.
-   Do not run `cargo update`; the external crates should stay at the versions tasty
-   locks. The egui family (`egui`, `epaint`, `emath`, `ecolor`, `bytemuck`) must lock
-   the same versions as the tasty `Cargo.lock`, because the egui-mesh wire passes their
-   types as raw bytes. A pin test checks this.
+2. Run `cargo metadata --format-version 1 > /dev/null` without `--locked`, so Cargo
+   records the new tasty packages in `Cargo.lock`. Do not run a plain `cargo update`
+   (see [Cargo.lock](#cargolock)). The egui family (`egui`, `epaint`, `emath`, `ecolor`,
+   `bytemuck`) must lock the same versions as the tasty `Cargo.lock` at the new commit,
+   because the egui-mesh wire passes their types as raw bytes. A pin test checks this.
 3. Update the sha in this README and run `scripts/check.sh`.
-4. Bump the patch version of each plugin the version check reports
+4. Bump the patch version of each plugin whose dependency closure holds a tasty crate
+   that changed between the two commits, and only those. The version check reports them
    (`bash scripts/check-plugin-version-bump.sh --staged`).
 
 If Cargo reports `patch location ... does not contain packages matching epaint`, tasty
@@ -57,11 +61,38 @@ patched copy in this README and in `docs/migration-plan.md`. The atlas statement
 "Advisory decisions" depends on the patch, so decide again what holds without it.
 
 The `pin` tests (`crates/plugin-pin-check/tests/pin.rs`) fail if the tasty entries use
-different revs, if a tasty crate in `Cargo.lock` comes from another source, if a plugin
-crate is not a local workspace crate, or if a plugin manifest version differs from its
-crate version. They also fail if a crate of the egui family locks other versions than
-the tasty `Cargo.lock` at the pin, or if `egui` or `epaint` is not locked, and if a
-plugin's `PLUGIN_ID` constant differs from the id in its manifest or is missing.
+different revs, if a package in `Cargo.lock` comes from the tasty repository at another
+rev, if a plugin crate is not a local workspace crate, or if the plugin list in
+`scripts/check.sh` differs from the `tasty-plugin-*` workspace members. They also fail if
+a plugin manifest version differs from its crate version, if `epaint` does not come from
+the patched copy at the pin or `Cargo.lock` records an unused patch, if a crate of the
+egui family locks other versions than the tasty `Cargo.lock` at the pin, if `egui` or
+`epaint` is not locked, and if a plugin's `PLUGIN_ID` constant differs from the id in its
+manifest or is missing.
+
+### Cargo.lock
+
+`Cargo.lock` belongs to this repository. It started from the tasty lock file at the
+pinned commit when the sources moved here, so the crates.io packages are still at the
+versions tasty locked then.
+
+- Build and check commands use `--locked`, so a check never changes it.
+- A vulnerability is not ignored: the crate is updated here with `cargo update -p <crate>`
+  (see [Advisory decisions](#advisory-decisions)).
+- A change of a crates.io package in `Cargo.lock` needs a patch bump of every plugin whose
+  dependency closure holds it. Several such changes before one release need one bump. The
+  version check enforces this.
+- A new crate or dependency should add only its own packages to `Cargo.lock`; check the
+  diff.
+
+The lock is not what Cargo would resolve from scratch. `cargo metadata --locked` accepts
+it and `cargo update --workspace --dry-run` changes nothing, but Cargo reports more than
+a hundred dependencies behind the latest compatible versions, among them `bytemuck` of
+the egui family, and it keeps three `windows-sys` versions (0.59.0, 0.60.2, 0.61.2)
+where a fresh resolution keeps fewer. This is kept so that the plugins build with the
+crate versions tasty tested and every version change is a deliberate, bumped one. Do not
+delete and regenerate the lock or run a plain `cargo update`: it would move all of these
+at once, fail the egui pin test, and require a bump of every plugin.
 
 ## What is built
 
@@ -77,9 +108,17 @@ plugin's `PLUGIN_ID` constant differs from the id in its manifest or is missing.
 | `tasty-plugin-image` | binary |
 | `tasty-plugin-markdown` | binary |
 
-Each crate is in `crates/<crate>/`. `tasty-plugin-protocol`, `tasty-plugin-manifest`, and
-`tasty-plugin-sdk` stay in tasty and come in as dependencies of these crates.
-`tasty-plugin-mesh-demo` stays in tasty as an SDK example and is not built here.
+Each crate's source is in `crates/<crate>/` in this repository. `tasty-plugin-protocol`,
+`tasty-plugin-manifest`, and `tasty-plugin-sdk` stay in tasty and come in as git
+dependencies at the pin. `tasty-plugin-mesh-demo` stays in tasty as an SDK example and is
+not built here.
+
+Three more workspace crates belong to this repository only and are not published
+(`publish = false`): `plugin-pin-check` (the pin and lock tests above), `repo-gates` (the
+tests of the plugin version check, its fixup, and the git hooks), and `plugin-guards`
+(source checks on the plugin crates that moved here from tasty, see
+[docs/ci.md](docs/ci.md#source-checks-on-the-plugins)). They hold tests only and are not
+part of any plugin archive.
 
 The build matches tasty's own plugin build:
 
@@ -87,14 +126,15 @@ The build matches tasty's own plugin build:
 - Profiles: `release` and `dist` are the same as in tasty.
 - Windows MSVC targets link the C runtime statically (`.cargo/config.toml`).
 - `tiny_http` is patched to the copy tasty vendors, which `tasty-plugin-agent-stream` uses
-  for its SSE server. Cargo applies `[patch]` only from the root workspace, so this
-  repository repeats it.
+  for its SSE server. Cargo applies `[patch]` only from the root workspace, so tasty's
+  patch does not reach this repository, which sets the same one.
 - `epaint` is patched to the copy tasty vendors (`vendor/epaint`, see its `PATCHES.md`).
   A glyph too big for the font atlas is left blank instead of panicking, and the atlas
   image stops growing at its width. A pin test fails if `Cargo.lock` takes `epaint` from
   anywhere else or records an unused patch.
-- `Cargo.lock` keeps the external crate versions from the tasty lock file at the pinned
-  commit.
+- The crates.io packages in `Cargo.lock` started at the versions of the tasty lock file
+  when the sources moved. This repository keeps its own lock since then (see
+  [Cargo.lock](#cargolock)).
 
 ## Local commands
 
@@ -105,11 +145,21 @@ scripts/check.sh lint            # cargo clippy --workspace --all-targets --lock
 scripts/check.sh test [ARGS]     # cargo test --workspace --locked [ARGS]
 scripts/check.sh build [ARGS]    # cargo build --locked -p <each plugin> [ARGS]
 scripts/check.sh audit           # cargo audit --file Cargo.lock (needs cargo-audit, not part of all)
-scripts/check.sh list-plugins    # plugin crates to build, one per line
-scripts/check.sh list-bins       # plugin crates that produce an executable, one per line
-bash scripts/dev-setup.sh        # use the git hooks in .githooks (once per clone)
+scripts/check.sh list-plugins    # the PLUGINS list: the nine plugin crates, one per line
+scripts/check.sh list-bins       # PLUGINS without LIBS: the eight with an executable
+bash scripts/dev-setup.sh        # use the git hooks in .githooks, then cargo fetch --locked
 bash scripts/install-judge.sh    # install strip-cfg-test for the plugin version check
+bash scripts/check-plugin-version-bump.sh --staged   # plugin version check on the index
+bash scripts/check-plugin-version-bump.sh --range A B  # the same between two commits
+bash scripts/plugin-bump-fixup.sh  # raise the versions the HEAD commit needs, amend HEAD
+scripts/package-plugin.sh ...    # stage and pack release archives (docs/ci.md#packaging)
+scripts/dev-bundle.sh --out DIR  # plugins for a tasty checkout (below)
 ```
+
+`dev-setup.sh` sets `core.hooksPath` to `.githooks` once per clone and then runs
+`cargo fetch --locked`, because the version check reads the dependency closure of every
+target offline. The version check exits 0 on pass, 1 when a plugin needs a bump, and 2
+when it cannot decide; see [docs/ci.md](docs/ci.md#plugin-version-check).
 
 `build` and `test` pass their arguments to cargo unchanged, for example
 `scripts/check.sh build --profile dist --target aarch64-pc-windows-msvc`. With `all`
@@ -117,8 +167,10 @@ bash scripts/install-judge.sh    # install strip-cfg-test for the plugin version
 `--locked` and `audit` only reads `Cargo.lock`, so a check never changes it. The script
 is bash and runs under Git Bash on Windows.
 
-The plugin list lives only in `scripts/check.sh`. A test checks that it matches the
-`tasty-plugin-*` workspace members and that `LIBS` lists the members without a binary.
+`build`, `list-plugins`, and `list-bins` read the `PLUGINS` and `LIBS` lists in
+`scripts/check.sh`. A pin test compares `PLUGINS` with the `tasty-plugin-*` workspace
+members that `cargo metadata` reports and `LIBS` with those members that have no binary
+target, so a crate added under `crates/` must be added there too.
 
 ### Plugins for a tasty checkout
 
@@ -150,8 +202,9 @@ manifests with the key it was built with, for example with
 
 ## Notes
 
-- `fmt`, `lint`, and `test` cover the plugin crates and `plugin-pin-check`. Cargo does
-  not lint or test the tasty git dependencies.
+- `fmt`, `lint`, and `test` cover every workspace member: the plugin crates,
+  `plugin-pin-check`, `plugin-guards`, and `repo-gates`. Cargo does not lint or test the
+  tasty git dependencies.
 - On Linux, `lint` and `test` need the WebKitGTK 4.1 development files for the
   `tasty-plugin-markdown` dev-dependencies (`libwebkit2gtk-4.1-dev` on Debian and
   Ubuntu). `build` does not.
@@ -161,15 +214,17 @@ manifests with the key it was built with, for example with
 ## Advisory decisions
 
 The `audit` CI job runs `cargo audit` on `Cargo.lock`. It reads the lock file directly, so
-it also checks the crates.io dependencies that only the plugin crates use. It matches advisories only against crates.io packages, so the
-tasty crates and the `tiny_http` and `epaint` copies, which come from the tasty repository,
-are not matched.
+it also checks the crates.io dependencies that only the plugin crates use. It matches
+advisories only against crates.io packages, so the tasty crates and the `tiny_http` and
+`epaint` copies, which come from the tasty repository, are not matched.
 
-A vulnerability fails the job. Vulnerabilities are not ignored. A crates.io crate is
-updated here with `cargo update -p <crate>` only to fix a vulnerability; a fix in a tasty
-crate or in the tasty copies arrives with a pin move. The egui family goes through tasty:
-if the update changes one of its versions, the pin test fails, so the crate is updated in
-tasty first and arrives here with a pin move. Unsound and unmaintained advisories appear as warnings
+A vulnerability fails the job. Vulnerabilities are not ignored. This repository keeps
+its own `Cargo.lock`, so a crates.io crate, including one only the plugins use, is
+updated here with `cargo update -p <crate>`, with a patch bump of each plugin whose
+dependency closure holds it ([Cargo.lock](#cargolock)). A fix in a tasty crate or in the
+tasty copies arrives with a pin move. The egui family goes through tasty: if the update
+changes one of its versions, the pin test fails, so the crate is updated in tasty first
+and arrives here with a pin move. Unsound and unmaintained advisories appear as warnings
 in the job log and do not fail the job.
 
 This repository has no `deny.toml` and runs no `cargo deny` check. tasty keeps its
