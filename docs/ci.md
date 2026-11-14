@@ -85,8 +85,8 @@ Each runner needs:
 |---|---|---|
 | `linux-x64` | `check` on `[self-hosted, Linux, X64]` | `scripts/check.sh test`: every test of every workspace crate that is not `#[ignore]` (the eight `#[ignore]` tests of `tasty-plugin-codex` and the two WebKitGTK tests do not run here) |
 | `linux-x64` | `check`, step "test (linux, webview layout)" | The two `#[ignore]` WebKitGTK tests of `tasty-plugin-markdown` under `xvfb-run`, with the same commands as tasty's `crossplatform-check.yml`. As in tasty, a failure is reported but does not fail the job yet |
-| `windows-x64` | `test` on `[self-hosted, Windows, X64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |
-| `macos-arm64` | `test` on `[self-hosted, macOS, ARM64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast`, then `cargo test --locked -p repo-gates` with `strip-cfg-test` from `scripts/install-judge.sh` |
+| `windows-x64` | `test` on `[self-hosted, Windows, X64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast`, then `cargo test --locked -p plugin-guards` |
+| `macos-arm64` | `test` on `[self-hosted, macOS, ARM64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast`, then `cargo test --locked -p plugin-guards`, then `cargo test --locked -p repo-gates` with `strip-cfg-test` from `scripts/install-judge.sh` |
 | `windows-arm64`, `linux-arm64` | `build` | Build only. The plugin code branches on the operating system, not the CPU, so the x64 test runs cover the same code paths |
 
 The `--lib --bins` scope is the one tasty uses for its Windows and macOS unit tests.
@@ -155,9 +155,9 @@ outside CI the tools go to `~/.cache/tasty-official-plugins/lint-tools`.
 ## Source checks on the plugins
 
 The `plugin-guards` crate holds source checks that tasty ran on the plugin crates before
-they moved here. They are integration tests (`crates/plugin-guards/tests/`), so they run in
-the `check` job with `scripts/check.sh test` on Linux and not in the `--lib --bins` runs
-on Windows and macOS. Run them with `cargo test --locked -p plugin-guards`. They read the
+they moved here. They are integration tests (`crates/plugin-guards/tests/`). They run in
+the `check` job with `scripts/check.sh test` on Linux, and in the `test` job on Windows and
+macOS in a step of their own, because the `--lib --bins` run leaves them out. Run them with `cargo test --locked -p plugin-guards`. They read the
 sources as text and use the source readers of `tasty-doc-guards` from the pinned tasty
 commit, a dev-dependency of this crate only.
 
