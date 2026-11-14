@@ -185,10 +185,12 @@ this crate and of `plugin-pin-check` only, so it never enters a plugin build.
   `t_count_template`, `t_fmt`, `t_fmt2`, `t_fmt_fit`, and `t_replace` in the shipped
   plugin code exist in a plugin catalog, and each catalog key is used in Rust or TOML or
   listed as an orphan.
-- `no_hardcoded_ui_strings`: the shipped Rust code holds no English word, sentence, or
-  CJK text in the literal passed to an egui widget, `hint_text`, a native menu call, an
-  `unwrap_or` fallback, or a print macro. Allowed tokens and one pending literal are
-  listed in the test.
+- `no_hardcoded_ui_strings`: reads the Rust sources under `src` and `crates/*/src`, tool
+  crates included, with test files, test items, `debug` folders, build scripts, and
+  comment lines left out. A literal passed to an egui widget fails with two letters in a
+  row or CJK, one passed to `hint_text` only with a sentence or CJK, and one passed to a
+  native menu call, an `unwrap_or` fallback, or a print macro with a sentence, a
+  capitalized word, or CJK. Allowed tokens and one pending literal are listed in the test.
 - `one_concept_one_word`: the plugin translation files use the canonical spellings of
   Pane and Window, and each Korean word for window that names a popup is registered with
   its phrase, count, and evidence.
