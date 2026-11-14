@@ -72,6 +72,8 @@ fn dev_setup_points_core_hooks_path_at_the_hook_directory() {
         text.contains("git config --local core.hooksPath .githooks"),
         "{text}"
     );
+    // The version check reads every target's crates offline.
+    assert!(text.contains("cargo fetch --locked"), "{text}");
 }
 
 #[test]

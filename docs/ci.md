@@ -166,8 +166,11 @@ before..after range and a cancelled or replaced run would leave that range unche
   unbalanced brackets is undecidable as a whole.
 - A plugin's dependency closure is its normal and build dependencies for all targets
   (`cargo tree --target all`), so a crate that only Windows or macOS links counts on the
-  Linux runner too. The check reads them offline, so a local check after a lock change
-  needs `cargo fetch --locked` first; a build fetches only the host's crates.
+  Linux runner too. Every judgement that reads a closure (a change in a path dependency
+  crate, a pin move, a root dependency change, a `Cargo.lock` change) reads the crates of
+  every target offline, so they must be downloaded first. A build fetches only the host's
+  crates; `scripts/dev-setup.sh` runs `cargo fetch --locked` once, and after a dependency
+  change a local check may need it again.
 
 ## Static C runtime on Windows
 
