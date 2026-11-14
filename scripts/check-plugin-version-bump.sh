@@ -1381,7 +1381,8 @@ $name"
             # The pin rule pairs git packages by name only, so two git sources of one name
             # would be compared with each other.
             for side in before after; do
-                n=$(P="$pkg" awk -F '\t' '$1 == ENVIRON["P"] && $3 ~ /^git\+/ { print $3 }' "$WORK/lock.$side" | sort -u | wc -l)
+                # Counted by awk, not wc -l: BSD wc (macOS) pads the number with blanks.
+                n=$(P="$pkg" awk -F '\t' '$1 == ENVIRON["P"] && $3 ~ /^git\+/ { print $3 }' "$WORK/lock.$side" | sort -u | awk 'END { print NR }')
                 [ "$n" -le 1 ] || die "[patch] $src.$name changed, and Cargo.lock ($side) has $pkg from $n git sources, which the lock rules cannot tell apart; judge the plugin versions by hand."
             done
             rb=$(P="$pkg" awk -F '\t' '$1 == ENVIRON["P"] { print $1 "\t" $2 "\t" $3 }' "$WORK/lock.before" | sort)
@@ -1594,7 +1595,10 @@ EOF2
             region) case "$how" in job) ;; block|line) ;; *) continue ;; esac ;;
         esac
         if [ "$kind" = region ] && [ "$how" = job ]; then
-            region_of "$ref" "$path" <(P="$path" awk -F '\t' '$1 == "region" && $2 == ENVIRON["P"] && $3 == "job" { print $3 "\t" $4 "\t" $5 }' "$WORK/list.after") "$WORK/structure.cksum"
+            # A file, not <( ): bash 3.2 (macOS) closes a <( ) given to a function once the
+            # function has run its first command, before region_of reads it.
+            P="$path" awk -F '\t' '$1 == "region" && $2 == ENVIRON["P"] && $3 == "job" { print $3 "\t" $4 "\t" $5 }' "$WORK/list.after" > "$WORK/structure.regions"
+            region_of "$ref" "$path" "$WORK/structure.regions" "$WORK/structure.cksum"
             # The package job is read line by line as indentation, "- " items, a key, and a
             # value; text inside a scalar value is not read. A uses key passes only with
             # owner/repo@ref or owner/repo/path@ref as its value on the same line, quoted or

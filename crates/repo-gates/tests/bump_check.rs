@@ -4391,6 +4391,28 @@ impl ExtFixture {
     }
 }
 
+/// PATH with a wc in `dir` in front that pads its output with blanks, as BSD wc does.
+fn padded_wc_path(dir: &Path) -> String {
+    let path = std::env::var("PATH").expect("PATH");
+    let real = std::env::split_paths(&path)
+        .map(|d| d.join("wc"))
+        .find(|w| w.is_file())
+        .expect("a wc on PATH");
+    fs::create_dir_all(dir).expect("wc dir");
+    let wc = dir.join("wc");
+    fs::write(
+        &wc,
+        format!(
+            "#!/bin/sh\nout=$('{}' \"$@\") || exit\nprintf '       %s\\n' \"$out\"\n",
+            real.display()
+        ),
+    )
+    .expect("write wc");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&wc, fs::Permissions::from_mode(0o755)).expect("chmod wc");
+    format!("{}:{path}", dir.display())
+}
+
 /// An ExtFixture whose ext comes from the patch source at its first commit.
 fn git_patched() -> (ExtFixture, String) {
     let f = ExtFixture::new();
@@ -4714,6 +4736,12 @@ fn two_git_sources_for_one_patched_name_are_undecidable() {
     f.set_patch(&f.git_patch(&rev), true);
     f.commit("move the patch of ext 1");
     assert_undecidable_with(&f.check(&HEAD_RANGE), "has ext from 2 git sources");
+
+    // BSD wc (macOS) pads its count with blanks; the message keeps the plain number.
+    let mut cmd = gate_command(&script(), &f.repo);
+    cmd.env("CARGO_HOME", &f.cargo_home)
+        .env("PATH", padded_wc_path(&f.side_dir("bsd-wc")));
+    assert_undecidable_with(&run(cmd, &HEAD_RANGE), "has ext from 2 git sources");
 }
 
 /// [patch] case 52.
