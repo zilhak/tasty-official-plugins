@@ -25,7 +25,7 @@
 # comes from the tasty-plugin.toml of a crate in `scripts/check.sh list-bins`;
 # bundle is true unless the manifest says otherwise.
 #
-# Needs bash, git, cargo, and jq or python3. Runs under Git Bash on Windows.
+# Needs bash, git, cargo, and jq or Python 3. Runs under Git Bash on Windows.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -45,16 +45,22 @@ usage() {
 
 # Runs a jq filter, or the equivalent Python code when jq is missing. Output goes
 # through tr -d '\r' because jq.exe and Python on Windows write CRLF.
+# A Python is used only if it runs: on Windows, python3 can be the Microsoft Store
+# app execution alias, which exits with 9009 (49 in bash) without reading input.
 json_query() {
   if command -v jq >/dev/null 2>&1; then
     jq -r "$1" | tr -d '\r'
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -I -c "$2" | tr -d '\r'
-  elif command -v python >/dev/null 2>&1; then
-    python -I -c "$2" | tr -d '\r'
-  else
-    die "jq or python3 is required to read cargo metadata"
+    return
   fi
+  local py
+  for py in python3 python; do
+    if command -v "$py" >/dev/null 2>&1 &&
+      "$py" -I -c 'import json' </dev/null >/dev/null 2>&1; then
+      "$py" -I -c "$2" | tr -d '\r'
+      return
+    fi
+  done
+  die "jq or Python 3 is required to read cargo metadata (a Microsoft Store python alias does not count)"
 }
 
 to_unix_path() {
