@@ -90,7 +90,7 @@ it and `cargo update --workspace --dry-run` changes nothing, but Cargo reports m
 a hundred dependencies behind the latest compatible versions, among them `bytemuck` of
 the egui family, and it keeps three `windows-sys` versions (0.59.0, 0.60.2, 0.61.2)
 where a fresh resolution keeps fewer. This is kept so that the plugins build with the
-crate versions tasty tested and every version change is a deliberate, bumped one. Do not
+crate versions tasty locked and every version change is a deliberate, bumped one. Do not
 delete and regenerate the lock or run a plain `cargo update`: it would move all of these
 at once, fail the egui pin test, and require a bump of every plugin.
 
