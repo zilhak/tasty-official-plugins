@@ -1485,7 +1485,14 @@ EOF2
 }
 
 judge_archive_inputs() {
-    local kind path changed="" seen=" " a b p
+    local kind path changed="" seen=" " a b p f
+    # A file directly in SCAN_ROOT belongs to no crate. crates/.gitattributes decides how the
+    # files of every crate check out, so such a file counts as an archive input.
+    while IFS= read -r f; do
+        case "$f" in "$SCAN_ROOT"/*/*) ;; "$SCAN_ROOT"/?*) changed="$changed $f" ;; esac
+    done <<EOF2
+$CHANGED
+EOF2
     [ -f "$ARCHIVE_INPUTS" ] || die "cannot read the archive input list $ARCHIVE_INPUTS."
     while IFS="$TAB" read -r kind path _; do
         case "$kind" in ''|'#'*) continue ;; esac
@@ -1557,8 +1564,12 @@ CHANGED_CRATES=""
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     build_affecting "$f" || continue
+    # Files directly in SCAN_ROOT are judged as archive inputs above.
+    case "$f" in "$SCAN_ROOT"/*/*) ;; "$SCAN_ROOT"/*) continue ;; esac
+    c=$(crate_dir_of "$f")
+    [ -n "$c" ] || die "cannot tell which crate $f belongs to; judge the plugin versions by hand."
     CHANGED_CRATES="$CHANGED_CRATES
-$(crate_dir_of "$f")"
+$c"
 done <<EOF2
 $CHANGED
 EOF2

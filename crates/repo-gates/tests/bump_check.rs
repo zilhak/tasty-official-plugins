@@ -2718,6 +2718,27 @@ fn a_crate_gitattributes_change_flags_its_plugin() {
     assert_only_alpha(&f.check(&HEAD_RANGE));
 }
 
+/// A .gitattributes directly in crates/ belongs to no crate but decides how the files of
+/// every crate check out, so it is an archive input like the root one.
+#[test]
+fn a_gitattributes_directly_in_crates_flags_every_archived_plugin() {
+    let f = ArchiveFixture::new();
+    f.write("crates/.gitattributes", "*.toml eol=crlf\n");
+    f.commit("check out every lang file with CRLF");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "crates/.gitattributes");
+    f.git(&["rm", "--quiet", "crates/.gitattributes"]);
+    assert_every_archive_flagged(&f.check(&["--staged"]), "crates/.gitattributes");
+
+    // The other files of a crate stay with their crate.
+    f.git(&["reset", "--quiet", "--hard"]);
+    f.write(
+        "crates/tasty-plugin-alpha/lang/de.toml",
+        "hello = \"Hallo\"\n",
+    );
+    f.commit("add a lang file");
+    assert_only_alpha(&f.check(&HEAD_RANGE));
+}
+
 // ── Build settings: profiles, toolchain, cargo config ───────────────────────
 // PinFixture's root Cargo.toml has [profile.release] opt-level = 3 and [profile.dist]
 // inherits = "release", like this repository.
