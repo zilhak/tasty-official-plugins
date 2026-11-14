@@ -121,25 +121,56 @@ build_dir=$repo
 build_copy=""
 files_list=""
 staging=""
-old=""
+# The <id> being replaced, where its previous folder goes, and the inode of the new
+# folder. They are set before the first rename, so a signal between two commands still
+# finds them; the cleanup decides from what is on disk, not from how far the run got.
 cur=""
+old=""
+new_inode=""
 lock=""
+locked=0
+
+# ls -di is the portable way to read an inode number: stat options differ between GNU
+# and BSD. Only the number from the first field is used, so the name does not matter.
+# shellcheck disable=SC2012
+inode_of() { ls -di "$1" 2>/dev/null | awk '{ print $1 }'; }
+
+# Each step runs even when one before it fails; the failed steps are listed and the
+# exit code stays non-zero.
 cleanup() {
-  if [[ -n "$staging" ]]; then rm -rf "$staging"; fi
-  # Stopped after the previous <id> was moved aside and before the new one took its
-  # place: put the previous one back, or say where it is.
-  if [[ -n "$old" ]]; then
-    if [[ ! -e "$cur" && ! -L "$cur" ]] && mv "$old" "$cur"; then
-      echo "put the previous $(basename "$cur") back" >&2
+  local rc=$? failed=""
+  set +e
+  if [[ -n "$staging" && -e "$staging" ]]; then
+    rm -rf "$staging" || failed="$failed, remove $staging"
+  fi
+  if [[ -n "$old" && ( -e "$old" || -L "$old" ) ]]; then
+    if [[ ! -e "$cur" && ! -L "$cur" ]]; then
+      # Stopped after the previous folder was moved aside and before the new one
+      # took its place.
+      if mv "$old" "$cur"; then
+        echo "put the previous $(basename "$cur") back" >&2
+      else
+        failed="$failed, put back $cur"
+        echo "the previous $(basename "$cur") is in $old" >&2
+      fi
+    elif [[ -n "$new_inode" && "$(inode_of "$cur")" == "$new_inode" ]]; then
+      # The new folder is in place; only the previous one is left to remove.
+      rm -rf "$old" || failed="$failed, remove $old"
     else
       echo "the previous $(basename "$cur") is in $old" >&2
     fi
   fi
-  if [[ -n "$lock" ]]; then rm -rf "$lock"; fi
-  cd "$repo"
-  if [[ -n "$build_copy" ]]; then rm -rf "$build_copy"; fi
-  if [[ -n "$files_list" ]]; then rm -f "$files_list"; fi
-  return 0
+  if [[ $locked -eq 1 ]]; then
+    rmdir "$lock" || failed="$failed, remove the lock $lock"
+  fi
+  cd "$repo" || failed="$failed, leave the build copy"
+  if [[ -n "$build_copy" ]]; then rm -rf "$build_copy" || failed="$failed, remove $build_copy"; fi
+  if [[ -n "$files_list" ]]; then rm -f "$files_list" || failed="$failed, remove $files_list"; fi
+  if [[ -n "$failed" ]]; then
+    echo "error: cleanup could not${failed#,}" >&2
+    if [[ $rc -eq 0 ]]; then rc=1; fi
+  fi
+  exit "$rc"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -228,9 +259,10 @@ fi
 
 # One run at a time replaces the plugins in DIR. A run that finds the lock fails at
 # once; a lock left by a killed run is removed by hand.
-mkdir "$out/.dev-bundle.lock" 2>/dev/null \
-  || die "another dev-bundle.sh is writing $out, or a killed run left $out/.dev-bundle.lock; remove it if none runs"
 lock="$out/.dev-bundle.lock"
+mkdir "$lock" 2>/dev/null \
+  || die "another dev-bundle.sh is writing $out, or a killed run left $lock; remove it if none runs"
+locked=1
 
 count=0
 while IFS= read -r crate; do
@@ -256,25 +288,24 @@ while IFS= read -r crate; do
     cp -R "$src/lang" "$staging/lang"
   fi
   cur="$out/$id"
+  old="$out/.$id.old.$$"
+  new_inode=$(inode_of "$staging")
   if [[ -e "$cur" || -L "$cur" ]]; then
-    mv "$out/$id" "$out/.$id.old.$$" || die "cannot move $cur aside"
-    old="$out/.$id.old.$$"
+    mv "$cur" "$old" || die "cannot move $cur aside"
   fi
   # mv into an existing folder would put the new one inside it.
   [[ ! -e "$cur" && ! -L "$cur" ]] || die "$cur appeared while it was being replaced"
   if ! mv "$staging" "$cur"; then
-    [[ -n "$old" ]] || die "cannot move the new $id into $cur"
-    if mv "$old" "$cur"; then
-      old=""
+    if [[ -e "$old" ]] && mv "$old" "$cur"; then
       die "cannot move the new $id into $cur; kept the previous one"
     fi
-    die "cannot move the new $id into $cur; the previous one is in $old"
+    die "cannot move the new $id into $cur"
   fi
-  staging=""
   # The previous folder is removed only once the new one is in place.
-  prev=$old
+  if [[ -e "$old" || -L "$old" ]]; then rm -rf "$old"; fi
+  staging=""
   old=""
-  if [[ -n "$prev" ]]; then rm -rf "$prev"; fi
+  new_inode=""
   echo "bundled $id ($crate) into $out/$id" >&2
   count=$((count + 1))
 done <<<"$bins"
