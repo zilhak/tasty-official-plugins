@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 license = "MIT"
 publish = false
-description = "Pulls the pinned tasty plugin crates into this workspace and checks the pin"
+description = "Checks the plugin build list, the tasty pin, and the plugin manifest versions"
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -1,12 +1,8 @@
-//! Checks that the tasty plugin crates come from one pinned tasty commit and
-//! that this repository holds no copy of their sources.
+//! Checks that the plugin crates are the workspace members the build list
+//! names, that every tasty crate comes from one pinned tasty commit, and that
+//! each plugin manifest version matches its crate version.
 //!
-//! The plugin crates' own tests are not run from this repository: Cargo cannot
-//! test a git dependency that is not a workspace member, so tasty CI runs them
-//! until the sources move here.
-//!
-//! The checks read Cargo.lock rather than `cargo metadata`, because metadata
-//! leaves out the bin-only plugin crates (the "missing a lib target" warning).
+//! The source checks read Cargo.lock, which is what the build uses.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -85,25 +81,16 @@ fn script_plugins() -> BTreeSet<String> {
     body[..end].split_whitespace().map(str::to_owned).collect()
 }
 
-/// The tasty-plugin-* crates in the checker crate's [dependencies].
-fn declared_plugins() -> BTreeSet<String> {
-    let manifest: toml::Table =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
-            .expect("read checker Cargo.toml")
-            .parse()
-            .expect("parse checker Cargo.toml");
-    manifest["dependencies"]
-        .as_table()
-        .expect("[dependencies]")
-        .keys()
-        .filter(|n| n.starts_with(PLUGIN_PREFIX))
-        .cloned()
-        .collect()
+/// The library-only crates in scripts/check.sh (LIBS).
+fn script_libs() -> BTreeSet<String> {
+    let script = read_root_file("scripts/check.sh");
+    let start = script.find("\nLIBS=(").expect("LIBS=( in check.sh");
+    let body = &script[start + "\nLIBS=(".len()..];
+    let end = body.find(')').expect("closing ) of LIBS");
+    body[..end].split_whitespace().map(str::to_owned).collect()
 }
 
-/// Directory of the pinned tasty checkout, found through a library crate that
-/// `cargo metadata` does report.
-fn tasty_checkout() -> PathBuf {
+fn cargo_metadata() -> Value {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let out = Command::new(cargo)
         .args(["metadata", "--format-version", "1", "--locked"])
@@ -115,7 +102,41 @@ fn tasty_checkout() -> PathBuf {
         "cargo metadata failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let meta: Value = serde_json::from_slice(&out.stdout).expect("parse cargo metadata");
+    serde_json::from_slice(&out.stdout).expect("parse cargo metadata")
+}
+
+/// The tasty-plugin-* workspace members, each with whether it builds a binary.
+fn member_plugins() -> BTreeMap<String, bool> {
+    let meta = cargo_metadata();
+    let members: BTreeSet<&str> = meta["workspace_members"]
+        .as_array()
+        .expect("workspace_members")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    meta["packages"]
+        .as_array()
+        .expect("packages")
+        .iter()
+        .filter(|p| members.contains(p["id"].as_str().unwrap_or_default()))
+        .filter_map(|p| {
+            let name = p["name"].as_str()?;
+            if !name.starts_with(PLUGIN_PREFIX) {
+                return None;
+            }
+            let has_bin = p["targets"].as_array()?.iter().any(|t| {
+                t["kind"]
+                    .as_array()
+                    .is_some_and(|k| k.iter().any(|k| k == "bin"))
+            });
+            Some((name.to_owned(), has_bin))
+        })
+        .collect()
+}
+
+/// Directory of the pinned tasty checkout, found through tasty-plugin-manifest.
+fn tasty_checkout() -> PathBuf {
+    let meta = cargo_metadata();
     let pkg = meta["packages"]
         .as_array()
         .expect("packages")
@@ -131,14 +152,17 @@ fn tasty_checkout() -> PathBuf {
 }
 
 #[test]
-fn build_list_matches_declared_dependencies() {
-    let declared = declared_plugins();
-    assert_eq!(
-        declared.len(),
-        9,
-        "expected nine plugin crates: {declared:?}"
-    );
-    assert_eq!(script_plugins(), declared);
+fn build_list_matches_workspace_members() {
+    let members = member_plugins();
+    assert_eq!(members.len(), 9, "expected nine plugin crates: {members:?}");
+    let names: BTreeSet<String> = members.keys().cloned().collect();
+    assert_eq!(script_plugins(), names, "PLUGINS in scripts/check.sh");
+    let libs: BTreeSet<String> = members
+        .iter()
+        .filter(|(_, has_bin)| !**has_bin)
+        .map(|(name, _)| name.clone())
+        .collect();
+    assert_eq!(script_libs(), libs, "LIBS in scripts/check.sh");
 }
 
 #[test]
@@ -146,18 +170,23 @@ fn all_tasty_crates_come_from_one_pinned_commit() {
     let expected = pinned_source();
     let lock = lock_packages();
 
-    for plugin in declared_plugins() {
+    let plugins = script_plugins();
+    for plugin in &plugins {
         let entries = lock
-            .get(&plugin)
+            .get(plugin)
             .unwrap_or_else(|| panic!("{plugin} missing from Cargo.lock"));
         assert_eq!(entries.len(), 1, "{plugin} locked more than once");
-        assert_eq!(entries[0].1, expected, "{plugin}");
+        assert_eq!(entries[0].1, "", "{plugin} must be a local workspace crate");
     }
     for (name, entries) in &lock {
         for (_, source) in entries {
-            let from_tasty = source.contains("github.com/zilhak/tasty");
-            if from_tasty || name.starts_with(PLUGIN_PREFIX) {
+            if source.contains("github.com/zilhak/tasty") {
                 assert_eq!(source, &expected, "{name}");
+            } else if name.starts_with(PLUGIN_PREFIX) {
+                assert!(
+                    plugins.contains(name),
+                    "{name} comes from {source:?}, not from this repository or the pin"
+                );
             }
         }
     }
@@ -199,33 +228,12 @@ fn epaint_comes_from_the_patched_copy_at_the_pin() {
 }
 
 #[test]
-fn no_plugin_sources_are_copied_here() {
-    let crates = workspace_root().join("crates");
-    for entry in std::fs::read_dir(&crates).expect("read crates/") {
-        let name = entry.expect("dir entry").file_name();
-        let name = name.to_string_lossy();
-        assert!(
-            !name.starts_with(PLUGIN_PREFIX),
-            "crates/{name} looks like a copied plugin crate"
-        );
-    }
-    for (name, entries) in lock_packages() {
-        if name.starts_with(PLUGIN_PREFIX) {
-            assert!(
-                entries.iter().all(|(_, source)| !source.is_empty()),
-                "{name} is a local package, not a git dependency"
-            );
-        }
-    }
-}
-
-#[test]
 fn plugin_manifest_versions_match_crate_versions() {
-    let checkout = tasty_checkout();
+    let crates = workspace_root().join("crates");
     let lock = lock_packages();
     let mut checked = 0;
-    for plugin in declared_plugins() {
-        let dir = checkout.join("crates").join(&plugin);
+    for plugin in script_plugins() {
+        let dir = crates.join(&plugin);
         let cargo_toml: toml::Table = std::fs::read_to_string(dir.join("Cargo.toml"))
             .unwrap_or_else(|e| panic!("{plugin}: read Cargo.toml: {e}"))
             .parse()
@@ -235,7 +243,7 @@ fn plugin_manifest_versions_match_crate_versions() {
             .expect("package.version");
         assert_eq!(
             lock[&plugin][0].0, crate_version,
-            "{plugin}: Cargo.lock version differs from the pinned source"
+            "{plugin}: Cargo.lock version differs from Cargo.toml"
         );
         if !dir.join("tasty-plugin.toml").exists() {
             // Library crates such as tasty-plugin-agent-common have no manifest.

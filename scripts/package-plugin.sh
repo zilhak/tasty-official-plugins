@@ -8,8 +8,8 @@
 #   scripts/package-plugin.sh all --platform NAME --out DIR [stage options]
 #
 # The steps run in this order: stage, (codesign binaries, done by the workflow),
-# sign-manifests, pack. Signing works on the staged copies, never on the cargo
-# git checkout, which is a shared cache.
+# sign-manifests, pack. Signing works on the staged copies, never on the
+# manifests under crates/.
 #
 # stage   Builds with `scripts/check.sh build` (profile dist by default) and copies
 #         each plugin into DIR/NAME/stage/<id>/: the executable, tasty-plugin.toml,
@@ -26,8 +26,8 @@
 #         DIR/NAME/dist/plugins-NAME.tsv (id, version, platform, file, sha256).
 #
 # NAME is a platform label such as linux-x64 or windows-arm64. The executable path
-# comes from cargo's compiler-artifact messages and the manifest from the pinned
-# tasty checkout that cargo fetched, so no target/ path is assembled by hand.
+# comes from cargo's compiler-artifact messages and the manifest and lang/ from
+# crates/<crate>/ in this repository, so no target/ path is assembled by hand.
 #
 # Needs bash, tar, sha256sum or shasum, and jq or python3. Runs under Git Bash on
 # Windows. Signing needs openssl 1.1.1 or later.
@@ -86,25 +86,6 @@ manifest_string() {
   printf '%s\n' "$value"
 }
 
-# Root of the tasty git checkout that holds the pinned plugin crates. cargo
-# metadata leaves out the bin-only plugin crates, so the checkout is found
-# through tasty-plugin-manifest, a library from the same pinned commit.
-tasty_checkout() {
-  local manifest_path
-  manifest_path=$(
-    cargo metadata --format-version 1 --locked 2>/dev/null |
-      json_query \
-        '.packages[] | select(.name == "tasty-plugin-manifest") | .manifest_path' \
-        'import json,sys
-for p in json.load(sys.stdin)["packages"]:
-    if p["name"] == "tasty-plugin-manifest": print(p["manifest_path"])'
-  )
-  [[ -n "$manifest_path" ]] || die "tasty-plugin-manifest not found in cargo metadata"
-  manifest_path=$(to_unix_path "$manifest_path")
-  # <checkout>/crates/tasty-plugin-manifest/Cargo.toml
-  dirname "$(dirname "$(dirname "$manifest_path")")"
-}
-
 PLATFORM=""
 OUT=""
 TARGET=""
@@ -149,17 +130,13 @@ for line in sys.stdin:
         print(m["target"]["name"] + "\t" + m["executable"])'
   )
 
-  local checkout
-  checkout=$(tasty_checkout)
-  echo "tasty checkout: $checkout" >&2
-
   rm -rf "$STAGE_DIR"
   mkdir -p "$STAGE_DIR"
 
   local crate src manifest id exe count=0
   while IFS= read -r crate; do
     [[ -n "$crate" ]] || continue
-    src="$checkout/crates/$crate"
+    src="crates/$crate"
     manifest="$src/tasty-plugin.toml"
     [[ -f "$manifest" ]] || die "missing $manifest"
     if [[ $INCLUDE_ALL -eq 0 ]] &&

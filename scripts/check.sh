@@ -18,8 +18,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# The only list of plugin crates to build. A pin-check test reads this list and
-# compares it with crates/plugin-pin-check/Cargo.toml.
+# The only list of plugin crates to build. A pin-check test compares it with the
+# tasty-plugin-* workspace members in crates/.
 PLUGINS=(
   tasty-plugin-agent-common
   tasty-plugin-agent-stream
@@ -31,7 +31,8 @@ PLUGINS=(
   tasty-plugin-image
   tasty-plugin-markdown
 )
-# Library-only crates among PLUGINS. They build but produce no executable.
+# Library-only crates among PLUGINS. They build but produce no executable. A
+# pin-check test compares this list with the members that have no bin target.
 LIBS=(
   tasty-plugin-agent-common
 )
