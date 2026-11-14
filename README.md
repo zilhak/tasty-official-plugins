@@ -44,6 +44,8 @@ To move the pin:
    the same versions as the tasty `Cargo.lock`, because the egui-mesh wire passes their
    types as raw bytes. A pin test checks this.
 3. Update the sha in this README and run `scripts/check.sh`.
+4. Bump the patch version of each plugin the version check reports
+   (`bash scripts/check-plugin-version-bump.sh --staged`).
 
 If Cargo reports `patch location ... does not contain packages matching epaint`, tasty
 has removed its copy. Its `docs/dev-guide/dep-issues.md` gives the condition for that.
@@ -101,6 +103,8 @@ scripts/check.sh build [ARGS]    # cargo build --locked -p <each plugin> [ARGS]
 scripts/check.sh audit           # cargo audit --file Cargo.lock (needs cargo-audit, not part of all)
 scripts/check.sh list-plugins    # plugin crates to build, one per line
 scripts/check.sh list-bins       # plugin crates that produce an executable, one per line
+bash scripts/dev-setup.sh        # use the git hooks in .githooks (once per clone)
+bash scripts/install-judge.sh    # install strip-cfg-test for the plugin version check
 ```
 
 `build` and `test` pass their arguments to cargo unchanged, for example

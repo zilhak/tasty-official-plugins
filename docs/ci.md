@@ -11,8 +11,9 @@ workflow.
 |---|---|---|
 | `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: unit tests on Windows x64 and macOS arm64. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
 | `.github/workflows/release.yml` | push of a `v*` tag; manual (`workflow_dispatch`) | On a tag, releases the plugins on a GitHub Release of this repository (see [Releases](#releases)). A manual run builds the same release files as workflow artifacts and creates no Release |
+| `.github/workflows/plugin-version-check.yml` | push to `develop`, `release`, or `main`, pull request to one of them, for changes outside Markdown and `docs/`; manual | Checks that each plugin whose build output changed raised its version (see [Plugin version check](#plugin-version-check)), then runs the `repo-gates` tests |
 
-Both workflows use `permissions: contents: read` by default. In `release.yml`, only the
+The workflows use `permissions: contents: read` by default. In `release.yml`, only the
 `create-release` and `publish` jobs get `contents: write`. In `ci.yml`, a new run waits for the
 older run on the same ref instead of cancelling it, as in tasty: on the self-hosted
 runners a run can take longer than the time between pushes, and a waiting run is
@@ -74,7 +75,7 @@ Each runner needs:
 | All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, `tar`, `awk`, and `sha256sum` or `shasum` (`scripts/package-plugin.sh`; Git for Windows provides them on Windows). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
 | Windows (both) | Git for Windows, whose bash runs `scripts/check.sh` (bash need not be on `PATH`: the jobs find `bin\bash.exe` from the location of `git` and put that folder first on `PATH`, ahead of the WSL bash in System32), PowerShell 7 (`pwsh`), and Visual Studio Build Tools with the MSVC x64 tools, `vswhere.exe`, and `dumpbin.exe` |
 | `[win-arm64]` | In addition, the MSVC ARM64 build tools (C dependencies are compiled for ARM64) and the `aarch64-pc-windows-msvc` Rust target installed for the toolchain above |
-| `[self-hosted, Linux, X64]` | `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum` |
+| `[self-hosted, Linux, X64]` | For `plugin-version-check.yml`, `rustfmt` from the toolchain and access to GitHub to install `strip-cfg-test` and to fetch tasty commits that the Cargo git cache does not have. `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum` |
 | `[self-hosted, Linux, ARM64]` | A C compiler |
 | `[self-hosted, macOS, ARM64]` | The Xcode command line tools |
 
@@ -129,6 +130,29 @@ intended, and `check` and `build` report their own results. Do not ignore a vuln
 update a crates.io crate here with `cargo update -p <crate>`, and fix a tasty crate in tasty
 and move the pin. If the log shows that fetching the database failed, rerun
 the job.
+
+## Plugin version check
+
+`plugin-version-check.yml` runs `scripts/check-plugin-version-bump.sh --range` on the two
+commits of the event: the pull request base and head, or the push before and after
+(`HEAD^` and `HEAD` for a manual run). It runs for every change except Markdown outside
+`src`, `lang`, and `assets`, and `docs/`, and cancels the older run on the same ref.
+
+- `cargo fetch --locked` comes first, so `cargo tree --offline` works on a runner without
+  a warm cache.
+- `scripts/install-judge.sh` installs `strip-cfg-test` from the pinned tasty commit into
+  `$RUNNER_TOOL_CACHE/strip-cfg-test/<first 8 characters of the tasty sha>`, never into
+  `~/.cargo/bin`. It leaves test-only Rust code out of the comparison.
+- The first push of a ref has nothing to compare and is skipped with a message. A range
+  start that is missing from the clone (after a force push) fails the job.
+- Exit codes: 0 pass or nothing to judge, 1 a plugin needs a version bump, 2 undecidable.
+  Only 0 passes.
+- Besides the plugin directories and their path dependencies, the check judges the root
+  build inputs. A tasty pin move or a changed `[workspace.dependencies]` entry needs a bump
+  of each plugin whose dependency closure holds a changed crate. An update of a crates.io
+  crate in `Cargo.lock` needs one too, unless the plugin is already above its version at
+  the latest release tag. `[profile.*]`, `.cargo/config.toml`, and `rust-toolchain.toml`
+  pass with a note; `[workspace]` and unknown sections are undecidable.
 
 ## Static C runtime on Windows
 

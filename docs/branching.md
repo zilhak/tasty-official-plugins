@@ -78,17 +78,27 @@ Merge commits are made only in these cases:
 | `release` | `develop` | promotion |
 | `main` | `release` | promotion |
 
-tasty enforces this table with git hooks. This repository has no git hooks, so the
-table is kept by the merge procedure.
+The `pre-merge-commit` and `pre-commit` hooks enforce this table (install with
+`bash scripts/dev-setup.sh`).
 
 ## What differs from tasty
 
 - The repository version in `VERSION` names the release and its tag only. Each plugin
   keeps its own version, the `version` in its crate's `Cargo.toml` and
   `tasty-plugin.toml`, and a release does not change it.
+- Each plugin's patch version goes up in the commit that changes its build output,
+  including a pin move that changes a tasty crate in its dependency closure and an update
+  of a crates.io crate in that closure (one bump per release covers several such updates);
+  the `pre-commit` hook and the Plugin version check workflow check this. Lane worktrees
+  may defer it with `git config --worktree tasty.pluginBump deferred`; the merge step runs
+  `scripts/plugin-bump-fixup.sh` per commit and checks each commit again:
+
+  ```
+  git rebase --exec 'bash scripts/plugin-bump-fixup.sh' <base>
+  for c in $(git rev-list --reverse <base>..HEAD); do bash scripts/check-plugin-version-bump.sh --range "$c^" "$c"; done
+  ```
 - A manual run of `release.yml` builds the release files as workflow artifacts with the
   tag `unreleased` in `release-meta.toml` and creates no Release.
-- There are no git hooks.
 
 ## Branch protection
 

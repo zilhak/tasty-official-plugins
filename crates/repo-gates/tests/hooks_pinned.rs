@@ -73,3 +73,20 @@ fn dev_setup_points_core_hooks_path_at_the_hook_directory() {
         "{text}"
     );
 }
+
+#[test]
+fn branching_doc_names_the_hooks_and_the_setup() {
+    let doc = read("docs/branching.md");
+    for needle in [
+        "`pre-merge-commit`",
+        "`pre-commit`",
+        "bash scripts/dev-setup.sh",
+        "tasty.pluginBump deferred",
+        "scripts/plugin-bump-fixup.sh",
+    ] {
+        assert!(
+            doc.contains(needle),
+            "docs/branching.md does not mention {needle}"
+        );
+    }
+}
