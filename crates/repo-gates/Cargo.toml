@@ -1,0 +1,13 @@
+[package]
+name = "repo-gates"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Tests for the repository gates: plugin version check, bump fixup, git hooks"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

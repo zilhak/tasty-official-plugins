@@ -45,7 +45,20 @@ run() {
 
 cmd_fmt() { run cargo fmt --all --check; }
 cmd_lint() { run cargo clippy --workspace --all-targets --locked -- -D warnings; }
-cmd_test() { run cargo test --workspace --locked "$@"; }
+# The repo-gates tests compare with the real strip-cfg-test judge. They are Unix only, so the
+# judge is installed only there (see scripts/install-judge.sh).
+cmd_test() {
+  if [[ -z "${TASTY_STRIP_CFG_TEST_BIN:-}" ]]; then
+    case "$(uname -s)" in
+      MINGW* | MSYS* | CYGWIN*) ;;
+      *)
+        TASTY_STRIP_CFG_TEST_BIN="$(bash scripts/install-judge.sh)"
+        export TASTY_STRIP_CFG_TEST_BIN
+        ;;
+    esac
+  fi
+  run cargo test --workspace --locked "$@"
+}
 cmd_audit() { run cargo audit --file Cargo.lock; }
 
 cmd_build() {
