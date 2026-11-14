@@ -12,13 +12,15 @@
 #
 # stage   Builds with `scripts/check.sh build` (profile dist by default) and copies
 #         each plugin into DIR/NAME/stage/<id>/: the executable, tasty-plugin.toml,
-#         lang/, and the repository LICENSE. Plugins whose manifest says
-#         `bundle = false` are skipped unless --all is given, as in tasty's own
-#         packaging scripts.
+#         lang/, the notice set (LICENSE, THIRD_PARTY_LICENSES.md, LICENSES/), and
+#         the crate's assets/NOTICE.md as NOTICE.md when it has one. Plugins whose
+#         manifest says `bundle = false` are skipped unless --all is given, as in
+#         tasty's own packaging scripts.
 # pack    Writes DIR/NAME/dist/<id>-<version>-NAME.tar.gz for each staged plugin,
 #         then DIR/NAME/dist/SHA256SUMS-NAME.txt (sha256sum format) and
 #         DIR/NAME/dist/plugins-NAME.tsv (id, version, platform, file, sha256).
-#         Fails if the stage or an archive contains a .sig file.
+#         Fails if the stage or an archive contains a .sig file, or if an archive
+#         lacks a file of the notice set or the NOTICE.md of its crate.
 #
 # NAME is a platform label such as linux-x64 or windows-arm64. The executable path
 # comes from cargo's compiler-artifact messages and the manifest and lang/ from
@@ -36,13 +38,16 @@ die() {
 }
 
 usage() {
-  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
 # to_unix_path, cargo_executables, and manifest_string; shared with dev-bundle.sh.
 # shellcheck source=scripts/lib/plugin-build.sh
 . scripts/lib/plugin-build.sh
+# notice_set_files, stage_notice, verify_notice_listing, and NOTICE_ASSET.
+# shellcheck source=scripts/lib/notice-set.sh
+. scripts/lib/notice-set.sh
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -120,7 +125,10 @@ cmd_stage() {
     mkdir -p "$STAGE_DIR/$id"
     cp "$exe" "$STAGE_DIR/$id/"
     cp "$manifest" "$STAGE_DIR/$id/tasty-plugin.toml"
-    cp LICENSE "$STAGE_DIR/$id/LICENSE"
+    stage_notice "$STAGE_DIR/$id" || die "cannot stage the notice set for $id"
+    if [[ -f "$src/$NOTICE_ASSET" ]]; then
+      cp "$src/$NOTICE_ASSET" "$STAGE_DIR/$id/NOTICE.md"
+    fi
     if [[ -d "$src/lang" ]]; then
       cp -R "$src/lang" "$STAGE_DIR/$id/lang"
     fi
@@ -130,6 +138,19 @@ cmd_stage() {
 
   [[ $count -gt 0 ]] || die "no plugins staged"
   echo "staged $count plugins in $STAGE_DIR" >&2
+}
+
+# Whether the crate whose manifest has id <id> carries an asset notice.
+crate_has_notice() {
+  local man
+  for man in crates/*/tasty-plugin.toml; do
+    [[ -f "$man" ]] || continue
+    if [[ "$(manifest_string id "$man")" == "$1" ]]; then
+      [[ -f "$(dirname "$man")/$NOTICE_ASSET" ]]
+      return
+    fi
+  done
+  die "no crate under crates/ has the manifest id $1"
 }
 
 cmd_pack() {
@@ -156,6 +177,10 @@ cmd_pack() {
     list=$(tar -tzf "$DIST_DIR/$file")
     if grep -q '\.sig$' <<<"$list"; then
       die "$file contains a .sig file; packages are not signed"
+    fi
+    verify_notice_listing "$list" "$id/" "$file" || die "$file lacks the notice set"
+    if crate_has_notice "$id" && ! grep -qxF "$id/NOTICE.md" <<<"$list"; then
+      die "$id/NOTICE.md not in $file"
     fi
     hash=$(sha256_of "$DIST_DIR/$file")
     printf '%s  %s\n' "$hash" "$file" >>"$sums"
