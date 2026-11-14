@@ -3341,6 +3341,71 @@ fn sources_behind_redirections_options_and_odd_quoting_are_caught() {
     }
 }
 
+/// Braces inside a word, the words after a substitution, case patterns, and here-document
+/// bodies are no command positions, so ordinary code there is only a change of check.sh. A
+/// source in a brace group, a substitution, after a case pattern, after the end of a
+/// here-document, and after an indexed or += assignment is still found, and a
+/// here-document without its end word stops the check.
+#[test]
+fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
+    for code in [
+        "find target -name '*.tmp' -exec rm -f {} \\;",
+        "echo $(pwd) a\\ b",
+        "echo `pwd` a\\ b",
+        "case \"$x\" in a) : ;; *\\\\*) : ;; esac",
+        "cat << 'EOF'\n. REVIEW_MARK\nEOF",
+        "cat <<'EOF'\nsource REVIEW_MARK\nEOF",
+        "cat <<-EOF\n\tsource REVIEW_MARK\n\tEOF",
+        "cat <<EOF\n\\\\server\\share\nEOF",
+        "cat <<A <<\"B\"\n. REVIEW_MARK\nA\n$'.' REVIEW_MARK\nB",
+        "cat <<<\"$x\"",
+    ] {
+        let f = ArchiveFixture::new();
+        f.edit(
+            "scripts/check.sh",
+            "set -euo pipefail\n",
+            &format!("set -euo pipefail\n{code}\n"),
+        );
+        f.commit(code);
+        assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
+    }
+
+    let found = "sources scripts/lib/extra.sh";
+    for code in [
+        "{ . scripts/lib/extra.sh; }",
+        "y=$( . scripts/lib/extra.sh )",
+        "y=`. scripts/lib/extra.sh`",
+        "case \"$x\" in *\\\\*) . scripts/lib/extra.sh ;; esac",
+        "case \"$x\" in\n  a) : ;;\n  (b) . scripts/lib/extra.sh ;;\nesac",
+        "case \"$x\" in a) : ;; esac\n. scripts/lib/extra.sh",
+        "cat <<EOF\ntext\nEOF\n. scripts/lib/extra.sh",
+        "B+=x . scripts/lib/extra.sh",
+        "a[0]=1 . scripts/lib/extra.sh",
+    ] {
+        let f = ArchiveFixture::new();
+        f.write("scripts/lib/extra.sh", "export REVIEW_MARK=1\n");
+        f.edit(
+            "scripts/check.sh",
+            "set -euo pipefail\n",
+            &format!("set -euo pipefail\n{code}\n"),
+        );
+        f.commit(code);
+        assert_undecidable_with(&f.check(&HEAD_RANGE), found);
+    }
+
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/check.sh",
+        "set -euo pipefail\n",
+        "set -euo pipefail\ncat <<EOF\ntext\n",
+    );
+    f.commit("open a here-document");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "has a here-document whose end word EOF is not found",
+    );
+}
+
 /// The package job may use only actions written as owner/repo@ref or owner/repo/path@ref on
 /// the line of their uses: key; anything else could run content the list does not judge.
 /// Another job may.

@@ -1641,36 +1641,72 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             fi
             continue
         fi
-        # A source or . in command position: at the start of a line, after one of ; & | ( ) { }
-        # and a backtick, after then do else elif if while until ! coproc (and its name) time
-        # exec builtin command (and their - options), after an assignment, and after a
-        # redirection. Quoted text and text after an unquoted # are no commands; the word
-        # after source or . is its target, without its quotes. A command word written with a
-        # backslash or with $'...' or $"..." quoting is not read: it stops the check (Q).
+        # A source or . in command position: at the start of a line, after one of ; & | ( ) and
+        # the words { and }, inside $( ), <( ), >( ) and backticks, after the ) of a case
+        # pattern, after then do else elif if while until ! coproc (and its name) time exec
+        # builtin command (and their - options), after an assignment (also a[i]= and +=), and
+        # after a redirection. Quoted text, text after an unquoted #, the words after a
+        # substitution that ends inside a word, case patterns, and here-document bodies are no
+        # commands; the word after source or . is its target, without its quotes. A command
+        # word written with a backslash or with $'...' or $"..." quoting is not read: it stops
+        # the check (Q), and so does a here-document without its end word (H).
         awk '
             # Ends a word. raw is the word as written, word the word without its quotes.
-            function endword(   w, r, cop) {
+            function endword(   w, r, cop, d) {
                 if (!inword) return
                 w = word; r = raw; word = ""; raw = ""; inword = 0
                 cop = coproc; coproc = 0
+                # A here-document: its body, from the next line to its end word, is data.
+                if (hdnext) { d = w; gsub(/\\/, "", d); hw[++hn] = d; hdash[hn] = hdnext - 1; hdnext = 0; redir = 0; return }
+                if (r ~ /^[0-9]*<<-?/ && r !~ /^[0-9]*<<</) {
+                    d = w; sub(/^[0-9]*<<-?/, "", d); gsub(/\\/, "", d)
+                    if (d == "") hdnext = (r ~ /^[0-9]*<<-/) ? 2 : 1
+                    else { hw[++hn] = d; hdash[hn] = (r ~ /^[0-9]*<<-/) }
+                    return
+                }
                 if (redir) { redir = 0; return }
                 if (want) { print "S\t" NR "\t" w "\t" $0; want = 0; cmd = 0; return }
+                # The words of a case statement up to in, and its patterns up to ), are no commands.
+                if (pat) { if (w == "esac") { pat = 0; cases--; cmd = 0 } return }
+                if (casehead) { if (w == "in") { casehead = 0; pat = 1; cases++ } return }
                 if (!cmd) return
                 # A redirection before the command, with its target attached or next.
-                if (r ~ /^[0-9]*(<<<|<<-|<<|<>|<&|>&|>>|>\||&>>|&>|<|>)/) {
-                    if (r ~ /^[0-9]*(<<<|<<-|<<|<>|<&|>&|>>|>\||&>>|&>|<|>)$/) redir = 1
+                if (r ~ /^[0-9]*(<<<|<>|<&|>&|>>|>\||&>>|&>|<|>)/) {
+                    if (r ~ /^[0-9]*(<<<|<>|<&|>&|>>|>\||&>>|&>|<|>)$/) redir = 1
                     return
                 }
                 if (opts && w ~ /^-/) return
                 opts = 0
-                if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) return
+                if (w ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=/) return
                 if (r ~ /\\|\$\047|\$"/) { print "Q\t" NR "\t" r "\t" $0; cmd = 0; return }
                 if (w == "source" || w == ".") { want = 1; cmd = 0; return }
                 if (w ~ /^(time|command|exec|builtin)$/) { opts = 1; return }
                 if (w == "coproc") { coproc = 1; return }
-                if (w ~ /^(then|do|else|elif|if|while|until|!)$/) return
+                if (w == "case") { casehead = 1; cmd = 0; return }
+                if (w == "esac" && cases > 0) { cases--; cmd = 0; return }
+                if (w ~ /^(then|do|else|elif|if|while|until|!|\{|\})$/) return
                 if (cop && w ~ /^[A-Za-z_][A-Za-z0-9_]*$/) return
                 cmd = 0
+            }
+            # After a separator a command starts.
+            function sep() { want = 0; opts = 0; redir = 0; coproc = 0; cmd = 1 }
+            # $( ), <( ), >( ), and backticks: the text inside is commands; the substitution is
+            # part of the word around it, and the state outside comes back after it.
+            function opensub(t) {
+                sd++; st[sd] = t; pc[sd] = 0; sw[sd] = word; sr[sd] = raw
+                scmd[sd] = cmd; swant[sd] = want; sopts[sd] = opts; sredir[sd] = redir
+                word = ""; raw = ""; inword = 0; sep()
+            }
+            function closesub() {
+                endword()
+                word = sw[sd] "$()"; raw = sr[sd] "$()"; inword = 1
+                cmd = scmd[sd]; want = swant[sd]; opts = sopts[sd]; redir = sredir[sd]; sd--
+            }
+            hmode {
+                l = $0
+                if (hdash[hi]) sub(/^\t+/, "", l)
+                if (l == hw[hi] && ++hi > hn) { hmode = 0; hn = 0 }
+                next
             }
             {
                 s = $0; n = length(s)
@@ -1700,14 +1736,35 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
                     # >& <& >| belong to a redirection word; &> and &>> start one.
                     if ((c == "&" || c == "|") && inword && raw ~ /[<>]$/) { word = word c; raw = raw c; continue }
                     if (c == "&" && substr(s, i + 1, 1) == ">") { endword(); word = c; raw = c; inword = 1; continue }
-                    if (index(";&|(){}`", c)) { endword(); want = 0; opts = 0; redir = 0; coproc = 0; cmd = 1; continue }
+                    if (c == "(" && inword && raw ~ /[$<>]$/) { opensub("("); continue }
+                    if (c == "`") { if (sd > 0 && st[sd] == "`") closesub(); else opensub("`"); continue }
+                    if (c == ")" && pat) { endword(); pat = 0; sep(); continue }
+                    if (c == ")" && sd > 0 && st[sd] == "(" && pc[sd] == 0) { closesub(); continue }
+                    if (c == ";") {
+                        endword()
+                        if (substr(s, i + 1, 1) == ";") { i++; if (substr(s, i + 1, 1) == "&") i++; if (cases > 0) pat = 1 }
+                        else if (substr(s, i + 1, 1) == "&") { i++; if (cases > 0) pat = 1 }
+                        sep(); continue
+                    }
+                    if (c == "|" || c == "(") {
+                        endword()
+                        if (pat) continue
+                        if (c == "(" && sd > 0) pc[sd]++
+                        sep(); continue
+                    }
+                    if (c == ")") { endword(); if (sd > 0) pc[sd]--; sep(); continue }
+                    if (c == "&") { endword(); sep(); continue }
                     word = word c; raw = raw c; inword = 1
                 }
-                if (q == "" && !cont) endword()
+                if (q == "" && !cont) { endword(); if (hn > 0 && !hdnext) { hmode = 1; hi = 1 } }
             }
+            END { if (hmode) print "H\t" NR "\t" hw[hi] "\t" }
         ' "$WORK/structure.src" > "$WORK/structure.sources" || die "cannot read $path (after)."
         while IFS="$TAB" read -r sk ln target line; do
             [ -n "$ln" ] || continue
+            if [ "$sk" = H ]; then
+                die "$path has a here-document whose end word $target is not found by the end of the file, so the source check cannot tell its text from commands; judge the plugin versions by hand."
+            fi
             if [ "$sk" = Q ]; then
                 die "$path line $ln has a command word written with a backslash or with \$'...' or \$\"...\" quoting ($target), which the source check does not read; write it plainly or judge the plugin versions by hand:
     $line"
