@@ -36,16 +36,21 @@ stage_notice() {
   done <<<"$files"
 }
 
-# Checks that each line of the notice set, with <prefix> in front, ends some line of
-# <listing>. This checks names, not contents. The listing is taken as one string so a
-# producer is not cut off by SIGPIPE.
+# Whether <listing> has an entry equal to <path>. Only one leading "./" of an entry is
+# dropped before comparing, so another prefix does not match. This checks names, not
+# contents. The listing is taken as one string so a producer is not cut off by SIGPIPE.
+listing_has() {
+  local listing="$1" want="$2"
+  awk -v t="$want" '{ sub(/^\.\//, "") } $0 == t { hit = 1 } END { exit !hit }' <<<"$listing"
+}
+
+# Checks with listing_has that the listing holds each file of the notice set at
+# <prefix><path>.
 verify_notice_listing() {
   local listing="$1" prefix="$2" label="$3" files f
   files=$(notice_set_files) || return 1
   while IFS= read -r f; do
-    if ! awk -v t="$prefix$f" '
-        length($0) >= length(t) && substr($0, length($0) - length(t) + 1) == t { hit = 1 }
-        END { exit !hit }' <<<"$listing"; then
+    if ! listing_has "$listing" "$prefix$f"; then
       echo "error: $prefix$f not in $label" >&2
       return 1
     fi

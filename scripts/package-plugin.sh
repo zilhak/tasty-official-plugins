@@ -45,7 +45,7 @@ usage() {
 # to_unix_path, cargo_executables, and manifest_string; shared with dev-bundle.sh.
 # shellcheck source=scripts/lib/plugin-build.sh
 . scripts/lib/plugin-build.sh
-# notice_set_files, stage_notice, verify_notice_listing, and NOTICE_ASSET.
+# notice_set_files, stage_notice, listing_has, verify_notice_listing, and NOTICE_ASSET.
 # shellcheck source=scripts/lib/notice-set.sh
 . scripts/lib/notice-set.sh
 
@@ -179,7 +179,7 @@ cmd_pack() {
       die "$file contains a .sig file; packages are not signed"
     fi
     verify_notice_listing "$list" "$id/" "$file" || die "$file lacks the notice set"
-    if crate_has_notice "$id" && ! grep -qxF "$id/NOTICE.md" <<<"$list"; then
+    if crate_has_notice "$id" && ! listing_has "$list" "$id/NOTICE.md"; then
       die "$id/NOTICE.md not in $file"
     fi
     hash=$(sha256_of "$DIST_DIR/$file")
