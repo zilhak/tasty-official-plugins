@@ -3216,10 +3216,53 @@ fn sources_in_every_command_position_are_checked_and_quoted_text_is_not() {
     f.write(
         "scripts/extra.sh",
         "a() {\n  echo a\n}\n: # example; . scripts/review.sh\n\
-         review_note=\"text; . scripts/review.sh\"\necho '. scripts/review.sh'\n",
+         review_note=\"text; . scripts/review.sh\"\necho '. scripts/review.sh'\n\
+         echo 'a; . scripts/review.sh'\necho \"${PATH%;. scripts/review.sh}\"\n\
+         echo ${HOME%;. scripts/review.sh}\necho a &> /dev/null . scripts/review.sh\n",
     );
     f.commit("mention a source in a comment and in strings");
     assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+}
+
+/// Sources behind a redirection, behind the options of time, command, exec, and builtin,
+/// after coproc, and with the target on a continued line are found. A command word with a
+/// backslash or with $'...' or $"..." quoting is not read: it stops the check.
+#[test]
+fn sources_behind_redirections_options_and_odd_quoting_are_caught() {
+    let found = "sources scripts/lib/extra.sh";
+    let odd = "has a command word written with a backslash or with $'...' or $\"...\" quoting";
+    for (line, what) in [
+        ("command -- source scripts/lib/extra.sh", found),
+        ("> /dev/null source scripts/lib/extra.sh", found),
+        (
+            ": < /dev/null; > /dev/null source scripts/lib/extra.sh",
+            found,
+        ),
+        ("</dev/null source scripts/lib/extra.sh", found),
+        ("2>/dev/null . scripts/lib/extra.sh", found),
+        ("2>&1 . scripts/lib/extra.sh", found),
+        ("&>/dev/null . scripts/lib/extra.sh", found),
+        ("time -p . scripts/lib/extra.sh", found),
+        ("command -p . scripts/lib/extra.sh", found),
+        ("coproc . scripts/lib/extra.sh", found),
+        (". \\\n  scripts/lib/extra.sh", found),
+        ("sou\\rce scripts/lib/extra.sh", odd),
+        ("\\. scripts/lib/extra.sh", odd),
+        ("$'.' scripts/lib/extra.sh", odd),
+        ("$\"source\" scripts/lib/extra.sh", odd),
+    ] {
+        let f = ArchiveFixture::new();
+        f.write("scripts/lib/extra.sh", "export REVIEW_MARK=1\n");
+        f.edit(
+            "scripts/check.sh",
+            "set -euo pipefail\n",
+            &format!("set -euo pipefail\n{line}\n"),
+        );
+        f.commit(line);
+        let r = f.check(&HEAD_RANGE);
+        assert_undecidable_with(&r, what);
+        assert!(r.1.contains("scripts/check.sh line "), "{line}: {}", r.1);
+    }
 }
 
 /// The package job may use only actions written as owner/repo@ref or owner/repo/path@ref on

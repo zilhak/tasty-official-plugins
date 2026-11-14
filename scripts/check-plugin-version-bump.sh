@@ -1559,7 +1559,7 @@ regions_in() {  # <list file> <path> <out file>
 # files the list names, by a path written out; and a job region of a workflow may use only
 # actions written as owner/repo@ref, since the list does not judge the content of others.
 check_archive_structure() {
-    local kind path how ref names ln target line
+    local kind path how ref names sk ln target line
     names=$(awk -F '\t' '$1 == "blob" || $1 == "script" || $1 == "region" { print $2 }' "$WORK/list.after" | sort -u)
     # The packaging copies a blob input with cp, which follows a symbolic link, so a link would
     # let the target change without a change of the listed path.
@@ -1607,53 +1607,76 @@ $(cat "$WORK/structure.uses")"
             continue
         fi
         # A source or . in command position: at the start of a line, after one of ; & | ( ) { }
-        # and a backtick, and after then do else elif if while until ! time exec builtin
-        # command or an assignment. Quoted text and text after an unquoted # are no commands;
-        # the word after source or . is its target, without its quotes.
+        # and a backtick, after then do else elif if while until ! coproc (and its name) time
+        # exec builtin command (and their - options), after an assignment, and after a
+        # redirection. Quoted text and text after an unquoted # are no commands; the word
+        # after source or . is its target, without its quotes. A command word written with a
+        # backslash or with $'...' or $"..." quoting is not read: it stops the check (Q).
         awk '
-            function endword() {
+            # Ends a word. raw is the word as written, word the word without its quotes.
+            function endword(   w, r, cop) {
                 if (!inword) return
-                if (want) { print NR "\t" word "\t" $0; want = 0; cmd = 0 }
-                else if (cmd) {
-                    if (word == "source" || word == ".") { want = 1; cmd = 0 }
-                    else if (word ~ /^(then|do|else|elif|if|while|until|!|time|exec|builtin|command)$/) cmd = 1
-                    else if (word ~ /^[A-Za-z_][A-Za-z0-9_]*=/) cmd = 1
-                    else cmd = 0
+                w = word; r = raw; word = ""; raw = ""; inword = 0
+                cop = coproc; coproc = 0
+                if (redir) { redir = 0; return }
+                if (want) { print "S\t" NR "\t" w "\t" $0; want = 0; cmd = 0; return }
+                if (!cmd) return
+                # A redirection before the command, with its target attached or next.
+                if (r ~ /^[0-9]*(<<<|<<-|<<|<>|<&|>&|>>|>\||&>>|&>|<|>)/) {
+                    if (r ~ /^[0-9]*(<<<|<<-|<<|<>|<&|>&|>>|>\||&>>|&>|<|>)$/) redir = 1
+                    return
                 }
-                word = ""; inword = 0
+                if (opts && w ~ /^-/) return
+                opts = 0
+                if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) return
+                if (r ~ /\\|\$\047|\$"/) { print "Q\t" NR "\t" r "\t" $0; cmd = 0; return }
+                if (w == "source" || w == ".") { want = 1; cmd = 0; return }
+                if (w ~ /^(time|command|exec|builtin)$/) { opts = 1; return }
+                if (w == "coproc") { coproc = 1; return }
+                if (w ~ /^(then|do|else|elif|if|while|until|!)$/) return
+                if (cop && w ~ /^[A-Za-z_][A-Za-z0-9_]*$/) return
+                cmd = 0
             }
             {
                 s = $0; n = length(s)
-                if (q == "" && !cont) { cmd = 1; want = 0 }
+                if (q == "" && !cont) { cmd = 1; want = 0; opts = 0; redir = 0; coproc = 0 }
                 cont = 0
                 for (i = 1; i <= n; i++) {
                     c = substr(s, i, 1)
-                    if (q == "\047") { if (c == "\047") q = ""; else word = word c; continue }
+                    if (q == "\047") { raw = raw c; if (c == "\047") q = ""; else word = word c; continue }
                     if (q == "\"") {
-                        if (c == "\\" && i < n) { i++; word = word "\\" substr(s, i, 1); continue }
+                        raw = raw c
+                        if (c == "\\" && i < n) { i++; raw = raw substr(s, i, 1); word = word "\\" substr(s, i, 1); continue }
                         if (c == "\"") q = ""; else word = word c
                         continue
                     }
                     if (c == "\\") {
                         if (i == n) { cont = 1; break }
-                        i++; word = word "\\" substr(s, i, 1); inword = 1; continue
+                        i++; word = word "\\" substr(s, i, 1); raw = raw "\\" substr(s, i, 1); inword = 1; continue
                     }
-                    if (c == "\047" || c == "\"") { q = c; inword = 1; continue }
+                    if (c == "\047" || c == "\"") { q = c; raw = raw c; inword = 1; continue }
                     if (c == "#" && !inword) break
                     if (c == "$" && substr(s, i + 1, 1) == "{") {
                         j = index(substr(s, i), "}")
                         if (j == 0) j = n - i + 1
-                        word = word substr(s, i, j); inword = 1; i += j - 1; continue
+                        word = word substr(s, i, j); raw = raw substr(s, i, j); inword = 1; i += j - 1; continue
                     }
                     if (c == " " || c == "\t") { endword(); continue }
-                    if (index(";&|(){}`", c)) { endword(); want = 0; cmd = 1; continue }
-                    word = word c; inword = 1
+                    # >& <& >| belong to a redirection word; &> and &>> start one.
+                    if ((c == "&" || c == "|") && inword && raw ~ /[<>]$/) { word = word c; raw = raw c; continue }
+                    if (c == "&" && substr(s, i + 1, 1) == ">") { endword(); word = c; raw = c; inword = 1; continue }
+                    if (index(";&|(){}`", c)) { endword(); want = 0; opts = 0; redir = 0; coproc = 0; cmd = 1; continue }
+                    word = word c; raw = raw c; inword = 1
                 }
                 if (q == "" && !cont) endword()
             }
         ' "$WORK/structure.src" > "$WORK/structure.sources" || die "cannot read $path (after)."
-        while IFS="$TAB" read -r ln target line; do
+        while IFS="$TAB" read -r sk ln target line; do
             [ -n "$ln" ] || continue
+            if [ "$sk" = Q ]; then
+                die "$path line $ln has a command word written with a backslash or with \$'...' or \$\"...\" quoting ($target), which the source check does not read; write it plainly or judge the plugin versions by hand:
+    $line"
+            fi
             target=${target#\"}; target=${target%\"}; target=${target#\'}; target=${target%\'}
             target=${target#./}
             case "$target" in
