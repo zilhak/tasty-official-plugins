@@ -121,7 +121,7 @@ arrives with a pin move. Unsound and unmaintained advisories appear as warnings
 in the job log and do not fail the job.
 
 This repository has no `deny.toml` and runs no `cargo deny` check. tasty keeps its
-decisions in its own `deny.toml`. The note below is the same decision for what this
+decisions in its own `deny.toml`. The notes below are the same decisions for what this
 repository builds. It is not a list of every advisory that applies to `Cargo.lock`; the
 `audit` job log shows those.
 
@@ -149,3 +149,24 @@ the advisory names no fixed version.
 - Review this if `ttf-parser` gets a vulnerability advisory. The note can go when
   `ab_glyph` moves to another parser and `tasty-i18n` drops its direct dependency. Which
   versions do that has not been measured.
+
+RUSTSEC-2024-0370: `proc-macro-error` 1.0.4 is unmaintained. It is not a known
+vulnerability.
+
+- It is a library for procedural macros, used only by `glib-macros` 0.18 and
+  `gtk3-macros` 0.18. It runs only at compile time.
+- It is only in the Linux target graph. It comes in through the Linux dev-dependencies of
+  `tasty-plugin-markdown` (`webkit2gtk` 2.0.2, `gtk` 0.18, and `javascriptcore-rs` 1.1.2),
+  so it is built for the tests and is not part of a plugin binary.
+- `cargo audit` reports it as a warning, and the `audit` job passes.
+- It can go when `webkit2gtk` and `gtk` leave the GTK3 0.18 line. Which versions do that
+  has not been measured.
+
+RUSTSEC-2024-0429: `glib` 0.18.5 is unsound.
+
+- It is an indirect dependency on the same GTK3 0.18 path: the Linux dev-dependencies of
+  `tasty-plugin-markdown` bring it in through `gtk`, `javascriptcore-rs`, and the crates
+  under them. It is only in the Linux target graph and is not part of a plugin binary.
+- `cargo audit` reports it as a warning, and the `audit` job passes.
+- It can go under the same condition as RUSTSEC-2024-0370. Which versions do that has not
+  been measured.
