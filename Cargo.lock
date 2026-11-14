@@ -1898,6 +1898,7 @@ name = "repo-gates"
 version = "0.0.0"
 dependencies = [
  "tempfile",
+ "toml",
 ]
 
 [[package]]
