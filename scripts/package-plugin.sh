@@ -24,7 +24,7 @@
 # comes from cargo's compiler-artifact messages and the manifest and lang/ from
 # crates/<crate>/ in this repository, so no target/ path is assembled by hand.
 #
-# Needs bash, tar, sha256sum or shasum, and jq or python3. Runs under Git Bash on
+# Needs bash, tar, awk, and sha256sum or shasum. Runs under Git Bash on
 # Windows.
 set -euo pipefail
 
@@ -49,20 +49,39 @@ to_unix_path() {
   fi
 }
 
-# Runs a jq filter, or the equivalent Python expression when jq is missing.
-# $1 = jq filter, $2 = python code that reads JSON lines from stdin.
-# Output goes through tr -d '\r': jq.exe and Python on Windows write CRLF line
-# endings, and a trailing \r would end up in the paths read from it.
-json_query() {
-  if command -v jq >/dev/null 2>&1; then
-    jq -r "$1" | tr -d '\r'
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -I -c "$2" | tr -d '\r'
-  elif command -v python >/dev/null 2>&1; then
-    python -I -c "$2" | tr -d '\r'
-  else
-    die "jq or python3 is required to read cargo JSON output"
-  fi
+# Reads cargo's JSON messages from stdin and prints "<target name>\t<executable>"
+# for each compiler-artifact message with an executable. It uses awk, so packaging
+# needs neither jq nor Python. On Windows, python3 can be the Microsoft Store alias,
+# which exits at once without reading its input.
+#
+# Each message is one line of compact JSON. In the executable path only the
+# escapes \\, \", and \/ are accepted: cargo escapes only those and control
+# characters, which a path does not hold. Any other escape fails. The target name
+# is read from the "target" object, which holds no nested object.
+cargo_executables() {
+  tr -d '\r' | awk '
+    function unescape(s,    out, i, c) {
+      out = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\") {
+          i++
+          c = substr(s, i, 1)
+          if (c != "\\" && c != "\"" && c != "/") { bad = 1; return "" }
+        }
+        out = out c
+      }
+      return out
+    }
+    index($0, "{\"reason\":\"compiler-artifact\"") == 1 {
+      if (!match($0, /"executable":"([^"\\]|\\.)*"/)) next
+      exe = unescape(substr($0, RSTART + 14, RLENGTH - 15))
+      if (bad) { print "unsupported escape in a cargo executable path: " $0 > "/dev/stderr"; exit 1 }
+      if (!match($0, /"target":[{][^}]*[}]/)) next
+      target = substr($0, RSTART, RLENGTH)
+      if (!match(target, /"name":"[^"\\]*"/)) next
+      print substr(target, RSTART + 8, RLENGTH - 9) "\t" exe
+    }'
 }
 
 sha256_of() {
@@ -116,13 +135,7 @@ cmd_stage() {
   local artifacts
   artifacts=$(
     scripts/check.sh build "${build_args[@]}" --message-format=json-render-diagnostics |
-      json_query \
-        'select(.reason == "compiler-artifact" and .executable != null) | "\(.target.name)\t\(.executable)"' \
-        'import json,sys
-for line in sys.stdin:
-    m = json.loads(line)
-    if m.get("reason") == "compiler-artifact" and m.get("executable"):
-        print(m["target"]["name"] + "\t" + m["executable"])'
+      cargo_executables
   )
 
   # Read before the loop: a process substitution would hide a failure of
