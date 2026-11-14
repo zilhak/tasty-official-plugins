@@ -1142,7 +1142,8 @@ impl PinFixture {
                  tasty-a = {{ git = \"{url}\", rev = \"{t1}\" }}\n\
                  tasty-b = {{ git = \"{url}\", rev = \"{t1}\" }}\n\
                  tasty-i18n = {{ git = \"{url}\", rev = \"{t1}\" }}\n\n\
-                 [profile.release]\nopt-level = 3\n"
+                 [profile.release]\nopt-level = 3\n\n\
+                 [profile.dist]\ninherits = \"release\"\n"
             ),
         );
         for (p, deps) in [
@@ -1737,22 +1738,17 @@ fn a_multi_line_string_in_a_lint_table_is_undecidable() {
     assert!(text.contains("cannot read the root Cargo.toml"), "{text}");
 }
 
-/// Case 11: Only a profile changed: pass with a note.
+/// Build settings case 24: the release profile dist inherits release, so a change of
+/// [profile.release] changes every plugin binary.
 #[test]
-fn a_profile_change_passes_with_a_note() {
+fn a_release_profile_change_flags_every_plugin() {
     let f = PinFixture::new();
-    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
-    write(
-        &f.repo,
-        "Cargo.toml",
-        &toml.replace("opt-level = 3", "opt-level = 2"),
-    );
+    f.edit_root("opt-level = 3", "opt-level = 2");
     f.commit("change the release profile");
-
-    let (code, text) = f.check(&HEAD_RANGE);
-    assert_eq!(code, 0, "{text}");
-    assert!(text.contains("note: [profile.release] changed"), "{text}");
-    assert!(text.contains("nothing to judge"), "{text}");
+    assert_every_plugin_flagged(
+        &f.check(&HEAD_RANGE),
+        "Cargo.toml [profile.release] (release profile chain: dist → release)",
+    );
 }
 
 /// Case 12: The resolver changed; that can change feature resolution, so judge by hand.
@@ -1775,26 +1771,25 @@ fn a_workspace_resolver_change_is_undecidable() {
     );
 }
 
-/// Case 13: .cargo/config.toml and rust-toolchain.toml pass with a note each.
+/// Build settings case 27: the cargo config and the toolchain change every plugin binary.
 #[test]
-fn cargo_config_and_toolchain_changes_pass_with_a_note() {
+fn cargo_config_and_toolchain_changes_flag_every_plugin() {
     let f = PinFixture::new();
-    write(
-        &f.repo,
+    f.write(
         ".cargo/config.toml",
-        "[build]\nincremental = false\n",
+        "[build]\nrustflags = [\"-C\", \"debuginfo=1\"]\n",
     );
-    write(
-        &f.repo,
-        "rust-toolchain.toml",
-        "[toolchain]\nchannel = \"stable\"\n",
-    );
-    f.commit("add a cargo config and a toolchain file");
+    f.commit("add a cargo config");
+    assert_every_plugin_flagged(&f.check(&HEAD_RANGE), ".cargo/config.toml (build settings)");
 
-    let (code, text) = f.check(&HEAD_RANGE);
-    assert_eq!(code, 0, "{text}");
-    assert!(text.contains("note: .cargo/config.toml changed"), "{text}");
-    assert!(text.contains("note: rust-toolchain.toml changed"), "{text}");
+    f.write("rust-toolchain.toml", "[toolchain]\nchannel = \"1.96.0\"\n");
+    f.commit("pin the toolchain");
+    f.write("rust-toolchain.toml", "[toolchain]\nchannel = \"1.95.0\"\n");
+    f.commit("move the toolchain");
+    assert_every_plugin_flagged(
+        &f.check(&HEAD_RANGE),
+        "rust-toolchain.toml (build settings)",
+    );
 }
 
 // ── Cargo.lock: external crates ──────────────────────────────────────────────
@@ -2721,4 +2716,404 @@ fn a_crate_gitattributes_change_flags_its_plugin() {
     f.write("crates/tasty-plugin-alpha/.gitattributes", "* -text\n");
     f.commit("check out alpha as binary");
     assert_only_alpha(&f.check(&HEAD_RANGE));
+}
+
+// ── Build settings: profiles, toolchain, cargo config ───────────────────────
+// PinFixture's root Cargo.toml has [profile.release] opt-level = 3 and [profile.dist]
+// inherits = "release", like this repository.
+
+const SEED_PROFILES: &str =
+    "[profile.release]\nopt-level = 3\n\n[profile.dist]\ninherits = \"release\"\n";
+
+impl PinFixture {
+    fn write(&self, rel: &str, body: &str) {
+        write(&self.repo, rel, body);
+    }
+
+    /// Replaces the one occurrence of `from` in the root Cargo.toml with `to`.
+    fn edit_root(&self, from: &str, to: &str) {
+        let body = fs::read_to_string(self.repo.join("Cargo.toml")).expect("read");
+        assert_eq!(body.matches(from).count(), 1, "{from:?} in Cargo.toml");
+        self.write("Cargo.toml", &body.replacen(from, to, 1));
+    }
+
+    fn git(&self, args: &[&str]) {
+        run_git(&self.repo, args);
+    }
+}
+
+/// Exit 1 with alpha and beta flagged, each for `reason`.
+fn assert_every_plugin_flagged((code, text): &(i32, String), reason: &str) {
+    assert_eq!(*code, 1, "{text}");
+    for p in ["alpha", "beta"] {
+        assert!(
+            text.contains(&format!("crates/tasty-plugin-{p}: shipped content changed")),
+            "{text}"
+        );
+    }
+    assert!(text.matches(reason).count() >= 2, "{reason:?}:\n{text}");
+}
+
+fn assert_undecidable_with((code, text): &(i32, String), what: &str) {
+    assert_eq!(*code, 2, "{text}");
+    assert!(text.contains(what), "{what:?}:\n{text}");
+}
+
+/// Build settings case 25: dev is not in the chain of dist, so it passes with a note.
+#[test]
+fn a_dev_profile_change_passes_with_a_note() {
+    let f = PinFixture::new();
+    f.edit_root(
+        SEED_PROFILES,
+        &format!("{SEED_PROFILES}\n[profile.dev]\nopt-level = 1\n"),
+    );
+    f.commit("add a dev profile");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("note: [profile.dev] changed"), "{text}");
+    assert!(text.contains("not in the inheritance chain"), "{text}");
+    assert!(text.contains("nothing to judge"), "{text}");
+}
+
+/// Build settings case 26: per-package settings and build-override belong to their profile.
+#[test]
+fn a_profile_package_override_in_the_chain_is_content() {
+    let f = PinFixture::new();
+    for table in [
+        "[profile.release.package.\"*\"]\nopt-level = 2\n",
+        "[profile.release.build-override]\nopt-level = 0\n",
+    ] {
+        let body = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+        f.write("Cargo.toml", &format!("{body}\n{table}"));
+        f.commit("add a profile table");
+        assert_every_plugin_flagged(
+            &f.check(&HEAD_RANGE),
+            "Cargo.toml [profile.release] (release profile chain",
+        );
+    }
+}
+
+/// Build settings case 28: aliases and toolchain components do not change the build.
+#[test]
+fn config_alias_or_toolchain_components_only_pass_with_a_note() {
+    let f = PinFixture::new();
+    f.write(".cargo/config.toml", "[build]\nincremental = false\n");
+    f.write("rust-toolchain.toml", "[toolchain]\nchannel = \"1.96.0\"\n");
+    f.commit("add a cargo config and a toolchain file");
+    f.write(
+        ".cargo/config.toml",
+        "[build]\nincremental = false\n\n[alias]\nxt = \"test --workspace\"\n",
+    );
+    f.write(
+        "rust-toolchain.toml",
+        "[toolchain]\nchannel = \"1.96.0\"\ncomponents = [\"rustfmt\"]\nprofile = \"minimal\"\n",
+    );
+    f.commit("add an alias and toolchain components");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("note: .cargo/config.toml changed only in [alias]"),
+        "{text}"
+    );
+    assert!(
+        text.contains("note: rust-toolchain.toml changed only in components or profile"),
+        "{text}"
+    );
+}
+
+/// Build settings case 29: a chain that cannot be followed stops the check, with the chain.
+#[test]
+fn an_undefined_or_cyclic_release_profile_is_undecidable() {
+    let cases = [
+        (
+            "opt-level = 3\n\n[profile.dist]\ninherits = \"release\"\n",
+            "opt-level = 2\n",
+            "profile dist is not defined (dist)",
+        ),
+        (
+            "inherits = \"release\"",
+            "inherits = \"nosuch\"",
+            "inherits nosuch, which is not defined (dist → nosuch)",
+        ),
+        (
+            "inherits = \"release\"\n",
+            "inherits = \"loop\"\n\n[profile.loop]\ninherits = \"dist\"\n",
+            "the profiles inherit in a cycle (dist → loop → dist)",
+        ),
+    ];
+    for (from, to, what) in cases {
+        let f = PinFixture::new();
+        f.edit_root(from, to);
+        f.commit("break the release profile");
+        assert_undecidable_with(&f.check(&HEAD_RANGE), what);
+    }
+}
+
+/// Build settings case 30: one bump per release, as for a lock update.
+#[test]
+fn a_second_toolchain_change_after_a_bump_since_the_release_passes() {
+    let f = PinFixture::new();
+    release_at(&f.repo);
+    f.bump("alpha", "0.1.1");
+    f.commit("bump alpha");
+    f.write("rust-toolchain.toml", "[toolchain]\nchannel = \"1.96.0\"\n");
+    f.commit("pin the toolchain");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "beta was not bumped since the release:\n{text}");
+    assert!(!text.contains("crates/tasty-plugin-alpha:"), "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-beta: shipped content changed"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "rust-toolchain.toml (build settings): crates/tasty-plugin-alpha is already at 0.1.1"
+        ),
+        "{text}"
+    );
+}
+
+/// Build settings case 31: the gate, the release workflow, and the packaging script name the
+/// same release profile.
+#[test]
+fn the_release_profile_is_the_same_in_the_gate_the_workflow_and_the_packaging_script() {
+    let read = |rel: &str| fs::read_to_string(support::repo_file(rel)).expect("read");
+    let gate = read("scripts/check-plugin-version-bump.sh");
+    let gate_profiles: Vec<&str> = gate
+        .lines()
+        .filter_map(|l| l.strip_prefix("RELEASE_PROFILE="))
+        .collect();
+    assert_eq!(gate_profiles, ["dist"], "RELEASE_PROFILE in the gate");
+    let release = read(".github/workflows/release.yml");
+    let package_job = release
+        .split_once("\n  package:\n")
+        .expect("the package job")
+        .1
+        .split_once("\n  publish:\n")
+        .expect("the job after package")
+        .0;
+    assert!(
+        package_job.contains("--profile dist\n"),
+        "release.yml builds the archives with another profile"
+    );
+    let package = read("scripts/package-plugin.sh");
+    assert_eq!(
+        package
+            .lines()
+            .filter(|l| l.starts_with("PROFILE="))
+            .collect::<Vec<_>>(),
+        ["PROFILE=\"dist\""],
+        "the default profile of scripts/package-plugin.sh"
+    );
+}
+
+/// Build settings case 32: the cargo config wins over the manifest, so a dist defined there
+/// moves the chain.
+#[test]
+fn a_config_profile_redirects_the_chain() {
+    let f = PinFixture::new();
+    f.write(".cargo/config.toml", "[profile.dist]\ninherits = \"dev\"\n");
+    f.commit("build dist from dev");
+    f.edit_root(
+        SEED_PROFILES,
+        &format!("{SEED_PROFILES}\n[profile.dev]\nopt-level = 1\n"),
+    );
+    f.commit("change the dev profile");
+    assert_every_plugin_flagged(
+        &f.check(&HEAD_RANGE),
+        "Cargo.toml [profile.dev] (release profile chain: dist → dev)",
+    );
+}
+
+/// Build settings case 33.
+#[test]
+fn a_dist_defined_only_in_the_cargo_config_is_not_undecidable() {
+    let f = PinFixture::new();
+    f.edit_root("\n[profile.dist]\ninherits = \"release\"\n", "");
+    f.write(
+        ".cargo/config.toml",
+        "[profile.dist]\ninherits = \"release\"\n",
+    );
+    f.commit("define dist in the cargo config");
+    f.edit_root("opt-level = 3", "opt-level = 2");
+    f.commit("change the release profile");
+    assert_every_plugin_flagged(
+        &f.check(&HEAD_RANGE),
+        "Cargo.toml [profile.release] (release profile chain: dist → release)",
+    );
+}
+
+/// Build settings case 34: an included config file is a build setting too; an include that
+/// leaves the repository or is a glob cannot be followed.
+#[test]
+fn a_change_in_an_included_cargo_config_flags_every_plugin() {
+    let f = PinFixture::new();
+    f.write(".cargo/config.toml", "include = [\"extra.toml\"]\n");
+    f.write(".cargo/extra.toml", "[profile.release]\ndebug = 1\n");
+    f.commit("include a cargo config");
+    f.write(".cargo/extra.toml", "[profile.release]\ndebug = 2\n");
+    f.commit("change the included config");
+    assert_every_plugin_flagged(&f.check(&HEAD_RANGE), ".cargo/extra.toml (build settings)");
+
+    for include in [
+        "include = \"../../outside.toml\"\n",
+        "include = [\"*.toml\"]\n",
+    ] {
+        f.write(".cargo/config.toml", include);
+        f.commit("include something that cannot be read");
+        assert_undecidable_with(
+            &f.check(&HEAD_RANGE),
+            "the cargo config .cargo/config.toml includes",
+        );
+    }
+}
+
+/// Build settings case 35: cargo reads quoted table names and single quotes too.
+#[test]
+fn quoted_profile_headers_are_read() {
+    let f = PinFixture::new();
+    f.edit_root(
+        SEED_PROFILES,
+        "[profile.\"release\"]\nopt-level = 3\n\n[ \"profile\" . \"dist\" ]\ninherits = 'release'\n",
+    );
+    f.commit("quote the profile tables");
+    f.edit_root("opt-level = 3", "opt-level = 2");
+    f.commit("change the release profile");
+    assert_every_plugin_flagged(
+        &f.check(&HEAD_RANGE),
+        "Cargo.toml [profile.release] (release profile chain: dist → release)",
+    );
+
+    let body = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    f.write(
+        "Cargo.toml",
+        &format!("{body}\n[profile.release.package.\"a.b\"]\nopt-level = 1\n"),
+    );
+    f.commit("tune one package of the release profile");
+    assert_every_plugin_flagged(
+        &f.check(&HEAD_RANGE),
+        "Cargo.toml [profile.release] (release profile chain: dist → release)",
+    );
+}
+
+/// Build settings case 36: in one [profile] table, each dotted key belongs to its profile.
+#[test]
+fn mixed_dotted_keys_in_one_profile_table_are_judged_per_key() {
+    let f = PinFixture::new();
+    f.edit_root(
+        SEED_PROFILES,
+        "[profile]\nrelease.opt-level = 3\ndist.inherits = \"release\"\ndev.opt-level = 0\n",
+    );
+    f.commit("write the profiles as dotted keys");
+    f.edit_root("dev.opt-level = 0", "dev.opt-level = 1");
+    f.commit("change the dev key");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("note: [profile.dev] changed"), "{text}");
+
+    f.edit_root(
+        "dist.inherits = \"release\"\n",
+        "dist.inherits = \"release\"\ndist.lto = true\n",
+    );
+    f.commit("change a dist key");
+    assert_every_plugin_flagged(
+        &f.check(&HEAD_RANGE),
+        "Cargo.toml [profile.dist] (release profile chain: dist → release)",
+    );
+}
+
+/// Build settings case 37: a top-level dotted profile key is not read.
+#[test]
+fn a_top_level_dotted_profile_key_is_undecidable() {
+    let f = PinFixture::new();
+    f.edit_root(
+        "[workspace]\n",
+        "profile.dist.opt-level = 2\n\n[workspace]\n",
+    );
+    f.commit("set a profile with a top-level dotted key");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "[top level] changed in the root Cargo.toml",
+    );
+}
+
+/// Build settings case 38: a user profile needs inherits; cargo fails without it.
+#[test]
+fn a_user_profile_without_inherits_is_undecidable() {
+    let f = PinFixture::new();
+    f.edit_root("inherits = \"release\"", "lto = true");
+    f.commit("drop the inherits of dist");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "profile dist has no inherits (dist)");
+}
+
+/// Build settings case 38: an explicit inherits on test wins over its default (dev).
+#[test]
+fn an_explicit_inherits_on_test_is_followed() {
+    let f = PinFixture::new();
+    f.edit_root(
+        "inherits = \"release\"\n",
+        "inherits = \"test\"\n\n[profile.test]\ninherits = \"release\"\n",
+    );
+    f.commit("build dist from test");
+    f.edit_root("opt-level = 3", "opt-level = 2");
+    f.commit("change the release profile");
+    assert_every_plugin_flagged(
+        &f.check(&HEAD_RANGE),
+        "Cargo.toml [profile.release] (release profile chain: dist → test → release)",
+    );
+}
+
+/// Build settings case 39: the chains of both sides count.
+#[test]
+fn an_inherits_change_widens_the_chain_on_either_side() {
+    let f = PinFixture::new();
+    f.edit_root("inherits = \"release\"", "inherits = \"dev\"");
+    f.commit("build dist from dev");
+    assert_every_plugin_flagged(
+        &f.check(&HEAD_RANGE),
+        "Cargo.toml [profile.dist] (release profile chain: dist → release before, dist → dev after)",
+    );
+}
+
+/// Build settings case 40.
+#[test]
+fn staged_mode_judges_build_config_too() {
+    let f = PinFixture::new();
+    f.edit_root("opt-level = 3", "opt-level = 2");
+    f.git(&["add", "-A"]);
+    assert_every_plugin_flagged(
+        &f.check(&["--staged"]),
+        "Cargo.toml [profile.release] (release profile chain: dist → release)",
+    );
+    f.git(&["reset", "--quiet", "--hard"]);
+    f.write(
+        ".cargo/config.toml",
+        "[build]\nrustflags = [\"-C\", \"debuginfo=1\"]\n",
+    );
+    f.git(&["add", "-A"]);
+    assert_every_plugin_flagged(
+        &f.check(&["--staged"]),
+        ".cargo/config.toml (build settings)",
+    );
+}
+
+/// Build settings case 41: a side without the root manifest is not compared as empty.
+#[test]
+fn an_unreadable_root_manifest_side_is_undecidable() {
+    let f = PinFixture::new();
+    f.git(&["rm", "--quiet", "--cached", "Cargo.toml"]);
+    f.git(&[
+        "commit",
+        "--quiet",
+        "-m",
+        "drop the manifest from the index",
+    ]);
+    f.edit_root("opt-level = 3", "opt-level = 2");
+    f.git(&["add", "Cargo.toml"]);
+    f.git(&["commit", "--quiet", "-m", "bring it back changed"]);
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "the root Cargo.toml is missing on one side of the range",
+    );
 }

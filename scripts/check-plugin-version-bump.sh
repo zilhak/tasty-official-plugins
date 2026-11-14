@@ -259,6 +259,9 @@ ver_gt() {
 
 # The directory of changed paths and of the plugin roster.
 SCAN_ROOT=crates
+# The profile that release archives are built with (release.yml, scripts/package-plugin.sh).
+# A change of a profile in its inheritance chain changes every plugin binary.
+RELEASE_PROFILE=dist
 
 # --no-renames lists both paths of a move, and T lists a file that became a symbolic link
 # or the other way round; both can change an archive.
@@ -903,27 +906,334 @@ in_either_lock() {  # <name>
     return 1
 }
 
+# ── Build settings: profiles, toolchain, cargo config ───────────────────────
+# The release archives are built with the profile dist. A profile in its inheritance chain,
+# the toolchain, and the repository cargo config change every plugin binary, so they ask
+# every plugin with an archive for a bump, once per release (the rule of a lock update).
+
+# awk functions for TOML keys: split_key splits a dotted key or table name into its parts,
+# without quotes and without spaces around the dots; QUOTED[i] tells a quoted part. eq_at
+# gives the position of the first = outside quotes, or 0.
+TOML_KEY_AWK='
+function split_key(s, parts,    n, i, c, q, cur, wasq) {
+    n = 0; cur = ""; q = ""; wasq = 0
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { if (c == q) q = ""; else cur = cur c; continue }
+        if (c == "\"" || c == "\047") { q = c; wasq = 1; continue }
+        if (c == ".") { n++; parts[n] = cur; QUOTED[n] = wasq; cur = ""; wasq = 0; continue }
+        if (c ~ /[[:space:]]/) continue
+        cur = cur c
+    }
+    n++; parts[n] = cur; QUOTED[n] = wasq
+    return n
+}
+function eq_at(s,    i, c, q) {
+    q = ""
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { if (c == q) q = ""; continue }
+        if (c == "\"" || c == "\047") { q = c; continue }
+        if (c == "=") return i
+    }
+    return 0
+}
+function join_parts(parts, from, to,    i, out) {
+    out = ""
+    for (i = from; i <= to; i++) out = out (i > from ? "." : "") parts[i]
+    return out
+}
+function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+'
+
+# The ref of <path> on <side> (before or after).
+side_ref() {  # <side> <path>
+    if [ "$1" = before ]; then printf '%s:%s' "$BEFORE_REV" "$2"; else after_ref "$2"; fi
+}
+
+# toml_lines of <ref> into <out>; stops when the file cannot be read or parsed.
+toml_lines_to() {  # <ref> <out file> <what>
+    toml_lines "$1" > "$2" || die "cannot read $3."
+    if grep -q '^<unreadable>' "$2"; then
+        die "cannot read $3; judge the plugin versions by hand:
+$(grep '^<unreadable>' "$2" | cut -f2- | sed 's/^/    /')"
+    fi
+}
+
+# The include entries of a cargo config file (toml_lines in <lines>) as "optional<TAB>path",
+# each path as written. A form that is not read comes out as "<bad><TAB>reason".
+config_includes() {  # <lines file>
+    awk -F '\t' "$TOML_KEY_AWK"'
+        function entry(t,    p, o) {
+            if (t ~ /^\{/) {
+                if (!match(t, /path[[:space:]]*=[[:space:]]*("[^"]*"|\047[^\047]*\047)/)) {
+                    print "<bad>\tan include table without a path: " t; return
+                }
+                p = substr(t, RSTART, RLENGTH); sub(/^path[[:space:]]*=[[:space:]]*/, "", p)
+                o = (t ~ /optional[[:space:]]*=[[:space:]]*true/) ? 1 : 0
+            } else { p = t; o = 0 }
+            print o "\t" substr(p, 2, length(p) - 2)
+        }
+        {
+            sec = $1; line = substr($0, length($1) + 2)
+            if (sec == "<unreadable>") next
+            n = split_key(sec, sp)
+            if (sp[1] == "include") { print "<bad>\tan [include] or [[include]] table: [" sec "] " line; next }
+            if (sec != "") next
+            e = eq_at(line); if (!e) next
+            nk = split_key(substr(line, 1, e - 1), kp)
+            if (kp[1] != "include") next
+            if (nk != 1) { print "<bad>\ta dotted include key: " line; next }
+            v = trim(substr(line, e + 1))
+            if (v ~ /^("[^"]*"|\047[^\047]*\047)$/) { entry(v); next }
+            if (v !~ /^\[.*\]$/) { print "<bad>\tan include value that is not read: " line; next }
+            v = trim(substr(v, 2, length(v) - 2))
+            while (v != "") {
+                if (match(v, /^("[^"]*"|\047[^\047]*\047|\{[^}]*\})/)) {
+                    entry(substr(v, 1, RLENGTH)); v = trim(substr(v, RLENGTH + 1))
+                    sub(/^,[[:space:]]*/, "", v)
+                } else { print "<bad>\tan include value that is not read: " line; break }
+            }
+        }' "$1"
+}
+
+# Writes the repository cargo config files of <side> to <out>, one per line, lowest
+# precedence first: each file follows the files it includes, and .cargo/config follows
+# .cargo/config.toml. Includes are followed as cargo does (relative to the including file),
+# each file once. An include outside the repository, a glob, or a missing file that is not
+# optional stops the check.
+INCLUDE_SEQ=0
+cargo_config_files() {  # <side> <out file>
+    : > "$2"
+    : > "$WORK/config.seen.$1"
+    config_walk "$1" .cargo/config.toml 1 "$2"
+    config_walk "$1" .cargo/config 1 "$2"
+}
+
+config_walk() {  # <side> <path> <optional> <out file>
+    local side="$1" path="$2" opt="$3" out="$4" ref inc o p dir resolved
+    grep -qxF "$path" "$WORK/config.seen.$side" && return 0
+    printf '%s\n' "$path" >> "$WORK/config.seen.$side"
+    ref=$(side_ref "$side" "$path")
+    if ! exists_at "$ref"; then
+        [ "$opt" = 1 ] && return 0
+        die "$path, included from the cargo config, is missing on the $side side."
+    fi
+    INCLUDE_SEQ=$((INCLUDE_SEQ + 1))
+    inc="$WORK/config.inc.$INCLUDE_SEQ"
+    toml_lines_to "$ref" "$inc.lines" "the cargo config $path ($side)"
+    config_includes "$inc.lines" > "$inc" || die "cannot read the includes of $path."
+    if grep -q '^<bad>' "$inc"; then
+        die "cannot follow the includes of the cargo config $path ($side); judge the plugin versions by hand:
+$(grep '^<bad>' "$inc" | cut -f2- | sed 's/^/    /')"
+    fi
+    dir=$(dirname "$path")
+    while IFS="$TAB" read -r o p; do
+        [ -n "$p" ] || continue
+        case "$p" in
+            /*|*'*'*|*'?'*|*'['*)
+                die "the cargo config $path includes $p, which is outside the repository or a glob; judge the plugin versions by hand." ;;
+        esac
+        resolved=$(norm_path "$dir/$p")
+        [ -n "$resolved" ] \
+            || die "the cargo config $path includes $p, which is outside the repository; judge the plugin versions by hand."
+        config_walk "$side" "$resolved" "$o" "$out"
+    done < "$inc"
+    printf '%s\n' "$path" >> "$out"
+}
+
+# The profile settings of a toml_lines file as "name<TAB>table<TAB>key<TAB>value": name is
+# the profile, table the rest of the table name (package.<crate>, build-override), key the
+# dotted key. A profile written as a top-level dotted key comes out as <unreadable>.
+profile_entries() {  # <lines file>
+    awk -F '\t' "$TOML_KEY_AWK"'
+        {
+            sec = $1; line = substr($0, length($1) + 2)
+            if (sec == "<unreadable>") { print "<unreadable>\t\t\t" line; next }
+            e = eq_at(line); if (!e) next
+            nk = split_key(substr(line, 1, e - 1), kp); val = trim(substr(line, e + 1))
+            if (sec == "") {
+                if (kp[1] == "profile") print "<unreadable>\t\t\ta top-level dotted profile key: " line
+                next
+            }
+            ns = split_key(sec, sp)
+            if (sp[1] != "profile") next
+            if (ns == 1) {
+                if (nk < 2) { print "<unreadable>\t\t\ta key of [profile] without a profile name: " line; next }
+                print kp[1] "\t\t" join_parts(kp, 2, nk) "\t" val
+            } else {
+                print sp[2] "\t" join_parts(sp, 3, ns) "\t" join_parts(kp, 1, nk) "\t" val
+            }
+        }' "$1"
+}
+
+# Writes the inheritance chain of RELEASE_PROFILE on <side> to <out> as "dist → release".
+# The profiles are those of the root Cargo.toml and of the repository cargo config files,
+# which win over the manifest. The chain follows inherits to release or dev; test and bench
+# inherit dev and release unless they say otherwise. Stops when the chain cannot be found.
+profile_chain() {  # <side> <out file>
+    local side="$1" out="$2" f n=0
+    : > "$WORK/chain.entries.$side"
+    toml_lines_to "$(side_ref "$side" Cargo.toml)" "$WORK/chain.lines" "the root Cargo.toml ($side)"
+    profile_entries "$WORK/chain.lines" >> "$WORK/chain.entries.$side" || die "cannot read the profiles ($side)."
+    cargo_config_files "$side" "$WORK/chain.configs.$side"
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        n=$((n + 1))
+        toml_lines_to "$(side_ref "$side" "$f")" "$WORK/chain.lines" "the cargo config $f ($side)"
+        profile_entries "$WORK/chain.lines" >> "$WORK/chain.entries.$side" || die "cannot read the profiles of $f ($side)."
+    done < "$WORK/chain.configs.$side"
+    START="$RELEASE_PROFILE" awk -F '\t' '
+        $1 == "<unreadable>" { bad = bad "\n    " $4; next }
+        {
+            defined[$1] = 1
+            if ($2 == "" && $3 == "inherits") { v = $4; gsub(/^["\047]|["\047]$/, "", v); inh[$1] = v }
+        }
+        function builtin(p) { return p == "release" || p == "dev" || p == "test" || p == "bench" }
+        END {
+            if (bad != "") { print "<error>\tcannot read a profile:" bad; exit }
+            cur = ENVIRON["START"]; chain = cur; seen[cur] = 1
+            while (cur != "release" && cur != "dev") {
+                if (cur in inh) nxt = inh[cur]
+                else if (cur == "test") nxt = "dev"
+                else if (cur == "bench") nxt = "release"
+                else if (!(cur in defined)) { print "<error>\tprofile " cur " is not defined (" chain ")"; exit }
+                else { print "<error>\tprofile " cur " has no inherits (" chain ")"; exit }
+                if (!builtin(nxt) && !(nxt in defined)) {
+                    print "<error>\tprofile " cur " inherits " nxt ", which is not defined (" chain " → " nxt ")"; exit
+                }
+                if (nxt in seen) { print "<error>\tthe profiles inherit in a cycle (" chain " → " nxt ")"; exit }
+                seen[nxt] = 1; chain = chain " → " nxt; cur = nxt
+            }
+            print chain
+        }' "$WORK/chain.entries.$side" > "$out" || die "cannot work out the profile chain ($side)."
+    if grep -q '^<error>' "$out"; then
+        die "the release profile $RELEASE_PROFILE cannot be followed on the $side side: $(cut -f2- "$out"); judge the plugin versions by hand."
+    fi
+    [ -s "$out" ] || die "cannot work out the profile chain ($side)."
+}
+
+# Bumps every plugin with an archive for <reason>, or notes that it is already above the
+# release (the rule of a lock update).
+bump_every_plugin() {  # <reason>
+    local p
+    for p in $(plugin_dirs); do
+        if external_update_needs_bump "$p"; then
+            add_dirty "$p" "$1"
+        else
+            note "$1: $RELEASED_NOTE; no further bump needed."
+        fi
+    done
+}
+
+# The profiles of the root Cargo.toml that changed, judged against the chain of both sides.
+judge_profiles() {
+    local name cb ca chain names
+    profile_entries "$WORK/root.before" | sort > "$WORK/profiles.before" || die "cannot read the profiles."
+    profile_entries "$WORK/root.after" | sort > "$WORK/profiles.after" || die "cannot read the profiles."
+    if grep -q '^<unreadable>' "$WORK/profiles.before" "$WORK/profiles.after"; then
+        die "cannot read a profile of the root Cargo.toml; judge the plugin versions by hand:
+$(grep -h '^<unreadable>' "$WORK/profiles.before" "$WORK/profiles.after" | cut -f4- | sort -u | sed 's/^/    /')"
+    fi
+    names=$(comm -3 "$WORK/profiles.before" "$WORK/profiles.after" | first_field | sort -u)
+    [ -n "$names" ] || return 0
+    profile_chain before "$WORK/chain.before"
+    profile_chain after "$WORK/chain.after"
+    cb=$(cat "$WORK/chain.before"); ca=$(cat "$WORK/chain.after")
+    chain="$cb"
+    [ "$cb" = "$ca" ] || chain="$cb before, $ca after"
+    for name in $names; do
+        if printf '%s\n%s\n' "$cb" "$ca" | tr ' ' '\n' | grep -qxF "$name"; then
+            bump_every_plugin "Cargo.toml [profile.$name] (release profile chain: $chain)"
+        else
+            note "[profile.$name] changed in Cargo.toml, not in the inheritance chain of the release profile $RELEASE_PROFILE ($chain); plugin versions are not bumped for it, see docs/ci.md."
+        fi
+    done
+}
+
+# Writes the build-relevant lines of a toolchain or cargo config file at <ref> to <out>: the
+# toml_lines without the keys that do not change the build ([alias], [term], [net], [http]
+# of a cargo config; components and profile of rust-toolchain.toml). The legacy
+# rust-toolchain file is its lines without blank ones. A missing file is empty.
+build_config_lines() {  # <ref> <path> <kind: config|toolchain|legacy> <out> <all lines out>
+    : > "$4"; : > "$5"
+    exists_at "$1" || return 0
+    if [ "$3" = legacy ]; then
+        git show "$1" > "$WORK/legacy.src" || die "cannot read $2."
+        sed '/^[[:space:]]*$/d' "$WORK/legacy.src" > "$4"
+        cp "$4" "$5"
+        return 0
+    fi
+    toml_lines_to "$1" "$5" "$2"
+    KIND="$3" awk -F '\t' "$TOML_KEY_AWK"'
+        {
+            sec = $1; line = substr($0, length($1) + 2)
+            e = eq_at(line); nk = e ? split_key(substr(line, 1, e - 1), kp) : 0
+            if (ENVIRON["KIND"] == "config") {
+                if (sec != "") { split_key(sec, sp); top = sp[1] } else top = kp[1]
+                if (top == "alias" || top == "term" || top == "net" || top == "http") next
+            } else {
+                ns = split_key(sec, sp)
+                if (sec == "") { t = kp[1]; k = kp[2]; n = nk - 1 } else { t = sp[1]; k = kp[1]; n = ns - 1 + nk }
+                if (t == "toolchain" && n == 1 && (k == "components" || k == "profile")) next
+            }
+            print
+        }' "$5" > "$4" || die "cannot read $2."
+}
+
+# The toolchain files and the repository cargo config files, with what they include on
+# either side. A change asks every plugin for a bump unless only the keys above changed.
+judge_build_config() {
+    local f kind
+    cargo_config_files before "$WORK/configs.before"
+    cargo_config_files after "$WORK/configs.after"
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        outside_has "$f" || continue
+        case "$f" in
+            rust-toolchain.toml) kind=toolchain ;;
+            rust-toolchain) kind=legacy ;;
+            *) kind=config ;;
+        esac
+        build_config_lines "$BEFORE_REV:$f" "$f" "$kind" "$WORK/bc.before" "$WORK/bc.before.all"
+        build_config_lines "$(after_ref "$f")" "$f" "$kind" "$WORK/bc.after" "$WORK/bc.after.all"
+        if ! cmp -s "$WORK/bc.before" "$WORK/bc.after"; then
+            bump_every_plugin "$f (build settings)"
+        elif ! cmp -s "$WORK/bc.before.all" "$WORK/bc.after.all"; then
+            case "$kind" in
+                toolchain) note "$f changed only in components or profile, which do not change the build; plugin versions are not bumped for it, see docs/ci.md." ;;
+                *) note "$f changed only in [alias], [term], [net], or [http], which do not change the build; plugin versions are not bumped for it, see docs/ci.md." ;;
+            esac
+        fi
+    done <<EOF2
+$(printf '%s\n' .cargo/config.toml .cargo/config rust-toolchain.toml rust-toolchain \
+    | cat - "$WORK/configs.before" "$WORK/configs.after" | awk 'NF && !seen[$0]++')
+EOF2
+}
+
 judge_root_manifest() {
     local before="$BEFORE_REV:Cargo.toml" after sec key pkg val_b val_a p
     after=$(after_ref Cargo.toml)
     if ! exists_at "$before" || ! exists_at "$after"; then
         die "the root Cargo.toml is missing on one side of the range."
     fi
-    toml_lines "$before" > "$WORK/root.before"
-    toml_lines "$after" > "$WORK/root.after"
+    toml_lines "$before" > "$WORK/root.before" || die "cannot read the root Cargo.toml at $BEFORE_REV."
+    toml_lines "$after" > "$WORK/root.after" || die "cannot read the root Cargo.toml at ${AFTER_PREFIX:-the index}."
     if grep -q '^<unreadable>' "$WORK/root.before" "$WORK/root.after"; then
         die "cannot read the root Cargo.toml; judge the plugin versions by hand:
 $(grep -h '^<unreadable>' "$WORK/root.before" "$WORK/root.after" | cut -f2- | sort -u | sed 's/^/    /')"
     fi
+    local profiles_changed=0 nsec
     while IFS= read -r sec; do
         if cmp -s <(awk -F '\t' -v s="$sec" '$1 == s' "$WORK/root.before") \
                   <(awk -F '\t' -v s="$sec" '$1 == s' "$WORK/root.after"); then
             continue
         fi
-        case "$sec" in
+        # Quotes and spaces around the dots do not change the table cargo reads.
+        nsec=$(printf '%s' "$sec" | tr -d "\"' ")
+        case "$nsec" in
             workspace.dependencies|workspace.dependencies.*) ;;  # by entry, below
-            profile|profile.*)
-                note "[$sec] changed in Cargo.toml; plugin versions are not bumped for it, see docs/ci.md." ;;
+            profile|profile.*) profiles_changed=1 ;;  # by profile, below
             patch|patch.*) ;;  # the lock shows what it moves
             workspace.lints|workspace.lints.*) ;;
             *) die "[${sec:-top level}] changed in the root Cargo.toml; judge the plugin versions by hand." ;;
@@ -931,6 +1241,7 @@ $(grep -h '^<unreadable>' "$WORK/root.before" "$WORK/root.after" | cut -f2- | so
     done <<EOF2
 $(cut -f1 "$WORK/root.before" "$WORK/root.after" | sort -u)
 EOF2
+    [ "$profiles_changed" = 0 ] || judge_profiles
     dep_entries "$WORK/root.before" > "$WORK/deps.before"
     dep_entries "$WORK/root.after" > "$WORK/deps.after"
     while IFS= read -r key; do
@@ -1080,9 +1391,7 @@ fi
 if outside_has Cargo.toml; then
     judge_root_manifest
 fi
-for f in .cargo/config.toml rust-toolchain.toml rust-toolchain; do
-    outside_has "$f" && note "$f changed; plugin versions are not bumped for it, see docs/ci.md."
-done
+judge_build_config
 judge_archive_inputs
 if [ -n "$ARCHIVE_SUMMARY" ]; then
     printf '[plugin-version] archive inputs that changed, which go into every plugin archive: %s\n' \
