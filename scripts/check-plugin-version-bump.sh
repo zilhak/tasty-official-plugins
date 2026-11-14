@@ -1479,17 +1479,12 @@ outside_touches() {  # <path>
     esac
 }
 
-# Keeps the lines that run: whole-line comments and blank lines go, the first line stays
-# when it starts with #!. A comment after code and a # inside a string stay.
-code_lines() {
-    awk 'NR == 1 && /^#!/ { print; next } /^[[:space:]]*#/ { next } /^[[:space:]]*$/ { next } { print }'
-}
-
-# The checksum of a packaging script at <ref> without comment and blank lines, into <out>.
+# The checksum of a packaging script at <ref>, into <out>. The text is compared as it is: a
+# line that starts with # can be data of a string, a here-document, or a continued line,
+# which only a shell parser could tell from a comment.
 script_norm() {  # <ref> <out file>
     if ! exists_at "$1"; then printf '<absent>' > "$2"; return 0; fi
-    git show "$1" > "$WORK/script.src" || die "cannot read $1."
-    code_lines < "$WORK/script.src" | cksum > "$2" || die "cannot read $1."
+    git show "$1" | cksum > "$2" || die "cannot read $1."
 }
 
 # The checksum of the regions of <path> at <ref> that <regions> names ("how<TAB>open<TAB>close"
@@ -1509,7 +1504,7 @@ region_of() {  # <ref> <path> <regions file> <out file>
         esac
         # ENVIRON, not -v: awk would read the backslashes of the patterns as escapes.
         if ! R_HOW="$how" R_OPEN="$open" R_CLOSE="$close" awk '
-            function keep(s) { if (s !~ /^[[:space:]]*(#|$)/) print s }
+            function keep(s) { print s }
             BEGIN { how = ENVIRON["R_HOW"]; opn = ENVIRON["R_OPEN"]; cls = ENVIRON["R_CLOSE"]
                     print "@ " opn }
             # Markers and boundaries are read without a trailing comment and trailing blanks.

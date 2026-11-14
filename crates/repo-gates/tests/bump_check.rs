@@ -2443,9 +2443,11 @@ fn a_gitattributes_change_flags_every_archived_plugin() {
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".gitattributes");
 }
 
-/// Archive case 5.
+/// Archive case 5: a script is compared by its text as it is, so a comment or a blank line
+/// counts. Whether a line that starts with # is a comment or data of a string, a
+/// here-document, or a continued line takes a shell parser to tell.
 #[test]
-fn a_comment_only_change_in_a_packaging_script_needs_no_bump() {
+fn a_comment_only_change_in_a_packaging_script_flags_every_archived_plugin() {
     let f = ArchiveFixture::new();
     f.edit(
         "scripts/package-plugin.sh",
@@ -2453,11 +2455,10 @@ fn a_comment_only_change_in_a_packaging_script_needs_no_bump() {
         "\n  # Copies the files into the stage folder.\n\n",
     );
     f.commit("reword a comment");
-    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/package-plugin.sh");
 }
 
-/// Archive case 6: a code line counts, also when it holds a # inside a string, so the
-/// comment rule must not cut a line at its first #.
+/// Archive case 6: a code line counts, also a change after a # inside a string.
 #[test]
 fn a_code_change_in_a_packaging_script_flags_every_archived_plugin() {
     let f = ArchiveFixture::new();
@@ -2470,36 +2471,44 @@ fn a_code_change_in_a_packaging_script_flags_every_archived_plugin() {
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/package-plugin.sh");
 }
 
-/// Archive case 7: check.sh is compared whole, without whole-line comments and blank lines.
+/// Archive case 7: check.sh is compared whole, comments and blank lines included; like the
+/// other archive inputs it needs one bump per release.
 #[test]
-fn a_check_sh_comment_or_blank_change_needs_no_bump() {
+fn a_check_sh_comment_or_blank_change_needs_a_bump_once_per_release() {
+    let comment = |f: &ArchiveFixture| {
+        f.edit(
+            "scripts/check.sh",
+            "#   scripts/check.sh build   build the plugin crates\n",
+            "#   scripts/check.sh build   build the plugin crates\n\
+             #   scripts/check.sh audit   audit the dependencies\n",
+        );
+        f.edit(
+            "scripts/check.sh",
+            "cmd_audit() { run cargo audit; }\n",
+            "cmd_audit() { run cargo audit; }\n\n# Subcommands.\n\n",
+        );
+        f.commit("comment check.sh");
+    };
     let f = ArchiveFixture::new();
-    f.edit(
-        "scripts/check.sh",
-        "#   scripts/check.sh build   build the plugin crates\n",
-        "#   scripts/check.sh build   build the plugin crates\n\
-         #   scripts/check.sh audit   audit the dependencies\n",
-    );
-    f.edit(
-        "scripts/check.sh",
-        "cmd_audit() { run cargo audit; }\n",
-        "cmd_audit() { run cargo audit; }\n\n# Subcommands.\n\n",
-    );
-    f.commit("comment check.sh");
-    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
-
-    f.edit(
-        "scripts/check.sh",
-        "cmd_audit() { run cargo audit; }\n",
-        "cmd_audit() { run cargo audit; }\ncmd_licenses() { run cargo deny check licenses; }\n",
-    );
-    f.edit(
-        "scripts/check.sh",
-        "  audit) cmd_audit ;;\n",
-        "  audit) cmd_audit ;;\n  licenses) cmd_licenses ;;\n",
-    );
-    f.commit("add a licenses subcommand");
+    comment(&f);
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
+
+    let f = ArchiveFixture::new();
+    release_at(&f.repo);
+    f.bump("alpha", "0.1.1");
+    f.bump("beta", "0.1.1");
+    f.commit("bump both plugins");
+    comment(&f);
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("archive inputs changed (scripts/check.sh)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("crates/tasty-plugin-beta is already at 0.1.1, above 0.1.0 at origin/main"),
+        "{text}"
+    );
 }
 
 /// Archive case 8.
@@ -2723,9 +2732,9 @@ fn a_trailing_newline_change_in_lang_is_content() {
     assert_only_alpha(&f.check(&HEAD_RANGE));
 }
 
-/// Archive case 19: line 1 of a sourced library is a comment, not a #! line.
+/// Archive case 19: line 1 of a sourced library counts like every other line.
 #[test]
-fn a_first_line_comment_change_in_a_sourced_lib_needs_no_bump() {
+fn a_first_line_comment_change_in_a_sourced_lib_flags_every_archived_plugin() {
     let f = ArchiveFixture::new();
     f.edit(
         "scripts/lib/notice-set.sh",
@@ -2733,7 +2742,7 @@ fn a_first_line_comment_change_in_a_sourced_lib_needs_no_bump() {
         "# The notice set of every archive.",
     );
     f.commit("reword the first line");
-    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/lib/notice-set.sh");
 
     f.edit(
         "scripts/lib/notice-set.sh",
@@ -2742,6 +2751,74 @@ fn a_first_line_comment_change_in_a_sourced_lib_needs_no_bump() {
     );
     f.commit("start with a #! line");
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/lib/notice-set.sh");
+}
+
+/// Lines that start with # but are data: inside a multi-line single-quoted awk program,
+/// in a here-document, in a multi-line string, and after a continued line. The reviews
+/// changed only such a line in a second commit; the text is compared as it is, so that
+/// commit counts too.
+#[test]
+fn a_hash_line_inside_a_string_or_here_document_counts() {
+    let cases = [
+        (
+            "scripts/lib/plugin-build.sh",
+            "cargo_executables() {\n  awk '\n    /x/ { print }\n#REVIEW_MARK=1\n  ' \"$1\"\n}\n",
+        ),
+        (
+            "scripts/package-plugin.sh",
+            "readme() {\n  cat > \"$dest/README.md\" <<EOF\n#REVIEW_MARK=1\nEOF\n}\n",
+        ),
+        (
+            "scripts/check.sh",
+            "REVIEW_NOTE='first\n#REVIEW_MARK=1\nlast'\nexport REVIEW_NOTE\n",
+        ),
+        ("scripts/check.sh", "export REVIEW_A=1 \\\n#REVIEW_MARK=1\n"),
+    ];
+    for (path, block) in cases {
+        let f = ArchiveFixture::new();
+        let body = fs::read_to_string(f.repo.join(path)).expect("read");
+        f.write(path, &format!("{body}{block}"));
+        f.commit("add code with a # line");
+        assert_every_archive_flagged(&f.check(&HEAD_RANGE), path);
+        f.edit(path, "#REVIEW_MARK=1", "#REVIEW_MARK=2");
+        f.commit("change only the # line");
+        assert_every_archive_flagged(&f.check(&HEAD_RANGE), path);
+    }
+}
+
+/// A region is compared by its text as it is: a comment in the package job or in the
+/// top-level env counts. A comment outside the regions, in another job or in a script the
+/// list does not name, needs nothing.
+#[test]
+fn comments_inside_a_region_count_and_outside_do_not() {
+    for (from, to) in [
+        (
+            "      - run: bash scripts/package-plugin.sh",
+            "      # REVIEW_MARK\n      - run: bash scripts/package-plugin.sh",
+        ),
+        (
+            "  CARGO_TERM_COLOR: always\n",
+            "  CARGO_TERM_COLOR: always\n  # REVIEW_MARK\n",
+        ),
+    ] {
+        let f = ArchiveFixture::new();
+        f.edit(".github/workflows/release.yml", from, to);
+        f.commit("comment a region");
+        assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
+    }
+
+    let f = ArchiveFixture::new();
+    f.edit(
+        ".github/workflows/release.yml",
+        "      - run: echo publish\n",
+        "      # REVIEW_MARK\n      - run: echo publish\n",
+    );
+    f.write("scripts/other.sh", "# other\ntrue\n");
+    f.commit("comment the publish job and add another script");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+    f.write("scripts/other.sh", "# other, REVIEW_MARK\n\ntrue\n");
+    f.commit("comment the other script");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
 }
 
 /// Archive case 20: package-plugin.sh also runs list-bins and run().

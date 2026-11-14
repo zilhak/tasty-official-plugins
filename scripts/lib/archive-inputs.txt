@@ -6,17 +6,20 @@
 #
 #   blob    path                    compared by path, file mode, and blob id; a symbolic link
 #                                   stops the check
-#   script  path                    compared without whole-line comments and blank lines;
-#                                   the first line stays when it starts with #!
-#   region  path  how  open  close  only the parts that packaging runs, compared like a
-#                                   script; every region line of a path is one comparison
+#   script  path                    compared by its text as it is, comments and blank
+#                                   lines included (not by file mode)
+#   region  path  how  open  close  only the parts that packaging runs, compared by their
+#                                   text as it is; every region line of a path is one
+#                                   comparison
 #
 # A region is found by extended regular expressions on whole lines; a trailing comment and
 # trailing blanks do not count, for the markers and for the end of a top or job region:
 #   block  from the line that matches open to the next line that matches close
 #   line   every line that matches open
-#   top    a top-level YAML key: from open to the next line that starts in column 0
+#   top    a top-level YAML key: from open to the next line that starts in column 0 and is
+#          not a comment
 #   job    a job of a workflow: from open to the next job or top-level key
+# The text inside a region counts whole: a comment or a blank line there is a change.
 # A file that exists without one of its regions cannot be judged (exit 2).
 #
 # blob and script lines count from either side's list. When the region lines of a path differ
