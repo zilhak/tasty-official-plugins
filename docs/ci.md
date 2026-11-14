@@ -204,8 +204,9 @@ each plugin is recorded in `release-meta.toml`, so tasty decides what to bundle.
 ## Releases
 
 The repository version is in `VERSION` (`MAJOR.MINOR.PATCH`). A release is the push of
-the tag `v` + `VERSION` on a `main` commit. The release steps are in
-[branching.md](branching.md).
+the tag `v` + `VERSION` on a `main` commit. The tag goes on the commit that bumps
+`VERSION`: `create-release` uses the body of the tag commit as the Release notes. The
+release steps are in [branching.md](branching.md).
 
 ### Jobs
 
@@ -234,7 +235,8 @@ There is no merged hash list or TSV across platforms.
 
 ### Failures and reruns
 
-If any job fails or is cancelled, the Release stays a draft and nothing is published.
+If `create-release` fails, no Release is created. If a later job fails or is cancelled,
+the Release stays a draft. In both cases nothing is published.
 A rerun of the workflow for the same tag reuses the draft. `publish` does not overwrite
 an asset: an asset already on the draft is skipped if its SHA-256 equals the new file,
 and the job fails if it differs. The job also fails if the draft has an asset that is
@@ -293,9 +295,10 @@ scripts/release-meta.sh --tag unreleased --out target/release-meta.toml
 
 ### Not signed
 
-The packages, manifests, and binaries are not signed, and there is no macOS codesign or
-notarization and no Windows Authenticode step. The release needs no signing secrets.
-Whether and how to sign is left to the plugin trust model.
+The packages, manifests, and binaries of this repository are not signed, and there is
+no macOS codesign or notarization and no Windows Authenticode step. The release needs
+no signing secrets. tasty signs the manifests of the plugins it bundles when it packages
+them.
 
 ## Checks after the first push
 

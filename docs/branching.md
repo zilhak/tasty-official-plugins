@@ -7,7 +7,7 @@ which is the reference. This page summarizes them and lists what differs here.
 | Branch | Meaning | What goes in |
 |---|---|---|
 | `develop` | Version under development. The integration branch and the GitHub default branch | Work branches that pass CI, fast-forwarded. Back-merges from `release` and `main` |
-| `release` | Release candidate | A commit chosen from `develop`. Verification on real runs and release fixes. Back-merges from `main` |
+| `release` | Release candidate | A commit chosen from `develop`. Verification on real runs, release fixes, and the version commit. Back-merges from `main` |
 | `main` | Released version. Release tags (`v*`) go only on `main` commits | `release` at release time. Hotfixes |
 
 The repository version is in `VERSION`. A release tag is `v` + `VERSION`, for example
@@ -28,32 +28,39 @@ target it, and a manual workflow run without `--ref` runs on it.
 1. Move `release` to a commit chosen from `develop`. If `release` is an ancestor of that
    commit, use `git merge --ff-only <commit>`. Otherwise (a release fix is not yet on
    `develop`) merge it with a merge commit.
-2. Bump `VERSION` on `release` in its own commit.
-3. Verify the candidate on `release`. Commit release fixes on `release`.
-4. Back-merge `release` into `develop`. If `develop` is ahead, this is a merge commit.
+2. Verify the candidate on `release`. Commit release fixes on `release`.
+3. When verification is done, make the version commit on `release`: it bumps `VERSION`,
+   and its body is the release note.
+4. Back-merge the fixes and the version commit from `release` into `develop`. If
+   `develop` is ahead, this is a merge commit.
 
-`release` takes no new features: only verification and release fixes.
+`release` takes no new features: only verification, release fixes, and the version
+commit.
 
 ## Releasing to main
 
-1. Fast-forward `main` to `release` (`git merge --ff-only release`). If `main` has a
-   hotfix that `release` lacks, back-merge `main` into `release` first.
-2. Tag the `main` commit with `v` + `VERSION`: `git tag -a vX.Y.Z -m vX.Y.Z`.
+1. Fast-forward `main` to `release` (`git merge --ff-only release`). The release notes
+   are the body of the tag commit, so the tag goes on the version commit, not on a
+   merge commit. If `main` has a hotfix that `release` lacks, back-merge `main` into
+   `release` first and make the version commit on top of that merge.
+2. Tag the version commit with `v` + `VERSION`: `git tag -a vX.Y.Z -m vX.Y.Z`.
 3. Push `release`, `main`, and the tag together:
    `git push --atomic origin release main vX.Y.Z`.
 
 The tag push starts `release.yml`, which checks that the tag commit is on `main` and
 that the tag equals `v` + `VERSION`, then publishes the Release of the tag
-([CI and release workflows](ci.md#releases)). If the run fails, the Release stays a
-draft; fix the cause and rerun the workflow for the same tag.
+([CI and release workflows](ci.md#releases)). If `create-release` fails, no Release is
+created. If a later job fails, the Release stays a draft. Either way, fix the cause and
+rerun the workflow for the same tag.
 
 ## Hotfixes
 
-1. Branch from `main`, fix, and bump the patch number in `VERSION`. Land the fix and the
-   bump on `main`.
-2. Tag the `main` commit (`git tag -a vX.Y.Z -m vX.Y.Z`) and push `main` with the tag
+1. Branch from `main`, fix, and land the fix on `main`.
+2. On `main`, make the version commit: it bumps the patch number in `VERSION`, and its
+   body is the release note.
+3. Tag the version commit (`git tag -a vX.Y.Z -m vX.Y.Z`) and push `main` with the tag
    only: `git push --atomic origin main vX.Y.Z`. `release` is not part of this push.
-3. Back-merge `main` into `release` and `develop`. If the target is ahead, this is a
+4. Back-merge `main` into `release` and `develop`. If the target is ahead, this is a
    merge commit.
 
 Do not back-merge with cherry-pick. A cherry-picked commit has a different hash, so the
