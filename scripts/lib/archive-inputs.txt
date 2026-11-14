@@ -19,7 +19,9 @@
 #   top    a top-level YAML key: from open to the next line that starts in column 0 and is
 #          not a comment
 #   job    a job of a workflow: from open to the next job or top-level key
-# The text inside a region counts whole: a comment or a blank line there is a change.
+# The text inside a region counts whole: a comment or a blank line there is a change. Comment
+# lines no deeper than the key of a top or job region and blank lines right before its end
+# belong to what follows (the head comment of the next job), not to the region.
 # A file that exists without one of its regions cannot be judged (exit 2).
 #
 # blob and script lines count from either side's list. When the region lines of a path differ

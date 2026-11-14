@@ -1510,7 +1510,10 @@ region_of() {  # <ref> <path> <regions file> <out file>
             # Markers and boundaries are read without a trailing comment and trailing blanks.
             { b = $0; sub(/[[:space:]]+#.*$/, "", b); sub(/[[:space:]]+$/, "", b) }
             how == "line" { if (b ~ opn) { found = 1; keep($0) } next }
-            state == 0 { if (b ~ opn) { state = 1; found = 1; keep($0) } next }
+            state == 0 {
+                if (b ~ opn) { state = 1; found = 1; keep($0); match($0, /^ */); kin = RLENGTH }
+                next
+            }
             state != 1 { next }
             how == "block" {
                 if (b ~ cls) { keep($0); state = 2; next }
@@ -1520,6 +1523,14 @@ region_of() {  # <ref> <path> <regions file> <out file>
             }
             how == "top" && /^[^[:space:]#]/ { state = 2; next }
             how == "job" && (b ~ /^  [A-Za-z0-9_-]+:$/ || /^[^[:space:]#]/) { state = 2; next }
+            # Comment lines that start no deeper than the region key, and blank lines, wait in
+            # held: before more region text they belong to the region, before the end of a top
+            # or job region (or of the file) they belong to what follows. A deeper line can be
+            # data of a block scalar and always counts.
+            how != "block" && ($0 ~ /^[[:space:]]*$/ || ($0 ~ /^ *#/ && match($0, /^ */) && RLENGTH <= kin)) {
+                held = held $0 "\n"; next
+            }
+            how != "block" && held != "" { printf "%s", held; held = "" }
             { keep($0) }
             END {
                 if (!found) { print "cannot find the line " opn > "/dev/stderr"; exit 3 }

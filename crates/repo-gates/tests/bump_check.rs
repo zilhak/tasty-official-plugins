@@ -2915,6 +2915,82 @@ fn trailing_comments_on_region_markers_are_read() {
     }
 }
 
+/// Comment lines no deeper than the region key and blank lines right before the end of a top
+/// or job region belong to what follows, not to the region: the head comment of the next
+/// job, a blank line between jobs, and a column 0 comment before the next top-level key need
+/// nothing. A deeper comment there, or one that more region text follows, counts.
+#[test]
+fn comments_and_blank_lines_before_the_end_of_a_region_are_outside_it() {
+    let f = ArchiveFixture::new();
+    for (from, to, what) in [
+        (
+            "  publish:\n",
+            "  # Publishes the release.\n  publish:\n",
+            "add a publish head comment",
+        ),
+        (
+            "  # Publishes the release.\n",
+            "  # Publishes the draft release.\n",
+            "reword it",
+        ),
+        (
+            "\n  # Publishes",
+            "\n\n  # Publishes",
+            "add a blank line before it",
+        ),
+        (
+            "jobs:\n",
+            "# REVIEW_MARK jobs\njobs:\n",
+            "comment before jobs",
+        ),
+        (
+            "defaults:\n",
+            "# REVIEW_MARK defaults\n\ndefaults:\n",
+            "comment before defaults",
+        ),
+    ] {
+        f.edit(".github/workflows/release.yml", from, to);
+        f.commit(what);
+        assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+    }
+
+    for (from, to) in [
+        (
+            "  # Publishes",
+            "        # REVIEW_MARK in a step\n  # Publishes",
+        ),
+        ("  # Publishes", "      # REVIEW_MARK\n  # Publishes"),
+        (
+            "  # Publishes",
+            "  # REVIEW_MARK\n      - run: echo more\n  # Publishes",
+        ),
+        (
+            "# REVIEW_MARK defaults\n",
+            "  # REVIEW_MARK env\n# REVIEW_MARK defaults\n",
+        ),
+        (
+            "      - run: bash scripts/package-plugin.sh",
+            "\n  # REVIEW_MARK\n      - run: bash scripts/package-plugin.sh",
+        ),
+    ] {
+        let g = ArchiveFixture::new();
+        g.edit(
+            ".github/workflows/release.yml",
+            "  publish:\n",
+            "  # Publishes the release.\n  publish:\n",
+        );
+        g.edit(
+            ".github/workflows/release.yml",
+            "defaults:\n",
+            "# REVIEW_MARK defaults\ndefaults:\n",
+        );
+        g.commit("comment the boundaries");
+        g.edit(".github/workflows/release.yml", from, to);
+        g.commit("comment inside a region");
+        assert_every_archive_flagged(&g.check(&HEAD_RANGE), ".github/workflows/release.yml");
+    }
+}
+
 /// Archive case 23: a .gitattributes in a crate changes how its shipped files check out.
 #[test]
 fn a_crate_gitattributes_change_flags_its_plugin() {
