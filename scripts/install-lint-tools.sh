@@ -2,7 +2,8 @@
 # Installs shellcheck and actionlint from their official GitHub releases into a tool cache
 # and prints the directory that holds both. The versions and the SHA-256 sums of the release
 # archives are pinned here: an archive with another sum fails the install. An install that
-# is already there and reports the pinned versions is reused. Linux x86_64 and aarch64 only.
+# is already there and reports the pinned versions is reused. Runs that share the cache
+# install one at a time and never delete a working install. Linux x86_64 and aarch64 only.
 #
 # Usage: bash scripts/install-lint-tools.sh
 # The cache is $LINT_TOOL_CACHE, else $RUNNER_TOOL_CACHE/lint-tools, else
@@ -64,8 +65,64 @@ sha256_of() {
     fi
 }
 
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+mkdir -p "$base" || die "cannot create the tool cache $base."
+
+# Runs that share the cache install one at a time: a lock directory next to the install,
+# taken with mkdir, which is atomic everywhere (flock is not on macOS). The holder writes
+# its pid into it. A lock whose pid no longer runs is left from a run that was killed and
+# is taken over; a lock without a pid yet, or with a live pid, is waited for.
+lock="$dir.lock"
+lock_wait="${LINT_TOOL_LOCK_WAIT:-300}"
+work=""
+have_lock=0
+cleanup() {
+    if [ -n "$work" ]; then rm -rf "$work"; fi
+    if [ "$have_lock" -eq 1 ]; then rm -rf "$lock"; fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+# kill -0 fails for a live process of another user, so ps confirms.
+alive() { kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1; }
+
+waited=0
+until mkdir "$lock" 2>/dev/null; do
+    owner=$(cat "$lock/pid" 2>/dev/null) || owner=""
+    if [ -n "$owner" ] && ! alive "$owner"; then
+        # Move it aside before deleting, and give it back if another run took it over
+        # in between, so a live run's lock is never deleted.
+        stale="$lock.stale.$$"
+        if mv "$lock" "$stale" 2>/dev/null; then
+            if [ "$(cat "$stale/pid" 2>/dev/null)" = "$owner" ]; then
+                printf '[install-lint-tools] removed the lock of run %s, which no longer runs\n' "$owner" >&2
+                rm -rf "$stale"
+            else
+                mv "$stale" "$lock" 2>/dev/null || rm -rf "$stale"
+            fi
+        fi
+        continue
+    fi
+    [ "$waited" -lt "$lock_wait" ] \
+        || die "waited ${lock_wait}s for $lock (pid ${owner:-not written}). Remove it if no install is running."
+    sleep 1
+    waited=$((waited + 1))
+done
+have_lock=1
+printf '%s\n' "$$" > "$lock/pid"
+
+# Another run may have installed while this one waited.
+if installed "$dir"; then
+    printf '[install-lint-tools] installed by another run: %s\n' "$dir" >&2
+    printf '%s\n' "$dir"
+    exit 0
+fi
+
+# Staged next to the install, on the same file system, so publishing is one rename. Only
+# the lock holder stages for $dir, so a staging folder already there was left by a killed run.
+for old in "$dir".staging.*; do
+    if [ -e "$old" ]; then rm -rf "$old"; fi
+done
+work=$(mktemp -d "$dir.staging.XXXXXX")
 
 fetch() {  # <url> <file> <sha256>
     local got
@@ -88,9 +145,15 @@ cp "$work/al/actionlint" "$work/bin/actionlint" || die "actionlint is not in its
 chmod +x "$work/bin/shellcheck" "$work/bin/actionlint"
 installed "$work/bin" || die "the downloaded tools do not report the pinned versions."
 
-# Move into place last, so a run that stops halfway leaves no partial install behind.
-mkdir -p "$base"
-rm -rf "$dir"
-mv "$work/bin" "$dir"
+# Publish with a single rename, so a run that stops halfway leaves no partial install
+# behind. Under the lock, an existing $dir failed the check above: it is a broken install,
+# and only then is it replaced. mv into an existing directory would nest, so the rename
+# only happens when $dir is gone.
+if [ -e "$dir" ] || [ -L "$dir" ]; then
+    printf '[install-lint-tools] replacing the broken install in %s\n' "$dir" >&2
+    rm -rf "$dir"
+fi
+[ ! -e "$dir" ] || die "cannot remove the broken install in $dir."
+mv "$work/bin" "$dir" || die "cannot move the tools into $dir."
 installed "$dir" || die "the installed tools in $dir do not run."
 printf '%s\n' "$dir"
