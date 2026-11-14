@@ -9,21 +9,30 @@
 NOTICE_ASSET="assets/NOTICE.md"
 
 # Prints the notice set, one repository path per line. LICENSES/ holds regular files
-# only: a folder, link, or other entry in it fails instead of being left out. An empty
-# LICENSES/ means a checkout without the license texts, so it fails too.
+# only: every entry directly in it, including names that start with a dot, is read, and a
+# folder, link, or other entry fails instead of being left out. An empty LICENSES/ means
+# a checkout without the license texts, so it fails too. dotglob is turned on only inside
+# this function and set back to the caller's state before it returns.
 notice_set_files() {
-  local f found=0
+  local f found=0 bad="" saved
+  saved=$(shopt -p dotglob)
+  shopt -s dotglob
   echo "LICENSE"
   echo "THIRD_PARTY_LICENSES.md"
   for f in LICENSES/*; do
     [[ -e "$f" || -L "$f" ]] || continue
     if [[ -L "$f" || ! -f "$f" ]]; then
-      echo "error: $f is not a regular file; LICENSES/ holds files only" >&2
-      return 1
+      bad="$f"
+      break
     fi
     echo "$f"
     found=1
   done
+  eval "$saved"
+  if [[ -n "$bad" ]]; then
+    echo "error: $bad is not a regular file; LICENSES/ holds files only" >&2
+    return 1
+  fi
   if [[ "$found" -eq 0 ]]; then
     echo "error: LICENSES/ holds no license text" >&2
     return 1
