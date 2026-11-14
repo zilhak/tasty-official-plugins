@@ -1,0 +1,9 @@
+{
+  "name": "tasty-notify-gate",
+  "version": "0.1.0",
+  "description": "Admit each Tasty notification delivery once across tasty-notify reloads",
+  "author": {
+    "name": "Tasty"
+  },
+  "types": "./types/index.d.ts"
+}

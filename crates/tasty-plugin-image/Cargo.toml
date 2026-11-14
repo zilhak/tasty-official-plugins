@@ -1,0 +1,47 @@
+[package]
+name = "tasty-plugin-image"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+description = "Image surface viewer / paint canvas plugin (egui-mesh + bitmap texture)"
+repository = "https://github.com/zilhak/tasty-official-plugins"
+
+[[bin]]
+name = "tasty-plugin-image"
+path = "src/main.rs"
+
+[dependencies]
+tasty-plugin-sdk = { workspace = true, features = ["egui-mesh"] }
+# 호스트와 같은 언어팩 폰트 검사·설치 함수를 사용한다.
+tasty-egui-theme.workspace = true
+tasty-plugin-protocol.workspace = true
+tasty-type-appearance = { workspace = true, features = ["egui-compat"] }
+# 시안의 Button·IconButton 공용 위젯을 사용한다.
+tasty-ui-widgets.workspace = true
+# 파일 읽기 지원 여부는 이 feature와 ImageFormat::reading_enabled에서 확인한다.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico", "tiff"] }
+# 붙여넣을 클립보드 이미지를 읽는다.
+arboard = "3"
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+# SDK와 같은 egui 타입을 사용한다.
+egui = { version = "0.31", default-features = false, features = [
+    "bytemuck",
+    "default_fonts",
+] }
+
+# 빌드 때 tasty-icons의 SVG를 폴리라인 상수로 변환한다.
+[build-dependencies]
+# 아이콘의 경로만 읽는다. 기본 기능(text)은 유지보수가 끝난 rustybuzz(RUSTSEC-2026-0206)를 끌어온다.
+usvg = { version = "0.37", default-features = false }
+tasty-icons = { workspace = true, default-features = false }
+
+[dev-dependencies]
+# 언어별 시험의 대상 목록을 내장 언어 정본에서 얻는다.
+tasty-i18n.workspace = true
+
+[lints]
+workspace = true

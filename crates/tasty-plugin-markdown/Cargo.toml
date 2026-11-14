@@ -1,0 +1,63 @@
+[package]
+name = "tasty-plugin-markdown"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+description = "Markdown viewer surface plugin (webview)"
+repository = "https://github.com/zilhak/tasty-official-plugins"
+
+[[bin]]
+name = "tasty-plugin-markdown"
+path = "src/main.rs"
+
+[dependencies]
+# 본문은 WebView, 팝업은 egui-mesh로 그린다.
+tasty-plugin-sdk = { workspace = true, features = ["egui-mesh"] }
+# 호스트와 같은 언어팩 글꼴 검증 함수를 사용한다.
+tasty-egui-theme.workspace = true
+tasty-plugin-protocol.workspace = true
+# ThemeWire로 받은 색·is_light·zoom을 CSS와 팝업 테마에 적용한다.
+tasty-type-appearance = { workspace = true, features = ["egui-compat"] }
+# typed 간격 헬퍼(vspace/margin_all) + 확인 팝업의 Button — egui-mesh 팝업 전용.
+tasty-ui-widgets.workspace = true
+# Markdown을 HTML로 변환하고 링크는 호스트에 전달할 마커로 바꾼다.
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+# 본문 HTML에 허용할 태그와 속성은 render.rs에서 정한다.
+ammonia = "4.2.4"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+# 로컬 이미지와 번들 글꼴의 data URI 인코딩.
+base64 = "0.22"
+
+# 팝업 mesh의 Vertex 형식을 호스트·SDK와 맞춘다.
+egui = { version = "0.31", default-features = false, features = [
+    "bytemuck",
+    "default_fonts",
+] }
+
+# 콜아웃 아이콘의 SVG 원본. 빌드 시 팝업 아이콘 변환에도 같은 크레이트를 쓴다.
+tasty-icons = { workspace = true, default-features = false }
+
+# 팝업 아이콘의 SVG를 빌드 시점에 폴리라인으로 바꾼다.
+[build-dependencies]
+# 아이콘의 경로만 읽는다. 기본 기능(text)은 유지보수가 끝난 rustybuzz(RUSTSEC-2026-0206)를 끌어온다.
+usvg = { version = "0.37", default-features = false }
+tasty-icons = { workspace = true, default-features = false }
+
+[dev-dependencies]
+tasty-plugin-manifest.workspace = true
+# 렌더링 시험에서 완성된 테마 색 집합을 사용한다.
+tasty-themes.workspace = true
+tempfile = "3"
+
+# 주소창 레이아웃 시험(`render/webview_layout_tests.rs`)이 본체와 같은 WebKitGTK 를 띄운다.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
+gtk = "0.18"
+javascriptcore-rs = "=1.1.2"
+
+[lints]
+workspace = true

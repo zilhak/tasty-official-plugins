@@ -1,0 +1,31 @@
+[clipboard_viewer.tool]
+label = "剪贴板查看器"
+
+[clipboard_viewer.command]
+open_viewer = "打开剪贴板查看器"
+
+[clipboard_viewer.popup]
+title = "剪贴板查看器"
+header = "剪贴板"
+snapshot_badge = "快照"
+close = "关闭"
+close_tooltip = "关闭（Esc）"
+empty_title = "剪贴板为空"
+empty_sub = "复制文本、图像或文件后重新打开，即可在此查看快照。"
+read_failed_title = "无法读取剪贴板"
+read_failed_sub = "无法打开系统剪贴板句柄。请关闭可能占用剪贴板的其他应用后重新打开。"
+already_open_title = "剪贴板查看器已打开"
+already_open_sub = "一次只能运行一个快照窗口，已将现有窗口置于最前。"
+image_no_preview = "无内嵌图像预览"
+pretty_print = "格式化显示"
+html_meta_line = "{chars} 个字符 · {lines} 行"
+html_meta_lines = "{chars} 个字符 · {lines} 行"
+other_more_lines = "+{n} 行"
+other_unrecognized_formats = "{n} 种未识别的格式"
+
+[clipboard_viewer.type]
+text = "文本"
+files = "文件"
+image = "图像"
+html = "HTML"
+other = "其他"

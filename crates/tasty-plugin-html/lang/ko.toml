@@ -1,0 +1,39 @@
+[surface.kind]
+html = "HTML"
+
+[html]
+"namespace.desc" = "HTML 뷰어 surface namespace"
+"cli.desc" = "HTML 뷰어 명령어"
+"settings.zoom" = "기본 확대"
+"settings.zoom_suffix" = "%"
+"settings.color_scheme" = "색 구성표"
+"settings.allow_remote" = "원격 콘텐츠 허용"
+"settings.sandbox" = "스크립트 샌드박스"
+"settings.note" = "터미널에서 연 미리보기를 내장 HTML 뷰어가 어떻게 렌더링할지 제어합니다. 원격 콘텐츠는 기본적으로 차단됩니다."
+"settings.scheme.follow" = "테마 따름"
+"settings.scheme.light" = "라이트"
+"settings.scheme.dark" = "다크"
+
+# 파일 핸들러 표시명 (호스트가 t() 로 해석).
+[file_handler.host]
+"svg-viewer" = "SVG 뷰어"
+
+[settings.subtab]
+html = "HTML"
+
+# 프리셋 편집기 필드 라벨 (호스트가 t() 로 해석).
+[preset.field]
+url = "URL"
+url_hint = "https://…"
+
+[html.cli]
+desc = "HTML 뷰어 명령어"
+
+[html.cli.sub.open]
+description = "기존 HTML 화면의 URL 변경"
+
+[html.cli.arg.open_args.url]
+help = "URL(http://, https://, file://) 또는 로컬 파일 경로. 상대 경로는 현재 디렉터리 기준으로 해석합니다."
+
+[html.cli.arg.open_args.surface]
+help = "대상 HTML surface ID(생략 시 호출자의 TASTY_SURFACE_ID)"

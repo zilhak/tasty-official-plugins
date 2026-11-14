@@ -1,0 +1,39 @@
+[surface.kind]
+html = "HTML"
+
+[html]
+"namespace.desc" = "HTML viewer surface namespace"
+"cli.desc" = "HTML viewer commands"
+"settings.zoom" = "Default zoom"
+"settings.zoom_suffix" = "%"
+"settings.color_scheme" = "Color scheme"
+"settings.allow_remote" = "Allow remote content"
+"settings.sandbox" = "Sandbox scripts"
+"settings.note" = "Controls how the built-in HTML viewer renders previews opened from the terminal. Remote content is blocked by default."
+"settings.scheme.follow" = "Follow theme"
+"settings.scheme.light" = "Light"
+"settings.scheme.dark" = "Dark"
+
+# 파일 핸들러 표시명 (호스트가 t() 로 해석).
+[file_handler.host]
+"svg-viewer" = "SVG viewer"
+
+[settings.subtab]
+html = "HTML"
+
+# 프리셋 편집기 필드 라벨 (호스트가 t() 로 해석).
+[preset.field]
+url = "URL"
+url_hint = "https://…"
+
+[html.cli]
+desc = "HTML viewer commands"
+
+[html.cli.sub.open]
+description = "Set the URL of an existing HTML surface"
+
+[html.cli.arg.open_args.url]
+help = "URL (http://, https:// or file://) or a local file path. A relative path is resolved against the current directory."
+
+[html.cli.arg.open_args.surface]
+help = "Target HTML surface ID (defaults to the caller's TASTY_SURFACE_ID)"

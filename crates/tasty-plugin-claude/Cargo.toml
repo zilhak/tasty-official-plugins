@@ -1,0 +1,33 @@
+[package]
+name = "tasty-plugin-claude"
+version = "0.3.0"
+edition = "2024"
+license = "MIT"
+description = "External Tasty plugin: Claude Code CLI integration"
+repository = "https://github.com/zilhak/tasty-official-plugins"
+
+[[bin]]
+name = "tasty-plugin-claude"
+path = "src/main.rs"
+
+[dependencies]
+tasty-plugin-sdk.workspace = true
+tasty-plugin-agent-common.workspace = true
+tasty-utils.workspace = true
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+regex = "1"
+directories = "6"
+shell-escape = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+# 언어별 시험의 대상 목록을 내장 언어 정본에서 얻는다.
+tasty-i18n.workspace = true
+tempfile = "3"
+tasty-test-support.workspace = true
+
+[lints]
+workspace = true

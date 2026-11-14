@@ -1,0 +1,63 @@
+[package]
+name = "tasty-plugin-clipboard-viewer"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+description = "External Tasty plugin: read-only viewer of the current system clipboard"
+repository = "https://github.com/zilhak/tasty-official-plugins"
+
+[[bin]]
+name = "tasty-plugin-clipboard-viewer"
+path = "src/main.rs"
+
+[dependencies]
+# 팝업 내용을 플러그인에서 그려 호스트에 mesh로 보낸다.
+tasty-plugin-sdk = { workspace = true, features = ["egui-mesh"] }
+# 호스트와 같은 언어팩 폰트 검사·설치 함수를 사용한다.
+tasty-egui-theme.workspace = true
+tasty-plugin-protocol.workspace = true
+tasty-type-appearance = { workspace = true, features = ["egui-compat"] }
+tasty-ui-widgets.workspace = true
+# 호스트 IPC를 거치지 않고 시스템 클립보드를 읽는다.
+arboard = "3"
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+# SDK와 같은 egui 타입을 사용한다.
+egui = { version = "0.31", default-features = false, features = [
+    "bytemuck",
+    "default_fonts",
+] }
+
+[dev-dependencies]
+tasty-plugin-manifest.workspace = true
+
+# 빌드 때 tasty-icons의 SVG를 폴리라인 상수로 변환한다.
+[build-dependencies]
+# 아이콘의 경로만 읽는다. 기본 기능(text)은 유지보수가 끝난 rustybuzz(RUSTSEC-2026-0206)를 끌어온다.
+usvg = { version = "0.37", default-features = false }
+tasty-icons = { workspace = true, default-features = false }
+
+# arboard가 제공하지 않는 포맷 열거는 플랫폼 API로 처리한다.
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSPasteboard",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSString",
+] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11rb = "0.13"
+
+[lints]
+workspace = true

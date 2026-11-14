@@ -1,0 +1,81 @@
+[agent_stream.cli]
+desc = "AIエージェントのセッション記録を追跡し正規化されたストリームイベントを読み取る"
+
+[agent_stream.error]
+missing_surface = "対象 surface がありません: --surface <id> を渡すか、(TASTY_SURFACE_ID が設定される) tasty ターミナル内で実行してください"
+invalid_surface = "surface ID {value} は無効です。u32 の範囲の整数を指定してください。値の省略とは区別されます。"
+no_session_meta = "surface {surface} に '{key}' meta がありません — エージェントのセッション id が不明なため transcript のパスを決定できません。その surface でエージェントを(再)起動し、session-start フックに id を記録させてください。"
+transcript_root_missing = "エージェント transcript のルートディレクトリが見つかりません (~/.claude/projects、または $CLAUDE_CONFIG_DIR 設定時は $CLAUDE_CONFIG_DIR/projects)"
+transcript_not_found = "transcript ルート配下にセッション {session} の transcript ファイルが見つかりません — まだディスクに書き出されていない可能性があります"
+not_watched = "surface {surface} は watch 対象ではありません"
+missing_request_id = "request_id がありません。イベントと要求を対応付けるため --request-id <id> を指定してください。webhook の応答は固定 ACK のため、ID は呼び出し元で用意します。"
+request_id_too_long = "request_id が上限の {max} バイトを超えています。ターンの全イベントにコピーされるため、UUID などの短い ID を使ってください。"
+turn_not_watched = "surface {surface} は追跡されていません。ターンを開始する前に `agent-stream watch --surface {surface}` を実行してください。"
+turn_already_open = "surface {surface} には request_id {request} のターンが開いています。同時に開けるのは一つだけです。turn_end を受け取ってから次を開始してください。"
+registry_poisoned = "agent-stream のレジストリロックを保持していたスレッドがパニックしました: {detail}"
+serve_port_required = "ポートが指定されていません。--port <n> を指定してください。購読先のアドレスが変わらないよう、ポートの自動選択は行いません。"
+serve_port_out_of_range = "ポート {port} はポート番号の範囲(1-65535)を超えています — 範囲内の値を --port で渡してください"
+serve_invalid_bind = "bind アドレス {bind} は有効な IP アドレスではありません。127.0.0.1、::1、またはインターフェースのアドレスを指定してください。"
+serve_remote_bind_needs_token = "トークンなしでは {bind} で待ち受けできません。会話全文を配信するため、ループバック以外のアドレスには --token が必要です。"
+serve_bind_failed = "SSE エンドポイントを {addr} に bind できません: {detail} — ポートを空けるか別のポートを指定してください(自動フォールバックなし)"
+serve_not_running = "SSE エンドポイントは起動していません。"
+
+[agent_stream.cli.sub.watch]
+description = "サーフェスのエージェントセッション記録を追跡します。セッション ID がサーフェスのメタデータに必要です。"
+
+[agent_stream.cli.sub.turn-start]
+description = "追跡中のサーフェスにターンを開き、イベントに呼び出し元の request_id を付けます。webhook の IpcSequence では claude.tell より先に呼び出します。未追跡のサーフェスやターンの重複は拒否します。"
+
+[agent_stream.cli.sub.unwatch]
+description = "サーフェスの追跡を停止。最後にturn_end{reason=stream:unwatched}イベントを発行"
+
+[agent_stream.cli.sub.list]
+description = "追跡中の全サーフェスのセッションID・記録パス・バイト位置・状態を一覧表示"
+
+[agent_stream.cli.sub.poll]
+description = "シーケンスカーソルで収集済みイベントを読み取る（非破壊）。イベント種別：text / thinking / tool_use / turn_end"
+
+[agent_stream.cli.sub.serve]
+description = "外部から購読できるSSEエンドポイント（GET /events）を開く。ポートは必須で自動フォールバックなし。再呼び出しすると新設定で再バインド"
+
+[agent_stream.cli.sub.serve-stop]
+description = "SSEエンドポイントを閉じ全ての購読を終了"
+
+[agent_stream.cli.sub.serve-info]
+description = "エンドポイントの状態と購読者ごとの集計値を表示します。トークンは表示しません。"
+
+[agent_stream.cli.arg.watch_args.surface]
+help = "エージェント実行中のサーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[agent_stream.cli.arg.watch_args.from_start]
+help = "現在のファイル末尾ではなくバイト0から記録を再生"
+
+[agent_stream.cli.arg.unwatch_args.surface]
+help = "追跡を停止するサーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[agent_stream.cli.arg.turn_start_args.surface]
+help = "ターンを開くエージェントのサーフェス（既定値：呼び出し元のTASTY_SURFACE_ID）。監視中であることが必要"
+
+[agent_stream.cli.arg.turn_start_args.request_id]
+help = "呼び出し元が用意する ID。ターンの各イベントに request_id として付け、受信側が要求と対応付けるために使います。"
+
+[agent_stream.cli.arg.turn_start_args.timeout_secs]
+help = "ターンの無通信タイムアウト（秒、既定値600、範囲10-86400）。この間イベントもturn_endもなければturn_end{reason=stream:turn_timeout}で終了"
+
+[agent_stream.cli.arg.poll_args.filter_surface]
+help = "このサーフェスの収集イベントのみ返す（既定値なし。省略すると全監視サーフェス）"
+
+[agent_stream.cli.arg.poll_args.after_seq]
+help = "カーソルよりseqが大きいイベントを返す（既定値0＝バッファーの最古イベントから）"
+
+[agent_stream.cli.arg.poll_args.limit]
+help = "返すイベントの最大数（既定値100、最大1000）"
+
+[agent_stream.cli.arg.serve_args.port]
+help = "待ち受けるTCPポート。自動選択せず再起動後も同じアドレスを保つため必須指定"
+
+[agent_stream.cli.arg.serve_args.bind]
+help = "バインド先（既定値127.0.0.1）。--tokenなしではループバック以外を拒否"
+
+[agent_stream.cli.arg.serve_args.token]
+help = "共有購読トークン。購読者は 'Authorization: Bearer <token>' または '?token=<token>' で提示。省略すると認証なし（ループバックのみ）"

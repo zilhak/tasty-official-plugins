@@ -1,0 +1,81 @@
+[agent_stream.cli]
+desc = "持续跟踪 AI 智能体会话记录并读取规范化的流事件"
+
+[agent_stream.error]
+missing_surface = "未指定目标 Surface：传入 --surface <id>（或在 tasty 终端中运行，以设置 TASTY_SURFACE_ID）"
+invalid_surface = "Surface ID {value} 无效。使用 u32 范围内的整数；省略值属于另一种情况。"
+no_session_meta = "Surface {surface} 缺少 '{key}' 元数据，智能体会话 ID 未知，无法定位其会话记录。在该 Surface 中启动（或重新启动）智能体，使其 session-start 钩子记录 ID。"
+transcript_root_missing = "无法定位智能体会话记录根目录（~/.claude/projects，或在设置了 $CLAUDE_CONFIG_DIR 时使用 $CLAUDE_CONFIG_DIR/projects）"
+transcript_not_found = "会话记录根目录下未找到会话 {session} 的记录文件，该会话可能尚未写入磁盘"
+not_watched = "未在监视 Surface {surface}"
+missing_request_id = "缺少 request_id。传入 --request-id <id>，以将事件与此请求匹配。webhook 返回固定的 ACK，因此调用方必须提供 ID。"
+request_id_too_long = "request_id 超过 {max} 字节的限制。使用 UUID 等较短的 ID；此值会复制到该轮次的每个事件中。"
+turn_not_watched = "未在监视 Surface {surface}。开始轮次前运行 `agent-stream watch --surface {surface}`。"
+turn_already_open = "Surface {surface} 已有 request_id 为 {request} 的轮次处于开启状态。同一时间只能开启一个轮次；等待 turn_end 后再开始下一轮。"
+registry_poisoned = "线程持有 agent-stream 注册表锁时发生 panic，导致该锁中毒：{detail}"
+serve_port_required = "未指定端口。传入 --port <n>。端点要求显式指定端口，以便订阅方使用已知地址。"
+serve_port_out_of_range = "端口 {port} 超出端口号范围（1-65535），使用 --port 传入范围内的值"
+serve_invalid_bind = "绑定地址 {bind} 不是有效的 IP 地址。使用 127.0.0.1、::1 或网络接口地址。"
+serve_remote_bind_needs_token = "没有令牌，无法绑定 {bind}。此端点以流的形式传输完整对话，因此非回环地址需要 --token。"
+serve_bind_failed = "无法在 {addr} 绑定 SSE 端点：{detail}，释放端口或选择其他端口（不会自动回退）"
+serve_not_running = "SSE 端点未运行。"
+
+[agent_stream.cli.sub.watch]
+description = "开始读取 Surface 的智能体会话记录。Surface 元数据中必须包含会话 ID。"
+
+[agent_stream.cli.sub.turn-start]
+description = "在受监视的 Surface 上开启轮次，并用调用方的 request_id 标记其事件。在 webhook IpcSequence 中，在 claude.tell 之前调用此操作。拒绝未受监视的 Surface 和重叠的轮次。"
+
+[agent_stream.cli.sub.unwatch]
+description = "停止持续跟踪 Surface。发出最后一个 turn_end{reason=stream:unwatched} 事件。"
+
+[agent_stream.cli.sub.list]
+description = "列出当前持续跟踪的每个 Surface 及其会话 ID、会话记录路径、字节偏移量和状态"
+
+[agent_stream.cli.sub.poll]
+description = "按序列游标读取已收集的流事件（非破坏性）。事件为 text / thinking / tool_use / turn_end。"
+
+[agent_stream.cli.sub.serve]
+description = "开启 SSE 端点（GET /events），供外部消费方订阅。必须指定端口，不会自动回退。再次调用时使用新设置重新绑定。"
+
+[agent_stream.cli.sub.serve-stop]
+description = "关闭 SSE 端点并结束所有已开启的订阅"
+
+[agent_stream.cli.sub.serve-info]
+description = "报告端点状态和每个订阅方的计数器。始终不包含令牌。"
+
+[agent_stream.cli.arg.watch_args.surface]
+help = "运行智能体的 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[agent_stream.cli.arg.watch_args.from_start]
+help = "从字节 0 开始重放会话记录，而非从当前文件末尾开始"
+
+[agent_stream.cli.arg.unwatch_args.surface]
+help = "停止持续跟踪的 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[agent_stream.cli.arg.turn_start_args.surface]
+help = "运行待开启轮次的智能体的 Surface（默认为调用方的 TASTY_SURFACE_ID）。必须已受监视。"
+
+[agent_stream.cli.arg.turn_start_args.request_id]
+help = "调用方提供的 ID，作为 request_id 附加到本轮的每个事件，以便接收应用将事件与请求匹配。"
+
+[agent_stream.cli.arg.turn_start_args.timeout_secs]
+help = "本轮的空闲超时时间，单位为秒（默认 600，范围 10-86400）。若在此期间既未收到事件，也未收到 turn_end，则以 turn_end{reason=stream:turn_timeout} 结束本轮。"
+
+[agent_stream.cli.arg.poll_args.filter_surface]
+help = "仅返回为此 Surface 收集的事件（无默认值，省略则返回所有受监视 Surface 的事件）"
+
+[agent_stream.cli.arg.poll_args.after_seq]
+help = "返回 seq 严格大于此游标的事件（默认：0 = 从缓冲区中最早的事件开始）"
+
+[agent_stream.cli.arg.poll_args.limit]
+help = "返回的最大事件数（默认 100，最大 1000）"
+
+[agent_stream.cli.arg.serve_args.port]
+help = "监听的 TCP 端口。必须指定，端点从不自行选择端口，以确保重启后地址不变。"
+
+[agent_stream.cli.arg.serve_args.bind]
+help = "绑定地址（默认 127.0.0.1）。除非指定 --token，否则拒绝非回环地址。"
+
+[agent_stream.cli.arg.serve_args.token]
+help = "共享订阅令牌。订阅方以 'Authorization: Bearer <token>' 或 '?token=<token>' 提供令牌。省略则不进行身份验证（仅限回环地址）。"

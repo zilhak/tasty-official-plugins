@@ -1,0 +1,378 @@
+[codex.cli]
+desc = "Codex CLI 集成（launch, spawn, kill, tell 等）"
+
+[codex]
+"settings.spawn_child_warn_threshold" = "Spawn 子实例警告阈值"
+"settings.default_approval_policy" = "默认批准策略"
+"settings.default_sandbox_mode" = "默认沙箱模式"
+"settings.approval.inherit" = "默认批准策略（never）"
+"settings.approval.untrusted" = "不可信（对不可信命令请求批准）"
+"settings.approval.on_request" = "按需请求（由模型决定）"
+"settings.approval.never" = "从不（无批准提示）"
+"settings.sandbox.inherit" = "继承（codex 默认值）"
+"settings.sandbox.read_only" = "只读"
+"settings.sandbox.workspace_write" = "工作区写入"
+"settings.sandbox.danger_full_access" = "危险：完全访问"
+
+[codex.spawn_warning]
+total = "此父实例下当前已 Spawn 的子实例共有 {total} 个（警告阈值：{threshold}）。建议检查是否有未清理的子实例。"
+idle = " 索引 [{indices}] 处的空闲子实例已完成工作——建议使用 `respawn`，而非 Spawn 新实例。"
+stale = " 最近一次前台进程查询发现索引 [{indices}] 处的子实例正在运行 Shell，但它们从未报告完成。考虑 Respawn 前先检查其当前状态。"
+
+[settings.subtab]
+codex = "Codex"
+
+[codex.notify]
+done_message = "Surface {target} 状态已更改（通过 {kind}）"
+remote_result_message = "Surface {surface}：轮次结果 {id}（{status}）已存储。读取命令：tasty codex remote-results --id {id}"
+sandbox_hint = "沙箱初始化似乎失败（检测到 RTM_NEWADDR）——此环境可能不支持嵌套沙箱（bwrap）。使用 --full-auto 重试。"
+
+[codex.reboot]
+notice = "tasty codex reboot：此会话已由 Tasty 的 Reboot 功能重新启动（codex resume 会恢复同一会话）。上一轮可能已中断——继续前先检查最后的工作状态。"
+foreground_unreadable = "无法读取 Surface {surface} 的前台进程；Reboot 需要此信息以在恢复前确认已返回 Shell"
+malformed_session_id = "Surface {surface} 的 codex-session-id 元数据格式错误：{value}"
+screen_unreadable = "无法读取 Surface {surface} 的屏幕"
+lock_poisoned = "Reboot 进行中状态锁已中毒：{detail}"
+already_in_progress = "Surface {surface} 的 Reboot 已在进行中"
+spawn_thread_failed = "创建 Reboot 线程失败：{detail}"
+no_active_session = "Surface {surface} 上没有活动的 Codex 会话（未设置 codex-session-id 元数据——Tasty 钩子是否已安装并受信任？运行 `tasty codex install`，然后在 Codex 中通过 /hooks 批准）"
+
+[codex.params]
+invalid_model_option = "{key} 无效：需要非空模型标识符或支持的推理强度（none, minimal, low, medium, high, xhigh, max, ultra）"
+missing = "缺少必需参数 '{key}'"
+missing_target_surface = "缺少必需参数 'surface'（或 'surface_id'）"
+not_a_number = "'{key}' 的值无效：{raw}。使用 32 位无符号整数。为避免选中其他目标，超出范围的值会被拒绝。"
+surface_conflict = "'surface' 和 'surface_id' 选择了不同目标（surface={surface}, surface_id={surface_id}）。指定一个字段，或为两个字段使用相同的值。"
+invalid_choice = "'{flag}' 的值 '{value}' 无效（应为以下值之一：{valid}）"
+full_auto_conflict = "'full_auto' 不能与 'approval'/'sandbox' 组合使用——它已绕过这两项"
+missing_message = "缺少必需参数 'message'"
+missing_text = "缺少必需参数 'text'"
+missing_event = "缺少必需参数 'event'"
+
+[codex.hook]
+requires_surface = "钩子需要 --surface 来标识子实例"
+unknown_event = "未知钩子事件 '{event}'（支持：stop, prompt-submit, session-start, permission-request, post-tool-use, interrupt, session-end）"
+
+[codex.launch]
+workspace_create_missing_id = "宿主的 workspace.create 响应缺少 'id'：{resp}"
+
+[codex.remote]
+path_not_absolute = "{flag} {path} 不是绝对路径。对于已附加远程工作区中的子实例，指定远程计算机上的绝对路径。"
+path_missing = "{flag} {path} 在子实例运行的远程计算机上不存在。"
+result_bad_id = "不是结果 ID：{id}（应为 16 个小写十六进制字符）"
+result_not_found = "没有已存储的远程结果 {id}。结果可能已过期（保留 7 天）或从未到达；运行不带 --id 的 tasty codex remote-results 列出结果。"
+attach_child = "Surface {surface} 是已附加远程父实例的子实例。只有该父实例能通过其附加连接进行更改。"
+attach_parent = "已附加远程父实例的子实例只能由该父实例通过其附加连接进行更改。"
+unsupported = "已附加服务器上的 Tasty 不支持远程子智能体。更新服务器上的 Tasty。未创建任何实例。"
+lookup_failed = "无法检查目标是否为已附加的远程工作区：{detail}"
+outcome_unknown = "无法确定服务器是否执行了此操作（{detail}）。子实例可能存在于服务器上，也可能不存在。重试前使用 children 检查。"
+no_child = "服务器已执行 spawn，但未报告新子实例：{resp}"
+commit_failed = "已创建子实例，但无法启动其通知（{detail}）。其完成记录保留在服务器上。"
+bind_failed = "已在服务器上创建子 Surface {surface}，但无法设置其完成报告的接收方（{detail}）。其通知尚未放行；{cleanup}"
+child_of_other_parent = "子 Surface {surface} 属于另一个父实例（{owner}）。其结果仅发送给创建它的父实例，因此未发送指令。为此父实例 Spawn 一个新的子实例。"
+child_without_owner = "子 Surface {surface} 没有结果所有者记录（创建时尚未引入所有者记录，或记录已丢失），因此未发送指令。Spawn 一个新的子实例。"
+child_closed = "子实例已关闭。"
+child_not_closed = "无法关闭子实例（{detail}）。使用 kill 关闭。"
+no_target = "请求未指定此附加父实例的子实例。"
+
+[codex.spawn]
+missing_child_surface_id = "宿主 terminal.spawn 响应缺少 'child_surface_id'：{resp}"
+
+[codex.respawn]
+missing_child_surface_id = "宿主 terminal.respawn 响应缺少 'child_surface_id'：{resp}"
+
+[codex.install]
+read_failed = "无法读取 Codex 配置：{detail}"
+path_conflict = "选择 Codex 主目录或显式指定的配置文件之一"
+home_absolute = "Codex 主目录必须为绝对目录路径"
+mkdir_failed = "无法创建 Codex 配置目录：{detail}"
+no_home = "未设置 HOME，无法定位 ~/.codex/config.toml"
+encode_failed = "无法将 Codex 配置编码为 TOML：{detail}"
+write_failed = "无法写入 Codex 配置文件：{detail}"
+
+[codex.cli.sub.launch]
+description = "启动新工作区并在其终端中启动 Codex"
+
+[codex.cli.sub.spawn]
+description = "在拆分的 Surface 中创建子 Codex 实例。等待宿主响应后返回，不等待子任务完成。从 Codex 对话中调用时，子实例每轮完成后的结果都会返回该对话；否则，为父 Surface 注册空闲、等待输入和退出通知钩子。"
+
+[codex.cli.sub.children]
+description = "列出指定 Codex 父实例的子实例"
+
+[codex.cli.sub.parent]
+description = "返回指定子 Surface 的父 Codex Surface ID"
+
+[codex.cli.sub.state]
+description = "查询单个子实例的状态：idle、needs_input、active 或 exited（与实际运行的 Surface 交叉核对）"
+
+[codex.cli.sub.tell]
+description = "保留换行符发送消息并提交。等待宿主响应后返回，不等待任务完成。从 Codex 对话中调用时，目标每轮完成后的结果都会返回该对话；否则，在提供调用方 Surface 时，注册空闲、等待输入和退出通知钩子。"
+
+[codex.cli.sub.notify-caller]
+description = "内部使用：报告子实例状态变化并移除匹配的一次性钩子。如果仍能找到目标 Surface，则重新注册完成钩子。由 spawn/tell 钩子调用，不供直接使用。"
+
+[codex.cli.sub.broadcast]
+description = "向父 Codex 实例的所有子实例广播文本"
+
+[codex.cli.sub.kill]
+description = "按子实例索引终止子 Codex 实例"
+
+[codex.cli.sub.respawn]
+description = "Respawn 子 Codex 实例"
+
+[codex.cli.sub.reboot]
+description = "重启 Surface 中的 Codex 实例并恢复同一会话（延迟终止 + codex resume）。将此调用作为本轮的最后一个操作，延迟结束后的所有操作都会被中断。"
+
+[codex.cli.sub.install]
+description = "将 Tasty 钩子安装到 Codex CLI 配置中"
+
+[codex.cli.sub.uninstall]
+description = "从 Codex CLI 配置中卸载 Tasty 钩子"
+
+[codex.cli.sub.hook]
+description = "Codex 钩子集成（由 Codex CLI 的钩子系统调用）。由 Codex 钩子系统调用时，从 stdin 读取 JSON 载荷（session_id, prompt, last_assistant_message, model, turn_id）。"
+
+[codex.cli.arg.launch_args.workspace]
+help = "要创建的工作区名称（默认为 \"codex\"）"
+
+[codex.cli.arg.launch_args.directory]
+help = "启动 codex 前通过 cd 切换到的工作目录"
+
+[codex.cli.arg.launch_args.task]
+help = "作为 Codex 提示词参数传入的初始任务"
+
+[codex.cli.arg.launch_args.approval]
+help = "批准策略：untrusted|on-request|never。本次调用覆盖 default_approval_policy。省略时使用该设置；inherit 或未设置时解析为 never。"
+
+[codex.cli.arg.launch_args.sandbox]
+help = "沙箱模式（read-only|workspace-write|danger-full-access）。仅在本次调用中覆盖 default_sandbox_mode 设置"
+
+[codex.cli.arg.launch_args.full_auto]
+help = "完全绕过批准和沙箱（--dangerously-bypass-approvals-and-sandbox）。不能与 --approval/--sandbox 同时使用"
+
+[codex.cli.arg.parent_args.surface]
+help = "要查询父实例的子 Codex Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[codex.cli.arg.state_args.surface]
+help = "要查询的子 Codex Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[codex.cli.arg.tell_args.message]
+help = "要发送的消息文本。保留换行符，消息会自动提交。"
+
+[codex.cli.arg.tell_args.surface]
+help = "接收消息的目标 Codex Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[codex.cli.arg.tell_args.caller_surface]
+help = "目标达到终态时要通知的 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[codex.cli.arg.spawn_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[codex.cli.arg.spawn_args.workspace]
+help = "目标工作区（ID 或名称）"
+
+[codex.cli.arg.spawn_args.pane]
+help = "目标窗格 ID（默认为工作区中的第一个窗格）"
+
+[codex.cli.arg.spawn_args.cwd]
+help = "子 Codex 进程的工作目录"
+
+[codex.cli.arg.spawn_args.prompt]
+help = "Spawn 后发送给子实例的初始提示词"
+
+[codex.cli.arg.spawn_args.role]
+help = "附于子实例的角色标签（由 broadcast --role 使用）"
+
+[codex.cli.arg.spawn_args.nickname]
+help = "标签页上显示的昵称"
+
+[codex.cli.arg.spawn_args.approval]
+help = "批准策略：untrusted|on-request|never。本次调用覆盖 default_approval_policy。省略时使用该设置；inherit 或未设置时解析为 never。"
+
+[codex.cli.arg.spawn_args.sandbox]
+help = "沙箱模式（read-only|workspace-write|danger-full-access）。仅在本次调用中覆盖 default_sandbox_mode 设置；对不得写入文件的审查或交叉核对子实例使用 \"read-only\""
+
+[codex.cli.arg.spawn_args.full_auto]
+help = "完全绕过批准和沙箱（--dangerously-bypass-approvals-and-sandbox）。不能与 --approval/--sandbox 同时使用"
+
+[codex.cli.arg.children_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID；未设置时，若恰有一个父实例则使用该实例）"
+
+[codex.cli.arg.children_args.format]
+help = "格式：table | json。默认值：table（父 ID 表）"
+
+[codex.cli.arg.children_args.workspace]
+help = "子实例所在的工作区（ID 或名称）。仅在从 Codex 对话中调用且其子实例分布于多个工作区时使用"
+
+[codex.cli.arg.notify_caller_args.caller]
+help = "要通知的 Surface ID"
+
+[codex.cli.arg.notify_caller_args.target]
+help = "已完成的 Surface ID"
+
+[codex.cli.arg.notify_caller_args.kind]
+help = "命令：spawn | tell"
+
+[codex.cli.arg.broadcast_args.text]
+help = "要广播的文本。使用 \\r 提交（例如 \"hello\\r\"）"
+
+[codex.cli.arg.broadcast_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID；未设置时，若恰有一个父实例则使用该实例）"
+
+[codex.cli.arg.broadcast_args.workspace]
+help = "子实例所在的工作区（ID 或名称）。仅在从 Codex 对话中调用且其子实例分布于多个工作区时使用"
+
+[codex.cli.arg.broadcast_args.role]
+help = "仅发送给具有此角色标签的子实例"
+
+[codex.cli.arg.kill_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID；未设置时，若恰有一个父实例则使用该实例）"
+
+[codex.cli.arg.kill_args.workspace]
+help = "子实例所在的工作区（ID 或名称）。仅在从 Codex 对话中调用且其子实例分布于多个工作区时使用"
+
+[codex.cli.arg.kill_args.child]
+help = "要终止的子实例索引"
+
+[codex.cli.arg.respawn_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID；未设置时，若恰有一个父实例则使用该实例）"
+
+[codex.cli.arg.respawn_args.workspace]
+help = "子实例所在的工作区（ID 或名称）。仅在从 Codex 对话中调用且其子实例分布于多个工作区时使用"
+
+[codex.cli.arg.respawn_args.child]
+help = "要 Respawn 的子实例索引"
+
+[codex.cli.arg.respawn_args.cwd]
+help = "覆盖 Respawn 后进程的工作目录"
+
+[codex.cli.arg.respawn_args.prompt]
+help = "发送给 Respawn 后子实例的初始提示词"
+
+[codex.cli.arg.respawn_args.role]
+help = "替换子实例的角色标签"
+
+[codex.cli.arg.respawn_args.nickname]
+help = "替换子实例的显示昵称"
+
+[codex.cli.arg.respawn_args.approval]
+help = "批准策略：untrusted|on-request|never。本次调用覆盖 default_approval_policy。省略时使用该设置；inherit 或未设置时解析为 never。"
+
+[codex.cli.arg.respawn_args.sandbox]
+help = "沙箱模式（read-only|workspace-write|danger-full-access）。仅在本次调用中覆盖 default_sandbox_mode 设置"
+
+[codex.cli.arg.respawn_args.full_auto]
+help = "完全绕过批准和沙箱（--dangerously-bypass-approvals-and-sandbox）。不能与 --approval/--sandbox 同时使用"
+
+[codex.cli.arg.reboot_args.surface]
+help = "目标 Codex Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[codex.cli.arg.reboot_args.delay]
+help = "终止 Codex 前等待的秒数（默认：5）"
+
+[codex.cli.arg.reboot_args.prompt]
+help = "追加到发送给重启后 Codex 的 Reboot 通知提示词中的额外文本"
+
+[codex.cli.arg.reboot_args.approval]
+help = "批准策略：untrusted|on-request|never。本次调用覆盖 default_approval_policy。省略时使用该设置；inherit 或未设置时解析为 never。"
+
+[codex.cli.arg.reboot_args.sandbox]
+help = "恢复会话的沙箱模式（read-only|workspace-write|danger-full-access）。仅在本次调用中覆盖 default_sandbox_mode 设置"
+
+[codex.cli.arg.reboot_args.full_auto]
+help = "完全绕过批准和沙箱（--dangerously-bypass-approvals-and-sandbox）。不能与 --approval/--sandbox 同时使用"
+
+[codex.cli.arg.install_args.config_file]
+help = "要更新的确切配置档/配置文件；与 --codex-home 互斥"
+
+[codex.cli.arg.install_args.codex_home]
+help = "要安装或移除钩子的 Codex 主目录；必须与目标守护进程匹配"
+
+[codex.cli.arg.hook_args.event]
+help = "钩子事件名称：stop, prompt-submit, session-start, permission-request, post-tool-use, interrupt, session-end"
+
+[codex.cli.arg.hook_args.surface]
+help = "触发钩子的目标 Surface ID"
+
+[codex.cli.arg.hook_args.session]
+help = "Codex 会话 ID。Codex 调用钩子时，从 stdin JSON 的 'session_id' 自动填充。"
+
+[codex.cli.arg.hook_args.prompt]
+help = "已提交的提示词。在 UserPromptSubmit 钩子中，从 stdin JSON 的 'prompt' 自动填充。仅用于判断某轮是否为 Tasty 智能体任务的指令；其文本不会发送给 Tasty。"
+
+[codex.cli.arg.hook_args.last_assistant_message]
+help = "助手在本轮的最终消息。在 Stop 钩子中，从 stdin JSON 的 'last_assistant_message' 自动填充。当 Surface 运行 Tasty 智能体任务时，将其报告为该轮的最终回答。"
+
+[codex.cli.sub.result]
+description = "读取返回到此 Codex 对话的子实例结果。在收到引用消息的 Codex 会话中运行；读取不会删除结果。"
+
+[codex.cli.sub.remote-results]
+description = "列出远程附加的 Codex 子实例返回给父 Surface（Claude 会话或 Shell）的轮次结果，或显示单条结果及其正文。此命令与读取返回到 Codex 对话的结果的 codex result 不同。每条结果都会在其 ID 写入父实例完成日志前存储，并在子实例关闭后保留。"
+
+[codex.cli.sub.session-open]
+description = "内部使用：为终端中运行的 Codex 会话辅助程序注册新一代会话。不供直接使用。"
+
+[codex.cli.arg.result_args.event]
+help = "引用消息中的事件 ID"
+
+[codex.cli.arg.remote_results_args.id]
+help = "完成日志中的结果 ID。指定后显示该结果及其正文；省略时列出已存储的结果，不含正文"
+
+[codex.cli.arg.session_open_args.surface]
+help = "辅助程序运行所在的终端 Surface"
+
+[codex.cli.arg.session_open_args.resume]
+help = "辅助程序恢复的线程 UUID"
+
+[codex.cli.arg.session_open_args.tui_args]
+help = "传给 TUI 的策略和模型参数的 JSON 数组"
+
+[codex.cli.arg.hook_args.gen]
+help = "Tasty 会话辅助程序设置的会话代次。忽略不属于当前代次的钩子。"
+
+[codex.cli.arg.hook_args.model]
+help = "会话使用的模型。从 stdin JSON 的 'model' 自动填充。保留此值，以便恢复会话时使用同一模型。"
+
+[codex.cli.arg.hook_args.turn_id]
+help = "轮次 ID。从 stdin JSON 的 'turn_id' 自动填充。用于确保每个轮次仅向 Codex 父实例返回一次。"
+
+[codex.state]
+no_data_dir = "插件数据目录不可用，无法存储 Codex 会话和返回的结果"
+
+[codex.session]
+bad_args = "tasty codex session：参数无效：{detail}"
+not_in_tasty = "tasty codex session 必须在 Tasty 终端中运行（未设置 {detail}）"
+open_failed = "tasty codex session：无法向 Tasty 注册会话：{detail}"
+server_failed = "tasty codex session：专用 Codex app-server 无法启动，因此未启动 Codex：{detail}"
+tui_failed = "tasty codex session：无法运行 Codex TUI：{detail}"
+resume_failed = "tasty codex session：无法使用请求的设置重新打开 Codex 对话：{detail}"
+
+[codex.parent]
+requires_codex_caller = "codex.parent 必须从 Codex 对话中调用（缺少 Codex 调用方上下文）"
+not_receivable = "Codex 线程 {thread} 无法接收结果：未在 Tasty Codex 会话中运行，也未加载到共享 Codex app-server 中"
+check_failed = "无法检查 Codex 线程 {thread} 是否已加载到共享 Codex app-server 中：{detail}"
+
+[codex.deliver]
+invalid = "codex.deliver 请求无效：{detail}"
+
+[codex.result]
+not_found = "没有事件 ID 为 {event} 的返回结果"
+other_thread = "事件 {event} 已返回到另一个 Codex 对话"
+
+[codex.owner]
+other_parent = "Codex 对话仅管理自身的子实例。指定的父 Surface {surface} 并非此对话"
+not_own_child = "Surface {surface} 不是此 Codex 对话的子实例，因此未发送任何内容"
+not_codex_child = "Surface {surface} 不是由 Tasty 启动的 Codex 会话，因此其结果不会返回到此对话"
+ambiguous_workspace = "此 Codex 对话的子实例分布在多个工作区中（{workspaces}）。使用 --workspace 选择一个"
+
+[codex.cli.arg.session_open_args.native_args]
+help = "内部使用：恢复时保留的原生交互选项"
+
+[codex.cli.sub.session-bind]
+description = "内部使用：注册原生 TUI 选定的对话"
+
+[codex.cli.arg.spawn_args.model]
+help = "仅用于此子会话的模型；由 Codex 检查可用性"
+
+[codex.cli.arg.spawn_args.effort]
+help = "此子实例的推理强度：none|minimal|low|medium|high|xhigh|max|ultra"

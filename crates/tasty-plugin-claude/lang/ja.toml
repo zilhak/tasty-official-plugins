@@ -1,0 +1,570 @@
+[claude.cli]
+desc = "Claude Code CLI連携（launch、spawn、killなど）"
+
+[claude]
+"settings.spawn_child_warn_threshold" = "子の数の警告しきい値"
+"settings.no_output_notice_secs" = "子の出力がないとき親に通知するまでの待ち時間（秒）"
+"settings.continue_checklist_round_limit" = "ゲートの既定ラウンド上限（ゲートが独自の値を指定しない場合）"
+"settings.default_permission_mode" = "子セッションの既定パーミッションモード"
+"settings.auto_resume_enabled" = "一時的な API エラー（サーバー過負荷）の後に自動で再開する"
+"settings.auto_resume_delay_secs" = "再開までの待ち時間（秒）"
+"settings.auto_resume_max_attempts" = "諦めるまでの連続自動再開回数"
+"settings.permission_mode.inherit" = "継承（Claude Code 自身の設定に従う）"
+"settings.permission_mode.manual" = "毎回確認する（manual）"
+"settings.permission_mode.plan" = "計画のみ（plan）"
+"settings.permission_mode.accept_edits" = "ファイル編集を自動承認（acceptEdits）"
+"settings.permission_mode.auto" = "自動（auto）"
+"settings.permission_mode.dont_ask" = "確認しない（dontAsk）"
+"settings.permission_mode.bypass" = "すべての権限チェックをバイパス（bypassPermissions）"
+
+[claude.checklist]
+body = """
+ターンを終える前に確認せよ:
+1. 結果は本当に依頼内容を満たしているか — 楽な方法で済ませていないか?
+2. コードや設定を変更したなら、実際に検証(ビルド/テスト/実行)したか — 動くはずだと仮定しただけになっていないか?
+3. 残っている作業はあるか? あるなら何か明示せよ。ないなら、ないと明示的に述べよ。
+
+{{goal}}
+3 つすべてを本当に満たしているなら、返信のどこかに次の文字列をそのまま含めよ: [[TASTY-CHECKLIST-DONE]] そうでなければ作業を続けよ。
+"""
+goal_clause = """このセッションに設定された goal: {}
+上で述べた残作業を、この goal に照らして判定せよ。残作業のうちユーザーの判断を必要とせず自分で進められるものがあるなら、ここで終えずにそれを進めよ。残作業がすべてユーザーの判断を要するか goal の範囲外であれば、そのまま終えてよい。
+"""
+no_data_dir = "plugin data directory が利用できません(ホストが TASTY_PLUGIN_DATA_DIR を注入していません) — checklist を有効/無効化できません"
+io_error = "checklist marker ファイルの入出力に失敗しました: {}"
+
+[claude.params]
+unowned_session_options = "一致するセッション所有者または保存済みセッション記録がないため、旧形式のClaudeモデル・effort設定を復元できません。既存の復元情報は保持しました。"
+invalid_session_option = "無効なセッションオプション: {}。空でなく、ハイフンで始まらず、空白・制御文字を含まない文字列を指定してください。"
+invalid_effort = "無効なeffortです。指定可能な値: {}。"
+missing_surface_id = "必須パラメータ 'surface'(または 'surface_id')がありません"
+missing_surface_no_env = "必須パラメータ 'surface'(または 'surface_id')がありません(環境変数 TASTY_SURFACE_ID も未設定です)"
+target_surface_not_a_number = "対象 surface の値 {} は無効です。符号なし32ビット整数を指定してください。別の対象に変わらないよう、大きすぎる値は切り捨てずに拒否します。"
+surface_conflict = "'surface' と 'surface_id' が異なる対象を指定しています（{}）。片方だけを指定するか、両方に同じ値を指定してください。"
+missing_child_index = "必須パラメータ 'child'(または 'child_index')がありません"
+child_index_not_a_number = "'child' の値 {} は無効です。符号なし32ビット整数を指定してください。別の子に変わらないよう、大きすぎる値は切り捨てずに拒否します。"
+missing_text = "必須パラメータ 'text' がありません"
+missing_message = "必須パラメータ 'message' がありません"
+missing_caller_surface = "必須パラメータ 'caller_surface' がありません"
+missing_target_surface = "必須パラメータ 'target_surface' がありません"
+missing_command = "必須パラメータ 'command' がありません"
+missing_name = "必須パラメータ 'name' がありません"
+missing_file = "必須パラメータ 'file' がありません"
+missing_body_file = "必須パラメータ 'body_file' がありません"
+invalid_permission_mode = "'permission_mode' の値が不正です: {}"
+permission_mode_conflicts_with_profile = "--permission-mode と permissions.defaultMode を設定するプロファイルは併用できません。権限モードの指定元を一つにしてください。"
+
+[claude.hook]
+missing_event = "必須パラメータ 'event' がありません"
+unknown_event = "不明な claude hook イベント: '{}'"
+
+[claude.auto_resume]
+message = "直前のターンが一時的な API エラーで中断されました。作業の続きを進めてください。"
+limit_title = "Claude 自動再開を停止"
+limit_body = "surface {}: API エラーが {} 回連続したため（{}）自動再開を停止しました。セッションを確認して手動で続けてください。"
+
+[claude.notify]
+done_message = "surface {}: 状態変更 ({} 経由)"
+remote_result_message = "surface {0}: ターン結果 {1} ({2}) を保存しました。読み取り: tasty claude remote-results --id {1}"
+stop_failure_hint = " — API エラー（{}）でターンが終了し、入力待ちです"
+stalled_message = "surface {}: エラー以降 出力が止まっています — 子が停止した可能性があります (まだ active、完了シグナルなし)"
+stalled_no_error_message = "surface {}: 長時間 出力も完了シグナルもありません — 子が停止している可能性があります (フックが届かないプロンプトで待機中かもしれません)"
+stalled_background_wait_message = "surface {}: バックグラウンド作業（{}）の終了を {} 分間待っています。その間の出力はありません。"
+stalled_background_task_quiet_message = "surface {}: バックグラウンド作業 {} の出力が {} 分間ありません。"
+stalled_hint = " 直近のエラー: {}"
+stop_failure_background_message = "surface {}: API エラー（{}）でターンが終わりましたが、バックグラウンド作業（{}）が残っているため待機を続けています"
+
+[claude.launch]
+workspace_create_missing_id = "ホストの workspace.create 応答に 'id' がありません"
+
+[claude.codex]
+bad_context = "Codex 呼び出し情報に有効な thread_id がありません。子は作成しておらず、別の親で代用もしていません。"
+parent_failed = "codex.parent で Codex の親を解決できませんでした（Codex プラグインはインストール済みで有効ですか？）: {}"
+parent_malformed = "codex.parent の応答形式が想定と異なります: {}"
+parent_mismatch = "--surface {} はこの Codex 会話の親ではありません。Codex 呼び出しの親は自動で決まるため --surface を省いてください。"
+not_a_child = "サーフェス {} はこの Codex 会話の子ではありません。"
+route_not_saved = "結果の返送先を保存できませんでした: {}"
+child_route_not_saved = "子サーフェス {} は作成しましたが、結果の返送先を保存できませんでした: {}"
+no_data_dir = "Claude プラグインのデータフォルダがないため、Codex の親に結果を返せません。"
+ambiguous_workspace = "この Codex 会話の子は複数のワークスペースにあります（{}）。--workspace で一つ選んでください。"
+route_not_released = "サーフェス {} の結果はまだ Codex 会話に返す設定になっており、その経路を解除できなかったため指示を送りませんでした: {}"
+
+[claude.remote]
+attach_child = "サーフェス {} は接続中のリモート親の子です。その親だけが attach 接続を通じて変更できます。"
+attach_parent = "接続中のリモート親の子は、その親だけが attach 接続を通じて変更できます。"
+unsupported = "接続先サーバーの Tasty はリモート子エージェントに対応していません。サーバーの Tasty を更新してください。何も作成していません。"
+lookup_failed = "対象が接続中のリモートワークスペースかどうか確認できませんでした: {}"
+result_bad_id = "結果 ID の形式ではありません: {}（小文字16桁の16進数）"
+result_not_found = "保存されたリモート結果 {} はありません。保存期間（7日）が過ぎたか、届いていない可能性があります。--id なしの tasty claude remote-results で一覧を確認してください。"
+outcome_unknown = "サーバーで実行されたかどうか分かりません({})。子がサーバーにある場合もない場合もあります。再試行の前に children で確認してください。"
+path_not_absolute = "{} {} は絶対パスではありません。接続中のリモートワークスペースの子には、リモートコンピューター上の絶対パスを指定してください。"
+path_missing = "{} {} は子が実行されるリモートコンピューターにありません。"
+bind_failed = "サーバーに子サーフェス {} を作成しましたが、完了の通知先を設定できませんでした({})。通知の送信は開始していません。{}"
+child_of_other_parent = "子サーフェス {} は別の親({})の子です。結果は作成した親にだけ届くため、指示は送信していません。この親用に新しい子を作成してください。"
+child_without_owner = "子サーフェス {} には結果の所有者記録がありません(記録の導入前に作成されたか、記録が失われました)。指示は送信していません。新しい子を作成してください。"
+child_closed = "その子は閉じました。"
+child_not_closed = "その子を閉じられませんでした({})。kill で閉じてください。"
+no_child = "サーバーは spawn を実行しましたが、新しい子を報告しませんでした: {}"
+commit_failed = "子は作成しましたが、通知の送信を開始できませんでした({})。完了通知はサーバーに残っています。"
+hooks_missing = "サーバーの Claude Code に Tasty の Stop・StopFailure フックがインストールされていないため、この子の完了が報告されない可能性があります。サーバーで 'tasty claude install' を実行してください。"
+no_target = "リクエストがこの attach 親の子を指定していません。"
+
+[claude.child]
+unknown_index = "index {} の子はありません — 親 surface {} 基準(利用可能な index: {})"
+
+[claude.respawn]
+missing_child_surface_id = "ホストの terminal.respawn 応答に 'child_surface_id' がありません: {}"
+
+[claude.spawn]
+missing_child_surface_id = "ホストの terminal.spawn 応答に 'child_surface_id' がありません: {}"
+warning_threshold = "この parent の子は現在 {} 個で、警告しきい値({})を超えています。"
+warning_idle_children = " index {} の idle な子は、新規 spawn の代わりに respawn で再利用できます。"
+warning_stale_children = " 直近のフォアグラウンドプロセスの照会では、インデックス {} の子はシェルとして記録されていますが、完了報告はありません。現在の状態を確認してから respawn を検討してください。"
+
+[claude.install]
+mod_failed = "完了通知 mod をインストールできませんでした: {}"
+no_home_dir = "ホームディレクトリを特定できません"
+settings_root_not_object = "~/.claude/settings.json のルート値が JSON object ではありません"
+hooks_not_object = "~/.claude/settings.json の 'hooks' キーが JSON object ではありません"
+hooks_event_not_array = "~/.claude/settings.json の 'hooks.{}' が JSON array ではありません"
+install_failed = "install に失敗しました: {}"
+uninstall_failed = "uninstall に失敗しました: {}"
+
+[claude.profile]
+no_data_dir = "plugin data directory が利用できません(ホストが TASTY_PLUGIN_DATA_DIR を注入していません) — プロファイルを登録・アタッチできません"
+invalid_short_name = "'{}' は有効なプロファイル名ではありません(小文字・数字・'-' のみ、最大32文字)"
+empty_names = "プロファイル名が指定されていません"
+unknown_profile = "'{}' という名前で登録されたプロファイルはありません"
+not_attachable = "'{}' は参照専用の内蔵項目のため、名前でアタッチできません"
+gate_name_conflict = "'{}' は Stop フックゲート名として登録済みです。別の名前を使うか、'claude gate-unregister {}' で先に削除してください。"
+source_not_readable = "プロファイル元 '{}' を読み込めません: {}"
+source_not_json_object = "プロファイル元 '{}' が JSON object ではありません"
+io_error = "'{}': {}"
+error_prefix = "profile: {}"
+mutually_exclusive_file_and_profile = "--profile-file と --profile は同時に指定できません — どちらか一方のみ指定してください"
+builtin_always_installed = "内蔵 — 常にインストール済み (Claude Code イベント: {})"
+builtin_always_installed_with_matcher = "内蔵 — 常にインストール済み (Claude Code イベント: {}, matcher: {})"
+gate_attachable = "Stop フックゲート — 登録済みプロファイルと同様に名前でアタッチ可能 ('claude gate-show <名前>' で定義を確認)"
+
+[claude.gate]
+no_data_dir = "plugin data directory を利用できません(ホストが TASTY_PLUGIN_DATA_DIR を注入していません) — ゲートの登録・解除ができません"
+invalid_short_name = "'{}' は有効なゲート名ではありません(小文字・数字・'-' のみ、最大32文字)"
+unknown_gate = "'{}' という名前で登録されたゲートはありません"
+body_not_readable = "ゲート本文 '{}' を読めません: {}"
+body_missing_sentinel = "ゲート本文に完了マーカー '{}' がありません。完了時の出力をモデルに伝えるため本文に含めてください。なければ回数上限まで延長されます。"
+empty_sentinel = "完了マーカーは空にできません。空値は全メッセージに一致し、最初の回で通過してしまいます。"
+rounds_below_one = "--rounds は 1 以上でなければなりません"
+profile_name_conflict = "'{}' はセッションプロファイル名として登録済みです。別の名前を使うか、'claude profile-unregister {}' で先に削除してください。"
+io_error = "'{}': {}"
+error_prefix = "gate: {}"
+
+[claude.profile_merge]
+not_an_object = "プロファイル '{}' のトップレベル値が JSON object ではありません"
+scalar_conflict = "'{}' でプロファイルのマージ競合: {} vs {} — 権限が静かに弱まるのを防ぐため拒否します"
+
+[claude.reboot]
+notice = "tasty claude reboot: このセッションは tasty の reboot 機能により再起動されました(claude -r で同じセッションを resume)。直前のターンが途切れている可能性があるため、最後の作業状態を確認してから続行してください。"
+malformed_session_id = "surface {} の claude-session-id meta の形式が不正です: {}"
+no_foreground_process = "surface {} の foreground プロセスを特定できません"
+lock_poisoned = "reboot in-flight lock が poison されました: {}"
+already_in_progress = "surface {} は既に reboot 処理中です"
+spawn_thread_failed = "reboot スレッドの起動に失敗しました: {}"
+profile_file_not_readable = "プロファイルファイル '{}' を読み込めません: {}"
+profile_file_not_json = "プロファイルファイル '{}' が有効な JSON ではありません: {}"
+no_active_session = "surface {} にアクティブな claude セッションがありません (claude-session-id meta 未設定 — tasty フックはインストール済みですか? `tasty claude install` を実行してください)"
+
+[settings.subtab]
+claude = "Claude Code"
+
+[claude.cli.sub.launch]
+description = "新しいワークスペースでClaude Codeを起動"
+
+[claude.cli.sub.spawn]
+description = "ワークスペースに子Claudeを作成。即時に戻り、子がidle/needs_inputへ移行するたび、および終了時に呼び出し元サーフェスへ通知します。最初の移行だけではありません。"
+
+[claude.cli.sub.children]
+description = "指定したClaude親の子を一覧表示"
+
+[claude.cli.sub.parent]
+description = "指定したClaude子の親を表示"
+
+[claude.cli.sub.state]
+description = "子一つの状態を照会：idle、needs_input、active、exited（実際のサーフェスと照合）"
+
+[claude.cli.sub.tell]
+description = "Claudeインスタンスに複数行メッセージを送信（末尾で確定）。即時に戻り、対象がidle/needs_inputへ移行するたび、および終了時に呼び出し元サーフェスへ通知します。最初の移行だけではありません。"
+
+[claude.cli.sub.broadcast]
+description = "親Claudeインスタンスの全ての子へテキストを一斉送信"
+
+[claude.cli.sub.kill]
+description = "子インデックスでClaudeインスタンスを終了"
+
+[claude.cli.sub.codex-returns]
+description = "Codex を親に持つ子のターン結果のうち、まだ Codex プラグインに渡せていないものを返送先・本文・再試行状態とともに表示します。--retry は自動再試行が止まったものも含めて一覧の結果をすべて今すぐ送る順番に戻し、送信を待たずに戻ります。"
+
+[claude.cli.sub.remote-results]
+description = "surface 親（Claude セッションやシェル）に戻ってきたリモート attach 子のターン結果を一覧表示するか、1件を本文とともに表示します。結果は親の完了ログに ID を書く前に保存され、子が閉じた後も残ります。"
+
+[claude.cli.sub.respawn]
+description = "子Claudeインスタンスを再生成"
+
+[claude.cli.sub.reboot]
+description = "サーフェスのClaudeを再起動し同じセッションを再開（遅延終了 + claude -r）。ターンの最後の操作として呼び出してください。遅延後の処理は中断されます。"
+
+[claude.cli.sub.child-profile]
+description = "子インスタンスに永続的なClaudeセッションプロファイルを適用（--childのサーフェスを解決し 'claude reboot --profile' と同じ手順を実行）。子だけを再起動するためrebootと異なり呼び出し元のターンは中断しません。子がidle/needs_inputへ移行した時と終了時に呼び出し元へ通知します。"
+
+[claude.cli.sub.install]
+description = "Tasty フックと Claude 完了通知 mod をインストールまたは更新します。既存のユーザーフックとプラグインパスを保持します。応答には installed・updated フックイベントと mod_updated が含まれます。"
+
+[claude.cli.sub.uninstall]
+description = "Tasty フックと管理対象の完了通知 mod パス・ファイルを削除し、他のユーザー設定を保持します。"
+
+[claude.cli.sub.hook]
+description = "Claude Codeフック連携。Claude Codeのフックシステムから呼び出されるとstdinからJSONペイロード（session_id、cwd、prompt_id、message、notification_type、error、agent_id、background_tasks、tool_name、tool_response、prompt、source、reason、last_assistant_message）を読み取ります。公式 hooks ドキュメントと実測 payload にはありませんが、waiting_on_background_work も防御的に読み取ります。"
+
+[claude.cli.sub.checklist-hook]
+description = "Stopフックゲートの判定。stdinからJSON（session_id、prompt_id、stop_hook_active、last_assistant_message）を読み取ります。--gateで判定する登録ゲートを選択（既定値：continue-checklist）。"
+
+[claude.cli.sub.checklist-enable]
+description = "Stopフックゲートを有効化（有効マーカーを作成）。既定値は組み込みcontinue-checklistゲート"
+
+[claude.cli.sub.checklist-disable]
+description = "Stopフックゲートを無効化（有効マーカーを削除）。既に無効でも成功"
+
+[claude.cli.sub.checklist-status]
+description = "Stopフックゲートの有効状態を表示。全ゲートを一度に見るには 'claude gate-list' を使用"
+
+[claude.cli.sub.notify-stop-failure]
+description = "内部用: 子のターンが API エラーで終わったものの、バックグラウンド作業のため待機を続けるときに、呼び出し元の通知ログへ 1 行書きます。ターンがそのまま終わった場合は完了行がエラーを示すため何も書きません。claude-stop-failure の hook.set コマンドとして使います。"
+
+[claude.cli.sub.notify-error]
+description = "内部用：子の出力が長時間変わらず、処理が止まっている可能性を呼び出し元に通知します。claude-error-stalled の hook.set コマンドで使用します。子の状態は変更せず、完了フックの削除・再登録もしません。"
+
+[claude.cli.sub.notify-done]
+description = "内部用：spawn/tell の状態変化を呼び出し元に通知し、同じ対象・コマンドの一度限りフックを削除します。対象 surface を引き続き確認できる場合は完了フック三つを再登録します。claude-idle/needs-input/process-exit の hook.set コマンドで使用します。"
+
+[claude.cli.sub.profile-register]
+description = "名前でClaudeセッションプロファイルを登録（plugin専用領域にファイルを複製。同名の再登録は内容を更新）"
+
+[claude.cli.sub.profile-unregister]
+description = "登録済みClaudeセッションプロファイルを削除"
+
+[claude.cli.sub.profile-list]
+description = "名前で適用可能なセッションプロファイル・Stopフックゲートと常設の組み込みフックを一覧表示"
+
+[claude.cli.sub.profile-show]
+description = "名前で適用する内容を表示：登録済みプロファイルの生のsettings JSON、またはゲートから生成したStopフック断片"
+
+[claude.cli.sub.profile-current]
+description = "サーフェスに適用されたClaudeセッションプロファイル（存在する場合）と常設の組み込みフックを表示"
+
+[claude.cli.sub.gate-register]
+description = "名前でStopフックゲートを登録（plugin専用領域に本文を複製。同名の再登録は本文と定義を両方置換）"
+
+[claude.cli.sub.gate-unregister]
+description = "登録済みStopフックゲートを削除（定義と本文の複製を削除）"
+
+[claude.cli.sub.gate-list]
+description = "登録済みおよび組み込みStopフックゲートの有効完了マーカー・回数制限・有効状態を一覧表示"
+
+[claude.cli.sub.gate-show]
+description = "Stopフックゲートの定義と本文を表示"
+
+[claude.cli.arg.launch_args.workspace]
+help = "作成するワークスペース名（既定値：\"claude\"）"
+
+[claude.cli.arg.launch_args.directory]
+help = "claude起動前に移動する作業ディレクトリ"
+
+[claude.cli.arg.launch_args.task]
+help = "claudeに --task <text> で渡す初期タスク"
+
+[claude.cli.arg.launch_args.profile_file]
+help = "claude起動時に --settings で渡すセッションプロファイル（settings JSON）。--profileと併用不可"
+
+[claude.cli.arg.launch_args.profile]
+help = "適用する登録済みセッションプロファイルまたはStopフックゲート名。複数はカンマ区切りで一つのファイルに統合（'claude profile-register'、'claude gate-register' 参照）。--profile-fileと併用不可"
+
+[claude.cli.arg.launch_args.permission_mode]
+help = "子の権限モード：acceptEdits|auto|bypassPermissions|manual|dontAsk|plan。--permission-mode で渡し、今回だけ default_permission_mode より優先します。省略時はその設定を使用し、inherit または未設定ならフラグを付けず Claude Code の設定に従います。明示したモードは permissions.defaultMode を設定する --profile/--profile-file と併用できません。"
+
+[claude.cli.arg.spawn_args.surface]
+help = "親サーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.spawn_args.workspace]
+help = "対象ワークスペース（IDまたは名前）"
+
+[claude.cli.arg.spawn_args.pane]
+help = "対象ペインID（既定値：ワークスペースの最初のペイン）"
+
+[claude.cli.arg.spawn_args.cwd]
+help = "子Claudeプロセスの作業ディレクトリ"
+
+[claude.cli.arg.spawn_args.role]
+help = "子の役割ラベル（broadcast --roleで使用）"
+
+[claude.cli.arg.spawn_args.nickname]
+help = "タブに表示するニックネーム"
+
+[claude.cli.arg.spawn_args.prompt]
+help = "作成後に子へ送る初期プロンプト"
+
+[claude.cli.arg.spawn_args.profile_file]
+help = "子の起動時に --settings で渡すClaudeセッションプロファイル（settings JSON）。--profileと併用不可"
+
+[claude.cli.arg.spawn_args.profile]
+help = "適用する登録済みセッションプロファイルまたはStopフックゲート名。複数はカンマ区切りで一つのファイルに統合（'claude profile-register'、'claude gate-register' 参照）。--profile-fileと併用不可"
+
+[claude.cli.arg.spawn_args.permission_mode]
+help = "子の権限モード：acceptEdits|auto|bypassPermissions|manual|dontAsk|plan。--permission-mode で渡し、今回だけ default_permission_mode より優先します。省略時はその設定を使用し、inherit または未設定ならフラグを付けず Claude Code の設定に従います。明示したモードは permissions.defaultMode を設定する --profile/--profile-file と併用できません。"
+
+[claude.cli.arg.children_args.surface]
+help = "親サーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.parent_args.surface]
+help = "親を照会する子ClaudeサーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.state_args.surface]
+help = "照会する子ClaudeサーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.tell_args.message]
+help = "送信するメッセージ。改行を維持して自動確定"
+
+[claude.cli.arg.tell_args.surface]
+help = "メッセージを受け取るClaudeサーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.tell_args.caller_surface]
+help = "完了通知を受け取るサーフェス（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.notify_done_args.caller_surface]
+help = "spawn/tellを呼び出し通知を受け取るサーフェス"
+
+[claude.cli.arg.notify_done_args.target_surface]
+help = "spawn/tellが完了したサーフェス"
+
+[claude.cli.arg.notify_done_args.command]
+help = "完了したコマンド：spawnまたはtell"
+
+[claude.cli.arg.notify_error_args.caller_surface]
+help = "spawn/tellを呼び出し通知を受け取るサーフェス"
+
+[claude.cli.arg.notify_error_args.target_surface]
+help = "エラー後に停止した子サーフェス"
+
+[claude.cli.arg.broadcast_args.text]
+help = "一斉送信するテキスト。確定には \\r を使用（例：\"hello\\r\"）"
+
+[claude.cli.arg.broadcast_args.surface]
+help = "親サーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.broadcast_args.role]
+help = "この役割ラベルの子だけに送信"
+
+[claude.cli.arg.kill_args.surface]
+help = "親サーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.kill_args.child_index]
+help = "終了する子インデックス"
+
+[claude.cli.arg.respawn_args.surface]
+help = "親サーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.respawn_args.child_index]
+help = "再生成する子インデックス"
+
+[claude.cli.arg.respawn_args.cwd]
+help = "再生成するプロセスの作業ディレクトリを上書き"
+
+[claude.cli.arg.respawn_args.role]
+help = "子の役割ラベルを置換"
+
+[claude.cli.arg.respawn_args.nickname]
+help = "子の表示ニックネームを置換"
+
+[claude.cli.arg.respawn_args.prompt]
+help = "再生成した子へ送る初期プロンプト"
+
+[claude.cli.arg.respawn_args.profile_file]
+help = "子の再起動時に --settings で渡すClaudeセッションプロファイル（settings JSON）。--profileと併用不可"
+
+[claude.cli.arg.respawn_args.profile]
+help = "適用する登録済みセッションプロファイルまたはStopフックゲート名。複数はカンマ区切りで一つのファイルに統合（'claude profile-register'、'claude gate-register' 参照）。--profile-fileと併用不可"
+
+[claude.cli.arg.respawn_args.permission_mode]
+help = "子の権限モード：acceptEdits|auto|bypassPermissions|manual|dontAsk|plan。--permission-mode で渡し、今回だけ default_permission_mode より優先します。省略時はその設定を使用し、inherit または未設定ならフラグを付けず Claude Code の設定に従います。明示したモードは permissions.defaultMode を設定する --profile/--profile-file と併用できません。"
+
+[claude.cli.arg.reboot_args.surface]
+help = "対象ClaudeサーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.reboot_args.delay]
+help = "Claude終了前の待機時間（秒、既定値：5）"
+
+[claude.cli.arg.reboot_args.prompt]
+help = "再起動したClaudeの再起動案内プロンプトに追加するテキスト"
+
+[claude.cli.arg.reboot_args.profile_file]
+help = "再開時に --settings で適用するClaudeセッションプロファイル（settings JSON）。サーフェスに保存され、--clear-profileで解除するまで次回の再起動に継承されます。--profileと併用不可"
+
+[claude.cli.arg.reboot_args.profile]
+help = "適用する登録済みセッションプロファイル/Stopフックゲート名（複数はカンマ区切りで一ファイルに統合。'claude profile-register'、'claude gate-register' 参照）。サーフェスに保存し、再起動ごとに登録情報を読み直して編集を反映します。--clear-profileまで継承。--profile-fileと併用不可"
+
+[claude.cli.arg.codex_returns_args.retry]
+help = "自動再試行が止まったものも含め、残っている結果をすべて今すぐ送る順番に戻します。送信を待たないため、表示される一覧は要求時点で残っていた結果です"
+
+[claude.cli.arg.remote_results_args.id]
+help = "完了ログに書かれた結果 ID。その結果を本文とともに表示します。省略すると本文を除いた保存済み結果の一覧を表示します"
+
+[claude.cli.arg.children_args.format]
+help = "形式: table | json。デフォルト: table（親 ID 表）"
+
+[claude.cli.arg.children_args.workspace]
+help = "子があるワークスペース（ID または名前）。子が複数のワークスペースにある Codex 会話から呼び出すときだけ使います"
+
+[claude.cli.arg.kill_args.workspace]
+help = "子があるワークスペース（ID または名前）。子が複数のワークスペースにある Codex 会話から呼び出すときだけ使います"
+
+[claude.cli.arg.broadcast_args.workspace]
+help = "子があるワークスペース（ID または名前）。子が複数のワークスペースにある Codex 会話から呼び出すときだけ使います"
+
+[claude.cli.arg.respawn_args.workspace]
+help = "子があるワークスペース（ID または名前）。子が複数のワークスペースにある Codex 会話から呼び出すときだけ使います"
+
+[claude.cli.arg.reboot_args.clear_profile]
+help = "再開前に既存のセッションプロファイルを解除（パスまたは名前指定）"
+
+[claude.cli.arg.reboot_args.permission_mode]
+help = "子の権限モード：acceptEdits|auto|bypassPermissions|manual|dontAsk|plan。--permission-mode で渡し、今回だけ default_permission_mode より優先します。省略時はその設定を使用し、inherit または未設定ならフラグを付けず Claude Code の設定に従います。明示したモードは permissions.defaultMode を設定する --profile/--profile-file と併用できません。"
+
+[claude.cli.arg.child_profile_args.surface]
+help = "親サーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.child_profile_args.child_index]
+help = "プロファイルを適用する子インデックス（'claude children' で確認）"
+
+[claude.cli.arg.child_profile_args.delay]
+help = "子Claude終了前の待機時間（秒、既定値：5）"
+
+[claude.cli.arg.child_profile_args.prompt]
+help = "再起動した子の再起動案内プロンプトに追加するテキスト"
+
+[claude.cli.arg.child_profile_args.profile_file]
+help = "再開時に子へ --settings で適用するClaudeセッションプロファイル（settings JSON）。子サーフェスに保存し、--clear-profileまで次回の再起動に継承。--profileと併用不可"
+
+[claude.cli.arg.child_profile_args.profile]
+help = "子に適用する登録済みセッションプロファイル/Stopフックゲート名（複数はカンマ区切りで一ファイルに統合。'claude profile-register'、'claude gate-register' 参照）。子サーフェスに保存し再起動ごとに登録情報を読み直し、--clear-profileまで継承。--profile-fileと併用不可"
+
+[claude.cli.arg.child_profile_args.clear_profile]
+help = "再開前に子の既存セッションプロファイルを解除（パスまたは名前指定）"
+
+[claude.cli.arg.child_profile_args.permission_mode]
+help = "子の権限モード：acceptEdits|auto|bypassPermissions|manual|dontAsk|plan。--permission-mode で渡し、今回だけ default_permission_mode より優先します。省略時はその設定を使用し、inherit または未設定ならフラグを付けず Claude Code の設定に従います。明示したモードは permissions.defaultMode を設定する --profile/--profile-file と併用できません。"
+
+[claude.cli.arg.hook_args.event]
+help = "フックイベント名（例：stop、stop-failure、notification、session-end、prompt-submit、session-start、subagent-stop、pre-tool-use、post-tool-use、background-start）"
+
+[claude.cli.arg.hook_args.surface]
+help = "フック対象サーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.hook_args.session]
+help = "Claude CodeセッションID。フック呼び出し時にstdin JSONの 'session_id' から自動設定"
+
+[claude.cli.arg.hook_args.message]
+help = "フックメッセージ（通知トークン抽出に使用）。stdin JSONの 'message' から自動設定"
+
+[claude.cli.arg.hook_args.notification_type]
+help = "Claude Code通知のサブタイプ（例：permission_prompt、auth_success）。stdin JSONの 'notification_type' から自動設定。通知が needs_input を記録するか、active を記録するか、状態を変えないかを決める。値がなければ needs_input を記録し、一覧にない値なら状態を変えない"
+
+[claude.cli.arg.hook_args.error]
+help = "ターンを終了させた API エラーの種類（例：overloaded、rate_limit、server_error、authentication_failed）。StopFailure フックで stdin JSON の 'error' から自動設定"
+
+[claude.cli.arg.hook_args.prompt_id]
+help = "Claude Code のプロンプト（ターン）ID。Stop フックの stdin JSON の 'prompt_id' から自動設定。この Stop を同じターンの Stop フックゲート判定と対応付けるために使う"
+
+[claude.cli.arg.hook_args.agent_id]
+help = "フックがサブエージェント内で発火したときのサブエージェント ID（メインスレッドでは無し）。stdin JSON の 'agent_id' から自動設定。これを持つ stop-failure はサブエージェントの API エラーでメインターンは続くため無視"
+
+[claude.cli.arg.hook_args.background_tasks]
+help = "セッションに残っているバックグラウンドタスクの一覧（JSON 配列）。Stop フックで stdin JSON の 'background_tasks' から自動的に設定される。終了を表さない status の項目（終了値は completed、failed、cancelled、canceled、killed、stopped、error、done で、未知の値や status のない項目も未終了として数える）がある stop はメイン応答が終わっただけでバックグラウンド作業は続くため、子を idle にせず active のままにする。"
+
+[claude.cli.arg.hook_args.waiting_on_background_work]
+help = "セッションがバックグラウンド作業の完了を待っているかどうか（\"true\"/\"false\"）。公式 hooks ドキュメント（2026-09-28 確認）と Claude Code 2.1.283 の実測 payload にはないが、届いた場合は stdin JSON の 'waiting_on_background_work' から防御的に設定される。値があれば --background-tasks の代わりにこの値で判定する。"
+
+[claude.cli.arg.hook_args.tool_name]
+help = "background-start イベントで実行されたツール。PostToolUse の stdin JSON 'tool_name' から自動で埋めます。Bash と Agent（Task）がバックグラウンド作業を起動できます。"
+
+[claude.cli.arg.hook_args.tool_response]
+help = "background-start イベントのツール結果。PostToolUse の stdin JSON 'tool_response' から自動で埋めます。バックグラウンドの Bash コマンドは backgroundTaskId を、バックグラウンドの Agent は agentId を含みます。プラグインはこれを記録し、その作業が残ったまま StopFailure が来ると子を active のままにします。"
+
+[claude.cli.arg.hook_args.prompt]
+help = "プロンプト文字列。UserPromptSubmit の stdin JSON 'prompt' から自動で埋めます。<task-notification> で始まるプロンプトは <task-id> で終わったバックグラウンド作業を知らせます。"
+
+[claude.cli.arg.hook_args.source]
+help = "セッションの開始方法（startup、resume、clear、compact、fork）。SessionStart の stdin JSON 'source' から自動で埋めます。resume で開き直したセッションは復元に使った --settings を記録し、その中の Stop フックゲートを数えます。"
+
+[claude.cli.arg.hook_args.cwd]
+help = "Claude セッションの作業フォルダー。stdin JSON 'cwd' から自動で埋めます。子がバックグラウンド作業を待つ間、プラグインはこの値とセッション ID で Claude Code の一時フォルダーから待っている作業の出力ファイルを探し、ファイルが増え続けているかを見ます。"
+
+[claude.cli.arg.hook_args.reason]
+help = "セッションが終わった理由（clear、resume、logout、prompt_input_exit、other）。SessionEnd の stdin JSON 'reason' から自動で埋めます。clear と resume 以外の値は Claude プロセスが終わったことを意味するため、そのプロセスに記録した settings を消します。"
+
+[claude.cli.arg.hook_args.last_assistant_message]
+help = "ターンの最後の assistant メッセージ。Stop フックの stdin JSON 'last_assistant_message' から自動で埋めます。この surface が Tasty の agent task を実行中なら、そのターンの最終回答として報告します。"
+
+[claude.cli.arg.checklist_hook_args.surface]
+help = "ゲート対象サーフェスID。セッションの目標照会に使用。既定値は呼び出し元のTASTY_SURFACE_ID"
+
+[claude.cli.arg.checklist_hook_args.session_id]
+help = "Claude CodeセッションID。stdin JSONの 'session_id' から自動設定"
+
+[claude.cli.arg.checklist_hook_args.prompt_id]
+help = "Claude Codeのプロンプト/ターンID。新しいユーザーターンで変わり、ブロック後の延長中は維持されます。stdin JSONの 'prompt_id' から自動設定"
+
+[claude.cli.arg.checklist_hook_args.stop_hook_active]
+help = "Claude Code自身のstop-hook-activeフラグの有無（主判定ではなく整合確認用）。stdin JSONの 'stop_hook_active'（\"true\"/\"false\"）から自動設定"
+
+[claude.cli.arg.checklist_hook_args.last_assistant_message]
+help = "完了マーカーを探すassistantの最終メッセージ。stdin JSONの 'last_assistant_message' から自動設定"
+
+[claude.cli.arg.checklist_hook_args.block_cap]
+help = "Claude Code が Stop フックの block を連続で受け入れる上限（CLAUDE_CODE_STOP_HOOK_BLOCK_CAP）。ゲートコマンドが環境変数の値を渡し、空なら既定値 8 を使う。上限に達した block はターンを続けないため、子を idle として報告する"
+
+[claude.cli.arg.checklist_hook_args.gate]
+help = "本文・完了マーカー・回数制限で判定するStopフックゲート名（'claude gate-register' 参照）。既定値は組み込みcontinue-checklist"
+
+[claude.cli.arg.checklist_gate_args.gate]
+help = "有効化/無効化/照会するStopフックゲート名（'claude gate-register' 参照）。既定値は組み込みcontinue-checklist"
+
+[claude.cli.arg.profile_register_args.name]
+help = "プロファイルの登録名（英小文字・数字・'-'、最大32文字）"
+
+[claude.cli.arg.profile_register_args.file]
+help = "登録するsettings JSONファイルのパス（plugin専用領域に複製）"
+
+[claude.cli.arg.profile_name_args.name]
+help = "登録済みプロファイル名"
+
+[claude.cli.arg.profile_current_args.surface]
+help = "照会するサーフェスID（既定値：呼び出し元のTASTY_SURFACE_ID）"
+
+[claude.cli.arg.gate_register_args.name]
+help = "ゲートの登録名（英小文字・数字・'-'、最大32文字）。セッションプロファイルと名前空間を共有するため、反対側に同名があれば隠さず登録を拒否"
+
+[claude.cli.arg.gate_register_args.body_file]
+help = "登録するチェックリスト本文のMarkdownパス（plugin専用領域に複製）。モデルに完了宣言方法を伝えるため、このゲートの有効な完了マーカーが必須です。"
+
+[claude.cli.arg.gate_register_args.sentinel]
+help = "ターンを終えるためモデルが出力する完了マーカー。既定値は組み込みマーカー。空値は全メッセージに一致するため禁止"
+
+[claude.cli.arg.gate_register_args.rounds]
+help = "ゲートの回数上限（1以上）。省略時はpluginの 'continue-checklist round limit' 設定を使用"
+
+[claude.cli.arg.gate_name_args.name]
+help = "登録済みゲート名"
+
+[claude.cli.arg.spawn_args.model]
+help = "この子セッションのモデル（エイリアス、完全なID、プロバイダー識別子）。プロファイルを変更せずモデル設定より優先し、同じセッションの復元でも保持します。省略するとClaudeの既定値を使います。"
+
+[claude.cli.arg.spawn_args.effort]
+help = "この子セッションのeffort: low|medium|high|xhigh|max|ultracode。プロファイルを変更せずeffort設定より優先し、同じセッションの復元でも保持します。対応状況はClaude CLIとモデルによって異なります。"

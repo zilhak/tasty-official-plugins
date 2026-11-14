@@ -1,0 +1,37 @@
+[package]
+name = "tasty-plugin-codex"
+version = "0.3.0"
+edition = "2024"
+license = "MIT"
+description = "External Tasty plugin: codex CLI integration"
+repository = "https://github.com/zilhak/tasty-official-plugins"
+
+[[bin]]
+name = "tasty-plugin-codex"
+path = "src/main.rs"
+
+[dependencies]
+tasty-plugin-sdk.workspace = true
+tasty-plugin-agent-common.workspace = true
+tasty-utils.workspace = true
+# 세션 helper가 띄운 서버를 하위 프로세스까지 정리한다.
+tasty-reaper.workspace = true
+serde_json = { version = "1", features = ["raw_value"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+# 수신자·이벤트 ID와 WebSocket 마스크에 쓰는 OS 난수.
+getrandom = "0.3"
+# 완료 키의 claim 파일 이름과 수신자 색인 이름.
+sha2 = "0.10"
+
+[dev-dependencies]
+# 언어별 시험의 대상 목록을 내장 언어 정본에서 얻는다.
+tasty-i18n.workspace = true
+tasty-test-support.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

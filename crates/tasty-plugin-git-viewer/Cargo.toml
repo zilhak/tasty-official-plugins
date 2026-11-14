@@ -1,0 +1,45 @@
+[package]
+name = "tasty-plugin-git-viewer"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+description = "External Tasty plugin: read-only git status/log/diff viewer popup"
+repository = "https://github.com/zilhak/tasty-official-plugins"
+
+[[bin]]
+name = "tasty-plugin-git-viewer"
+path = "src/main.rs"
+
+[dependencies]
+tasty-plugin-sdk = { workspace = true, features = ["egui-mesh"] }
+# 호스트와 같은 언어팩 폰트 검사·설치 함수를 사용한다.
+tasty-egui-theme.workspace = true
+tasty-plugin-protocol.workspace = true
+# Windows verbatim prefix(`\\?\`) 제거 — worktree 경로 표시/비교 정규화에 사용.
+tasty-utils.workspace = true
+# 호스트의 원격 조회와 저장소 탐색·수집 로직을 공유한다.
+tasty-git-core.workspace = true
+# Repository 타입을 직접 쓰므로 tasty-git-core와 버전을 맞춘다.
+git2 = { version = "0.21", default-features = false }
+tasty-type-appearance = { workspace = true, features = ["egui-compat"] }
+tasty-ui-widgets.workspace = true
+serde_json = "1"
+# 원격 조회 응답을 해석한다.
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+# SDK와 같은 egui 타입을 사용한다.
+egui = { version = "0.31", default-features = false, features = [
+    "bytemuck",
+    "default_fonts",
+] }
+
+[dev-dependencies]
+# 언어별 시험의 대상 목록을 내장 언어 정본에서 얻는다.
+tasty-i18n.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

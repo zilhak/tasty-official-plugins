@@ -1,0 +1,33 @@
+[clipboard_viewer.tool]
+label = "Clipboard Viewer"
+
+[clipboard_viewer.command]
+open_viewer = "Open Clipboard Viewer"
+
+[clipboard_viewer.popup]
+title = "Clipboard Viewer"
+header = "Clipboard"
+snapshot_badge = "snapshot"
+close = "Close"
+close_tooltip = "Close (Esc)"
+empty_title = "Clipboard is empty"
+empty_sub = "Copy some text, an image, or files and reopen to see a snapshot here."
+read_failed_title = "Couldn't read the clipboard"
+read_failed_sub = "The system clipboard handle could not be opened. Close another app that may be holding it and reopen."
+already_open_title = "Clipboard viewer is already open"
+already_open_sub = "Only one snapshot window runs at a time — the existing one was brought to the front."
+image_no_preview = "No inline image preview"
+pretty_print = "Pretty print"
+html_meta_line = "{chars} chars · {lines} line"
+html_meta_lines = "{chars} chars · {lines} lines"
+other_more_lines = "+{n} more lines"
+other_more_lines_one = "+{n} more line"
+other_unrecognized_formats = "{n} unrecognized formats"
+other_unrecognized_formats_one = "{n} unrecognized format"
+
+[clipboard_viewer.type]
+text = "Text"
+files = "Files"
+image = "Image"
+html = "HTML"
+other = "Other"

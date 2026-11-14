@@ -1,0 +1,81 @@
+[agent_stream.cli]
+desc = "Tail an AI agent session transcript and read normalized stream events"
+
+[agent_stream.error]
+missing_surface = "no target surface: pass --surface <id> (or run this from inside a tasty terminal so TASTY_SURFACE_ID is set)"
+invalid_surface = "Invalid surface ID {value}. Use an integer in the u32 range; omitting the value is a different case."
+no_session_meta = "surface {surface} has no '{key}' meta — the agent session id is unknown, so its transcript cannot be located. Start (or restart) the agent in that surface so its session-start hook records the id."
+transcript_root_missing = "cannot locate the agent transcript root directory (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects when set)"
+transcript_not_found = "no transcript file found for session {session} under the transcript root — the session may not have been written to disk yet"
+not_watched = "surface {surface} is not being watched"
+missing_request_id = "Missing request_id. Pass --request-id <id> to match events to this request. The webhook returns a fixed ACK, so the caller must provide the ID."
+request_id_too_long = "request_id exceeds the {max}-byte limit. Use a short ID such as a UUID; this value is copied to every event in the turn."
+turn_not_watched = "Surface {surface} is not watched. Run `agent-stream watch --surface {surface}` before opening a turn."
+turn_already_open = "Surface {surface} already has an open turn with request_id {request}. Only one turn can be open at a time; wait for turn_end before starting another."
+registry_poisoned = "The agent-stream registry lock is poisoned after a thread panicked while holding it: {detail}"
+serve_port_required = "No port specified. Pass --port <n>. The endpoint requires an explicit port so subscribers have a known address."
+serve_port_out_of_range = "port {port} is outside the port number range (1-65535) — pass a value inside the range with --port"
+serve_invalid_bind = "Bind address {bind} is not a valid IP address. Use 127.0.0.1, ::1, or an interface address."
+serve_remote_bind_needs_token = "Cannot bind {bind} without a token. This endpoint streams full conversations, so non-loopback addresses require --token."
+serve_bind_failed = "cannot bind the SSE endpoint on {addr}: {detail} — free the port or pick another one (there is no automatic fallback)"
+serve_not_running = "The SSE endpoint is not running."
+
+[agent_stream.cli.sub.watch]
+description = "Start reading the agent session transcript for a surface. The session ID must be present in surface metadata."
+
+[agent_stream.cli.sub.turn-start]
+description = "Open a turn on a watched surface and tag its events with the caller's request_id. In a webhook IpcSequence, call this before claude.tell. Rejects unwatched surfaces and overlapping turns."
+
+[agent_stream.cli.sub.unwatch]
+description = "Stop tailing a surface. Emits a final turn_end{reason=stream:unwatched} event."
+
+[agent_stream.cli.sub.list]
+description = "List every surface currently being tailed with its session id, transcript path, byte offset and status"
+
+[agent_stream.cli.sub.poll]
+description = "Read collected stream events by sequence cursor (non-destructive). Events are text / thinking / tool_use / turn_end."
+
+[agent_stream.cli.sub.serve]
+description = "Open the SSE endpoint (GET /events) so an external consumer can subscribe. The port is required — there is no automatic fallback. Calling it again rebinds with the new settings."
+
+[agent_stream.cli.sub.serve-stop]
+description = "Close the SSE endpoint and end every open subscription"
+
+[agent_stream.cli.sub.serve-info]
+description = "Report endpoint status and counters for each subscriber. The token is never included."
+
+[agent_stream.cli.arg.watch_args.surface]
+help = "Surface ID running the agent (defaults to caller's TASTY_SURFACE_ID)"
+
+[agent_stream.cli.arg.watch_args.from_start]
+help = "Replay the transcript from byte 0 instead of starting at the current end of file"
+
+[agent_stream.cli.arg.unwatch_args.surface]
+help = "Surface ID to stop tailing (defaults to caller's TASTY_SURFACE_ID)"
+
+[agent_stream.cli.arg.turn_start_args.surface]
+help = "Surface running the agent whose turn to open (defaults to caller's TASTY_SURFACE_ID). Must already be watched."
+
+[agent_stream.cli.arg.turn_start_args.request_id]
+help = "Caller-provided ID attached as request_id to each event in this turn, so the receiving application can match events to requests."
+
+[agent_stream.cli.arg.turn_start_args.timeout_secs]
+help = "Idle timeout for this turn in seconds (default 600, range 10-86400). If no event and no turn_end arrive for this long, the turn is closed with turn_end{reason=stream:turn_timeout}."
+
+[agent_stream.cli.arg.poll_args.filter_surface]
+help = "Only return events collected for this surface (no default — omitting it returns every watched surface)"
+
+[agent_stream.cli.arg.poll_args.after_seq]
+help = "Return events with seq strictly greater than this cursor (default: 0 = from the oldest buffered event)"
+
+[agent_stream.cli.arg.poll_args.limit]
+help = "Maximum number of events to return (default 100, max 1000)"
+
+[agent_stream.cli.arg.serve_args.port]
+help = "TCP port to listen on. Required — the endpoint never picks a port by itself, so the address stays the same across restarts."
+
+[agent_stream.cli.arg.serve_args.bind]
+help = "Bind address (default 127.0.0.1). A non-loopback address is rejected unless --token is given."
+
+[agent_stream.cli.arg.serve_args.token]
+help = "Shared subscription token. Subscribers present it as 'Authorization: Bearer <token>' or '?token=<token>'. Omit for no authentication (loopback only)."

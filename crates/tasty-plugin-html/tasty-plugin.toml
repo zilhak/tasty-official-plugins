@@ -1,0 +1,119 @@
+manifest_version = 1
+id = "com.tasty.html"
+name = "HTML Viewer"
+version = "0.2.0"
+description = "HTML viewer surface. Uses tasty's native WebView overlay toolkit."
+api_version = "1"
+permissions = [
+    "surface.read",
+    "surface.write",
+    "file_handler.define",
+    "file_handler.handle:html",
+    "file_handler.handle:svg",
+    "ui.settings_page",
+]
+lang_dir = "lang"
+
+[entry]
+type = "process"
+command = "tasty-plugin-html"
+
+[[surface_kinds]]
+kind = "html"
+display_name_i18n_key = "surface.kind.html"
+icon = "html"
+rendering = "webview"
+
+# 프리셋 편집기 필드 — URL 입력. url 은 파일 경로 파생 대상이 아니다(derive_cwd 없음).
+[[surface_kinds.preset_fields]]
+id = "url"
+label_key = "preset.field.url"
+param_key = "url"
+input_type = "url"
+required = true
+placeholder_key = "preset.field.url_hint"
+
+[[contributes.ipc_namespace]]
+prefix = "html"
+description_i18n_key = "html.namespace.desc"
+
+# 호스트의 HTML 감지기를 사용한다. 우선순위가 같으면 플러그인 핸들러를 먼저 선택한다.
+[[contributes.handler]]
+id = "viewer"
+detector = "html"
+priority = 50
+display_name_i18n_key = "file_handler.host.html-viewer"
+[contributes.handler.action]
+kind = "open_surface"
+surface_kind = "html"
+param_key = "url"
+
+# 호스트의 SVG 감지기를 사용한다. 이미지 plugin은 SVG를 디코드하지 못하므로 WebView로 렌더한다.
+[[contributes.handler]]
+id = "svg-viewer"
+detector = "svg"
+priority = 50
+display_name_i18n_key = "file_handler.host.svg-viewer"
+[contributes.handler.action]
+kind = "open_surface"
+surface_kind = "html"
+param_key = "url"
+
+[[contributes.cli]]
+name = "html"
+help_group = "files"
+description = "HTML viewer commands"
+description_i18n_key = "html.cli.desc"
+subcommands = [
+    { name = "open", ipc_method = "html.open", args = "open_args", description = "Set the URL of an existing HTML surface", description_i18n_key = "html.cli.sub.open.description" },
+]
+
+[contributes.cli.arg_groups.open_args]
+positional = [
+    { name = "url", type = "string", required = true, path_kind = "url_or_file", help = "URL (http://, https:// or file://) or a local file path. A relative path is resolved against the current directory.", help_i18n_key = "html.cli.arg.open_args.url.help" },
+]
+flags = [
+    { name = "surface", type = "u32", flag = "--surface", required = false, help = "Target HTML surface ID (defaults to the caller's TASTY_SURFACE_ID)", help_i18n_key = "html.cli.arg.open_args.surface.help" },
+]
+
+# 호스트가 설정을 표시하고 plugin_settings.com.tasty.html 아래에 저장한다.
+[[contributes.settings_pages]]
+id = "html"
+title_key = "settings.subtab.html"
+category = "appearance"
+
+[[contributes.settings_pages.items]]
+kind = "number"
+id = "zoom"
+label_key = "html.settings.zoom"
+storage_key = "zoom"
+default = 100.0
+min = 25.0
+max = 500.0
+suffix_key = "html.settings.zoom_suffix"
+
+[[contributes.settings_pages.items]]
+kind = "select"
+id = "color_scheme"
+label_key = "html.settings.color_scheme"
+storage_key = "color_scheme"
+default = "follow"
+options = [
+    { value = "follow", label_key = "html.settings.scheme.follow" },
+    { value = "light", label_key = "html.settings.scheme.light" },
+    { value = "dark", label_key = "html.settings.scheme.dark" },
+]
+
+[[contributes.settings_pages.items]]
+kind = "toggle"
+id = "allow_remote"
+label_key = "html.settings.allow_remote"
+storage_key = "allow_remote_content"
+default = false
+
+[[contributes.settings_pages.items]]
+kind = "toggle"
+id = "sandbox"
+label_key = "html.settings.sandbox"
+storage_key = "sandbox_scripts"
+default = true

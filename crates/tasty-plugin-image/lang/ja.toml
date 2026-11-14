@@ -1,0 +1,101 @@
+[surface.kind]
+image = "画像"
+
+[image.cli]
+desc = "画像サーフェスビューアーと描画キャンバス"
+
+[image.namespace]
+desc = "Image surface IPC ネームスペース"
+
+[image_viewer]
+no_image = "画像が読み込まれていません"
+prev = "前の画像"
+next = "次の画像"
+refresh = "更新"
+edit = "編集"
+new_image = "新規画像"
+save = "保存"
+cancel = "キャンセル"
+brush_size = "太さ:"
+color = "色:"
+new_image_title = "新規画像"
+width = "幅:"
+height = "高さ:"
+save_path_title = "名前を付けて保存"
+save_path_placeholder = "パス/画像.png"
+browse = "Tasty ファイル選択で参照…"
+undo = "元に戻す"
+redo = "やり直し"
+fit = "フィット"
+zoom_in = "拡大"
+zoom_out = "縮小"
+
+[image.state]
+missing = "画像が見つかりません"
+missing_sub = "移動または削除された可能性があります。"
+permission = "アクセス権がありません"
+permission_sub = "このファイルを読み取る権限がありません。"
+decode = "この画像を開けません"
+decode_sub = "ファイルが破損しているか、対応していない形式です。"
+too_large = "画像が大きすぎて開けません"
+too_large_sub = "一辺が {}\u00A0px を超えるか、デコードに {} を超えるメモリが必要です。"
+too_large_size = "{} × {}\u00A0px"
+retry = "再試行"
+
+[image.save_as]
+exists = "{} は既に存在します。別の名前で PNG を保存してください。"
+
+[button]
+ok = "OK"
+cancel = "キャンセル"
+save = "保存"
+
+# プリセットエディタのフィールドラベル (ホストが t() で解決)。
+[preset.field]
+file = "ファイル"
+file_hint = "画像ファイルのパス"
+
+[image.cli.sub.open]
+description = "サーフェスを画像種別に変換し指定ファイルを読み込む"
+
+[image.cli.sub.save]
+description = "現在の画像サーフェスをディスクにPNGで保存"
+
+[image.cli.sub.export]
+description = "現在の画像サーフェスを指定PNGパスへ書き出す"
+
+[image.cli.sub.next]
+description = "同じディレクトリの次の画像へ移動"
+
+[image.cli.sub.prev]
+description = "同じディレクトリの前の画像へ移動"
+
+[image.cli.sub.paste]
+description = "クリップボード画像を浮動選択範囲として貼り付け"
+
+[image.cli.sub.reload]
+description = "ディスクからファイルを再読み込み（編集セッション中は延期）"
+
+[image.cli.sub.list]
+description = "開いている全画像サーフェスを一覧表示"
+
+[image.cli.arg.open_args.path]
+help = "開く画像ファイルのパス"
+
+[image.cli.arg.open_args.surface]
+help = "対象サーフェス ID"
+
+[image.cli.arg.save_args.surface]
+help = "対象サーフェス ID"
+
+[image.cli.arg.save_args.path]
+help = "保存先を上書き（既定値：サーフェスで開いたファイルの拡張子を.pngに変更）"
+
+[image.cli.arg.export_args.path]
+help = "書き出すPNGファイルのパス"
+
+[image.cli.arg.export_args.surface]
+help = "対象サーフェス ID"
+
+[image.cli.arg.nav_args.surface]
+help = "対象サーフェス ID"

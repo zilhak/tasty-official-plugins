@@ -1,0 +1,123 @@
+[surface.kind]
+markdown = "Markdown"
+
+[markdown.cli]
+desc = "Markdown viewer commands"
+
+[markdown.namespace]
+desc = "Markdown viewer surface namespace"
+
+[file_handler.host]
+markdown-viewer = "Markdown Viewer"
+
+[file_handler.format]
+markdown = "Markdown"
+
+[settings.subtab]
+markdown = "Markdown"
+
+[markdown.state]
+failed = "Failed to load"
+empty = "This file is empty"
+large_deferred = "This file is larger than 1\u00A0MiB and has not been loaded"
+large_deferred_open = "Open file…"
+
+[markdown.image]
+failed = "Failed to load image"
+
+[markdown.large_file]
+title = "Open large file?"
+body = "Over 1\u00A0MiB — rendering may be slow."
+open = "Open"
+cancel = "Cancel"
+
+[markdown.file_open]
+title = "Open Markdown File"
+path_label = "Enter file path:"
+browse = "Browse…"
+open = "Open"
+cancel = "Cancel"
+
+[markdown.remote]
+loading = "Loading the remote document…"
+disconnected = "The connection to the remote host was lost — this document is no longer up to date"
+
+[markdown.addr]
+placeholder = "Path to markdown file"
+no_recent = "No recent files"
+
+# 주소 띠 버튼 tooltip·aria-label, 원격 직접 이동의 실패 종류별 행과 대기 행. 디자인 갤러리 Markdown 주소 띠의 문구다.
+# {reason} 은 원격이 보낸 영어 사유 원문이며 번역하지 않는다.
+[markdown.address]
+go = "Go"
+open = "Open a file…"
+open_remote = "Open a remote file…"
+reload = "Reload"
+stale = "The remote file changed — reload"
+disconnected = "Disconnected from the remote"
+waiting = "Still waiting for the remote…"
+
+[markdown.address.error]
+not_found = "Can't open {path} on the remote: file not found."
+rejected = "Can't open {path} on the remote: {reason}"
+connection_lost = "Connection lost before the remote answered. Reconnect and try again."
+cancelled = "Didn't open {path}: the remote connection changed. Try again."
+internal = "Couldn't send the request to open {path}. Try again."
+
+[markdown.find]
+placeholder = "Find in document"
+match_count = "{current}/{total}"
+prev_tooltip = "Previous match"
+next_tooltip = "Next match"
+close_tooltip = "Close (Esc)"
+
+[markdown.toc]
+label = "Table of contents"
+aria_label = "Table of contents"
+
+# 콜아웃(GFM alert `> [!NOTE]` 5종 + Obsidian 확장 타입) 기본 헤더 레이블 — render/callout.rs::
+# CALLOUT_KINDS 가 조회. 커스텀 제목(`[!type] Title`)이 있으면 이 값 대신 그 텍스트를 쓴다.
+[markdown.alert]
+note = "Note"
+tip = "Tip"
+important = "Important"
+warning = "Warning"
+caution = "Caution"
+abstract = "Abstract"
+info = "Info"
+todo = "Todo"
+success = "Success"
+question = "Question"
+failure = "Failure"
+danger = "Danger"
+bug = "Bug"
+example = "Example"
+quote = "Quote"
+
+# 각주 참조/backlink 앵커의 aria-label — render.rs::rewrite_footnote_event 가 조회.
+[markdown.footnote]
+ref_aria = "Jump to footnote {}"
+backlink_aria = "Back to footnote {}"
+backlink_aria_nth = "Back to footnote {0}, reference {1}"
+
+[markdown.copy]
+label = "Copy code"
+copied = "Copied!"
+failed = "Copy failed"
+
+# 프리셋 편집기 필드 라벨 (호스트가 t() 로 해석).
+[preset.field]
+file = "File"
+file_hint = "path to markdown file"
+
+[markdown.settings]
+allow_remote = "Allow remote content"
+
+[markdown.cli.sub.reload]
+description = "Reload the local file or request the remote document again"
+
+[markdown.cli.sub.recent]
+description = "List recently opened markdown files (newest first, up to 10)"
+
+[markdown.cli.arg.reload_args.surface]
+help = "Target surface ID"

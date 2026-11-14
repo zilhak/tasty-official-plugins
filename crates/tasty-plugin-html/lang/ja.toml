@@ -1,0 +1,39 @@
+[surface.kind]
+html = "HTML"
+
+[html]
+"namespace.desc" = "HTML ビューア surface namespace"
+"cli.desc" = "HTML ビューアコマンド"
+"settings.zoom" = "既定のズーム"
+"settings.zoom_suffix" = "%"
+"settings.color_scheme" = "カラースキーム"
+"settings.allow_remote" = "リモートコンテンツを許可"
+"settings.sandbox" = "スクリプトをサンドボックス化"
+"settings.note" = "ターミナルから開いたプレビューを組み込み HTML ビューアがどのように描画するかを制御します。リモートコンテンツは既定でブロックされます。"
+"settings.scheme.follow" = "テーマに従う"
+"settings.scheme.light" = "ライト"
+"settings.scheme.dark" = "ダーク"
+
+# 파일 핸들러 표시명 (호스트가 t() 로 해석).
+[file_handler.host]
+"svg-viewer" = "SVG ビューア"
+
+[settings.subtab]
+html = "HTML"
+
+# プリセットエディタのフィールドラベル (ホストが t() で解決)。
+[preset.field]
+url = "URL"
+url_hint = "https://…"
+
+[html.cli]
+desc = "HTML ビューアコマンド"
+
+[html.cli.sub.open]
+description = "既存の HTML surface の URL を変更する"
+
+[html.cli.arg.open_args.url]
+help = "URL（http://、https://、file://）またはローカルファイルのパス。相対パスは現在のディレクトリを基準に解決します。"
+
+[html.cli.arg.open_args.surface]
+help = "対象 HTML surface ID（省略時は呼び出し元の TASTY_SURFACE_ID）"

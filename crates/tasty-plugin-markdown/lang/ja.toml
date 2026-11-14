@@ -1,0 +1,122 @@
+[surface.kind]
+markdown = "マークダウン"
+
+[markdown.cli]
+desc = "Markdownビューアーのコマンド"
+
+[markdown.namespace]
+desc = "マークダウンビューア surface ネームスペース"
+
+[file_handler.host]
+markdown-viewer = "マークダウンビューア"
+
+[file_handler.format]
+markdown = "マークダウン"
+
+[settings.subtab]
+markdown = "Markdown"
+
+[markdown.state]
+failed = "読み込みに失敗しました"
+empty = "このファイルは空です"
+large_deferred = "1\u00A0MiBを超えるファイルのため、まだ読み込んでいません"
+large_deferred_open = "ファイルを開く…"
+
+[markdown.image]
+failed = "画像を読み込めませんでした"
+
+[markdown.large_file]
+title = "大きなファイルを開きますか？"
+body = "1\u00A0MiBを超えています。表示が遅くなる可能性があります。"
+open = "開く"
+cancel = "キャンセル"
+
+[markdown.file_open]
+title = "マークダウンファイルを開く"
+path_label = "ファイルパスを入力:"
+browse = "参照…"
+open = "開く"
+cancel = "キャンセル"
+
+[markdown.remote]
+loading = "リモートのドキュメントを読み込み中…"
+disconnected = "リモートとの接続が切断されました — このドキュメントは最新ではありません"
+
+[markdown.addr]
+placeholder = "マークダウンファイルのパス"
+no_recent = "最近のファイルなし"
+
+# 주소 띠 버튼 tooltip·aria-label, 원격 직접 이동의 실패 종류별 행과 대기 행. 디자인 갤러리 Markdown 주소 띠의 문구다.
+# {reason} 은 원격이 보낸 영어 사유 원문이며 번역하지 않는다.
+[markdown.address]
+go = "移動"
+open = "ファイルを開く…"
+open_remote = "リモートのファイルを開く…"
+reload = "再読み込み"
+stale = "リモートのファイルが変更されました — 再読み込み"
+disconnected = "リモートから切断されました"
+waiting = "リモートの応答を待っています…"
+
+[markdown.address.error]
+not_found = "リモートで {path} を開けません: ファイルが見つかりません。"
+rejected = "リモートで {path} を開けません: {reason}"
+connection_lost = "リモートの応答前に接続が切れました。再接続してからもう一度お試しください。"
+cancelled = "リモート接続が変わったため {path} を開きませんでした。もう一度お試しください。"
+internal = "{path} を開く要求を送信できませんでした。もう一度お試しください。"
+
+[markdown.find]
+placeholder = "文書内を検索"
+match_count = "{current}/{total}"
+prev_tooltip = "前の一致"
+next_tooltip = "次の一致"
+close_tooltip = "閉じる (Esc)"
+
+[markdown.toc]
+label = "目次"
+aria_label = "目次"
+
+# GFM alert blockquote(`> [!NOTE]` 等)のヘッダーラベル — render/callout.rs::CALLOUT_KINDS が参照。
+[markdown.alert]
+note = "メモ"
+tip = "ヒント"
+important = "重要"
+warning = "警告"
+caution = "注意"
+abstract = "要約"
+info = "情報"
+todo = "タスク"
+success = "成功"
+question = "質問"
+failure = "失敗"
+danger = "危険"
+bug = "バグ"
+example = "例"
+quote = "引用"
+
+# 脚注参照/backlinkアンカーのaria-label — render.rs::rewrite_footnote_event が参照。
+[markdown.footnote]
+ref_aria = "脚注{}へ移動"
+backlink_aria = "脚注{}から本文に戻る"
+backlink_aria_nth = "脚注{0}の{1}番目の参照に戻る"
+
+[markdown.copy]
+label = "コードをコピー"
+copied = "コピーしました！"
+failed = "コピーに失敗しました"
+
+# プリセットエディタのフィールドラベル (ホストが t() で解決)。
+[preset.field]
+file = "ファイル"
+file_hint = "マークダウンファイルのパス"
+
+[markdown.settings]
+allow_remote = "リモートコンテンツを許可"
+
+[markdown.cli.sub.reload]
+description = "ローカルファイルを再読み込みするか、リモート文書を再取得します"
+
+[markdown.cli.sub.recent]
+description = "最近開いたMarkdownファイルを一覧表示（新しい順、最大10件）"
+
+[markdown.cli.arg.reload_args.surface]
+help = "対象サーフェス ID"

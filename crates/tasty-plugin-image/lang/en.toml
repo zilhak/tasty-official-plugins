@@ -1,0 +1,101 @@
+[surface.kind]
+image = "Image"
+
+[image.cli]
+desc = "Image surface viewer and paint canvas"
+
+[image.namespace]
+desc = "Image surface IPC namespace"
+
+[image_viewer]
+no_image = "No image loaded"
+prev = "Previous image"
+next = "Next image"
+refresh = "Refresh"
+edit = "Edit"
+new_image = "New image"
+save = "Save"
+cancel = "Cancel"
+brush_size = "Brush:"
+color = "Color:"
+new_image_title = "New Image"
+width = "Width:"
+height = "Height:"
+save_path_title = "Save As"
+save_path_placeholder = "path/to/image.png"
+browse = "Browse with Tasty file picker…"
+undo = "Undo"
+redo = "Redo"
+fit = "Fit"
+zoom_in = "Zoom in"
+zoom_out = "Zoom out"
+
+[image.state]
+missing = "Image not found"
+missing_sub = "It may have been moved or deleted."
+permission = "Permission denied"
+permission_sub = "You don't have access to read this file."
+decode = "Can't open this image"
+decode_sub = "The file is damaged or in an unsupported format."
+too_large = "Image is too large to open"
+too_large_sub = "Over {}\u00A0px on a side, or needs more than {} to decode."
+too_large_size = "{} × {}\u00A0px"
+retry = "Retry"
+
+[image.save_as]
+exists = "{} already exists. Save the PNG under another name."
+
+[button]
+ok = "OK"
+cancel = "Cancel"
+save = "Save"
+
+# 프리셋 편집기 필드 라벨 (호스트가 t() 로 해석).
+[preset.field]
+file = "File"
+file_hint = "path to image file"
+
+[image.cli.sub.open]
+description = "Convert a surface to image kind and load the given file"
+
+[image.cli.sub.save]
+description = "Save the current image surface to disk (PNG)"
+
+[image.cli.sub.export]
+description = "Export the current image surface to the given PNG path"
+
+[image.cli.sub.next]
+description = "Step to the next image in the same directory"
+
+[image.cli.sub.prev]
+description = "Step to the previous image in the same directory"
+
+[image.cli.sub.paste]
+description = "Paste a clipboard image as a floating selection"
+
+[image.cli.sub.reload]
+description = "Re-read the file from disk (deferred while an edit session is active)"
+
+[image.cli.sub.list]
+description = "List all open image surfaces"
+
+[image.cli.arg.open_args.path]
+help = "Path to the image file to open"
+
+[image.cli.arg.open_args.surface]
+help = "Target surface ID"
+
+[image.cli.arg.save_args.surface]
+help = "Target surface ID"
+
+[image.cli.arg.save_args.path]
+help = "Override save path (defaults to the surface's open file with .png extension)"
+
+[image.cli.arg.export_args.path]
+help = "PNG file path to export to"
+
+[image.cli.arg.export_args.surface]
+help = "Target surface ID"
+
+[image.cli.arg.nav_args.surface]
+help = "Target surface ID"

@@ -1,0 +1,122 @@
+[surface.kind]
+markdown = "Markdown"
+
+[markdown.cli]
+desc = "Markdown 查看器命令"
+
+[markdown.namespace]
+desc = "Markdown 查看器 Surface 命名空间"
+
+[file_handler.host]
+markdown-viewer = "Markdown 查看器"
+
+[file_handler.format]
+markdown = "Markdown"
+
+[settings.subtab]
+markdown = "Markdown"
+
+[markdown.state]
+failed = "加载失败"
+empty = "此文件为空"
+large_deferred = "此文件大于 1 MiB，尚未加载"
+large_deferred_open = "打开文件…"
+
+[markdown.image]
+failed = "图像加载失败"
+
+[markdown.large_file]
+title = "打开大文件？"
+body = "超过 1 MiB，渲染可能较慢。"
+open = "打开"
+cancel = "取消"
+
+[markdown.file_open]
+title = "打开 Markdown 文件"
+path_label = "输入文件路径："
+browse = "浏览…"
+open = "打开"
+cancel = "取消"
+
+[markdown.remote]
+loading = "正在加载远程文档…"
+disconnected = "与远程主机的连接已断开，此文档不再是最新版本"
+
+[markdown.addr]
+placeholder = "Markdown 文件路径"
+no_recent = "无最近使用的文件"
+
+# 주소 띠 버튼 tooltip·aria-label, 원격 직접 이동의 실패 종류별 행과 대기 행. 디자인 갤러리 Markdown 주소 띠의 문구다.
+# {reason} 은 원격이 보낸 영어 사유 원문이며 번역하지 않는다.
+[markdown.address]
+go = "转到"
+open = "打开文件…"
+open_remote = "打开远程文件…"
+reload = "重新加载"
+stale = "远程文件已更改，重新加载"
+disconnected = "已与远程断开连接"
+waiting = "仍在等待远程响应…"
+
+[markdown.address.error]
+not_found = "无法在远程打开 {path}：未找到文件。"
+rejected = "无法在远程打开 {path}：{reason}"
+connection_lost = "远程响应前连接已断开。重新连接后重试。"
+cancelled = "未打开 {path}：远程连接已更改。请重试。"
+internal = "无法发送打开 {path} 的请求。请重试。"
+
+[markdown.find]
+placeholder = "在文档中查找"
+match_count = "{current}/{total}"
+prev_tooltip = "上一个匹配项"
+next_tooltip = "下一个匹配项"
+close_tooltip = "关闭（Esc）"
+
+[markdown.toc]
+label = "目录"
+aria_label = "目录"
+
+# GFM alert blockquote(`> [!NOTE]` 등) 헤더 레이블 — render/callout.rs::CALLOUT_KINDS 가 조회.
+[markdown.alert]
+note = "备注"
+tip = "提示"
+important = "重要"
+warning = "警告"
+caution = "注意"
+abstract = "摘要"
+info = "信息"
+todo = "待办"
+success = "成功"
+question = "问题"
+failure = "失败"
+danger = "危险"
+bug = "缺陷"
+example = "示例"
+quote = "引用"
+
+# 각주 참조/backlink 앵커의 aria-label — render.rs::rewrite_footnote_event 가 조회.
+[markdown.footnote]
+ref_aria = "跳转到脚注 {}"
+backlink_aria = "返回脚注 {} 的引用处"
+backlink_aria_nth = "返回脚注 {0} 的第 {1} 个引用处"
+
+[markdown.copy]
+label = "复制代码"
+copied = "已复制"
+failed = "复制失败"
+
+# 프리셋 편집기 필드 라벨 (호스트가 t() 로 해석).
+[preset.field]
+file = "文件"
+file_hint = "Markdown 文件路径"
+
+[markdown.settings]
+allow_remote = "允许远程内容"
+
+[markdown.cli.sub.reload]
+description = "重新加载本地文件或重新请求远程文档"
+
+[markdown.cli.sub.recent]
+description = "列出最近打开的 Markdown 文件（按从新到旧排序，最多 10 个）"
+
+[markdown.cli.arg.reload_args.surface]
+help = "目标 Surface ID"

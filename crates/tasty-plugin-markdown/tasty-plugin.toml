@@ -1,0 +1,148 @@
+manifest_version = 1
+id = "com.tasty.markdown"
+name = "Markdown Viewer"
+version = "0.2.0"
+description = "Markdown viewer surface (webview)"
+api_version = "1"
+permissions = [
+    "surface.read",
+    "surface.write",
+    "fs.read",
+    "file_handler.define",
+    "file_handler.handle:markdown",
+    "ui.settings_page",
+    # 대용량 파일 확인 팝업(egui-mesh)을 자가 렌더한다.
+    "ui.popup",
+]
+# 플러그인이 로컬 파일의 크기를 확인한 뒤 확인 팝업 이벤트를 보낸다.
+event_publish = ["com.tasty.markdown.large_file_confirm"]
+# WebView에는 set_context가 오지 않으므로 테마·단축키 변경 이벤트로 문서를 다시 만든다.
+# 공통 새로고침 신호로 자기 문서의 파일이나 원격 원문을 다시 읽는다.
+event_subscribe = ["theme.changed", "command.host_shortcut_changed", "surface.refresh_requested"]
+lang_dir = "lang"
+
+[entry]
+type = "process"
+command = "tasty-plugin-markdown"
+
+# 플러그인이 생성한 HTML을 호스트 WebView가 표시한다. 팝업은 egui-mesh를 사용한다.
+[[surface_kinds]]
+kind = "markdown"
+display_name_i18n_key = "surface.kind.markdown"
+icon = "markdown"
+rendering = "webview"
+# 줌은 WebView 설정을 조절한다. 선택 텍스트 복사는 WebView가 처리한다.
+zoomable = true
+# file_path로 들어온 인자도 file로 받는다.
+param_aliases = { file_path = "file" }
+# 파일 이름으로 탭 이름을 정한다.
+name_from_param = "file"
+# 열었던 파일을 최근 목록에 기록한다. 주소창 후보는 recent.query로 조회한다.
+records_recent = true
+# 변환 전에 파일 경로를 받도록 파일 열기 팝업을 지정한다.
+convert_requires_input = true
+convert_input_popup = "file-open"
+
+# 문서는 plugin이 정화한 HTML이고 주소창·탐색 스크립트가 실행돼야 하므로 JS를 기본으로 켠다.
+# 설정 페이지에 이 항목은 없다. 사용자가 저장한 sandbox_scripts가 있으면 그 값이 우선한다.
+[surface_kinds.webview_defaults]
+sandbox_scripts = false
+
+# 프리셋 편집기가 이 kind 를 편집할 때 노출할 필드. 작업 디렉토리 대신 파일 경로를
+# 입력받고, 적용 시 그 파일의 폴더를 cwd 로 파생한다(derive_cwd).
+[[surface_kinds.preset_fields]]
+id = "file"
+label_key = "preset.field.file"
+param_key = "file"
+input_type = "file_path"
+required = true
+placeholder_key = "preset.field.file_hint"
+derive_cwd = true
+
+# 종류별 기본 색.
+[surface_kinds.default_colors]
+focused_bg = "#000000"   # mocha.toml [surfaces.markdown] 와 lockstep
+focused_fg = "#cdd6f4"
+unfocused_bg = "#1e1e2e"
+unfocused_fg = "#a6adc8"
+
+[[contributes.ipc_namespace]]
+prefix = "markdown"
+description_i18n_key = "markdown.namespace.desc"
+
+# 크기 확인 이벤트로 여는 팝업. 콘텐츠는 플러그인, 외곽과 닫기는 호스트가 처리한다.
+# 이벤트가 가리키는 이 플러그인의 surface 영역 가운데에 뜬다.
+[[contributes.popup]]
+id = "large-file-confirm"
+trigger = { kind = "event", event_key = "com.tasty.markdown.large_file_confirm" }
+rendering = "egui-mesh"
+size_hint = { width = 360, height = 150 }
+anchor = "screen-center"
+scope = "surface"
+dismiss_on_outside_click = true
+
+# 파일 열기 팝업. 대상 surface가 있으면 그 자리에서 변환하고 없으면 새 탭을 연다.
+# 파일 선택은 호스트 피커에 요청한다. surface 범위로 열면 해당 영역에 배치하며
+# 대상을 알 수 없는 이벤트 경로에서는 창 범위로 연다.
+[[contributes.popup]]
+id = "file-open"
+trigger = { kind = "event", event_key = "com.tasty.markdown.file_open" }
+rendering = "egui-mesh"
+size_hint = { width = 420, height = 170 }
+anchor = "screen-center"
+scope = "surface"
+dismiss_on_outside_click = true
+
+[[contributes.detector]]
+id = "markdown"
+display_name_i18n_key = "file_handler.format.markdown"
+[[contributes.detector.rule]]
+kind = "extension"
+values = ["md", "markdown"]
+
+[[contributes.handler]]
+id = "viewer"
+detector = "markdown"
+priority = 50
+display_name_i18n_key = "file_handler.host.markdown-viewer"
+[contributes.handler.action]
+kind = "open_surface"
+surface_kind = "markdown"
+param_key = "file"
+
+[[contributes.cli]]
+name = "markdown"
+help_group = "files"
+description = "Markdown viewer commands"
+description_i18n_key = "markdown.cli.desc"
+subcommands = [
+    { name = "reload", ipc_method = "markdown.reload", args = "reload_args", description = "Reload the local file or request the remote document again", description_i18n_key = "markdown.cli.sub.reload.description" },
+    { name = "recent", ipc_method = "markdown.recent", args = "recent_args", description = "List recently opened markdown files (newest first, up to 10)", description_i18n_key = "markdown.cli.sub.recent.description" },
+]
+
+[contributes.cli.arg_groups.reload_args]
+flags = [
+    { name = "surface", type = "u32", flag = "--surface", required = true, help = "Target surface ID", help_i18n_key = "markdown.cli.arg.reload_args.surface.help" },
+]
+
+# 인자가 없어도 검증기가 참조할 빈 그룹은 선언한다.
+[contributes.cli.arg_groups.recent_args]
+flags = []
+
+[[contributes.settings_pages]]
+id = "markdown"
+title_key = "settings.subtab.markdown"
+category = "appearance"
+
+[[contributes.settings_pages.items]]
+kind = "font_override"
+id = "font"
+label_key = "settings.appearance.font_override"
+storage_key = "markdown"
+
+[[contributes.settings_pages.items]]
+kind = "toggle"
+id = "allow_remote"
+label_key = "markdown.settings.allow_remote"
+storage_key = "allow_remote_content"
+default = false

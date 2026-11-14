@@ -1,0 +1,35 @@
+manifest_version = 1
+id = "com.tasty.git-viewer"
+name = "Git Viewer"
+version = "0.2.0"
+description = "Read-only git status / log / diff popup"
+api_version = "1"
+permissions = ["ui.popup", "ui.tool_item", "fs.read"]
+lang_dir = "lang"
+
+[entry]
+type = "process"
+command = "tasty-plugin-git-viewer"
+
+[[contributes.popup]]
+id = "viewer"
+trigger = { kind = "ipc" }
+# 내용은 플러그인이 mesh로 보내고 팝업 외곽은 호스트가 그린다.
+rendering = "egui-mesh"
+size_hint = { width = 960, height = 640 }
+anchor = "screen-center"
+dismiss_on_outside_click = true
+
+[[contributes.tool]]
+id = "open-viewer"
+label_i18n_key = "git_viewer.tools_menu_item"
+action = { kind = "open_popup", popup_id = "com.tasty.git-viewer/viewer" }
+order_hint = 130
+
+# Tools 메뉴와 같은 팝업을 연다. 기본 단축키 없이 사용자가 직접 지정한다.
+[[contributes.commands]]
+id = "open_viewer"
+title_i18n_key = "git_viewer.command.open_viewer"
+binding_mode = "independent"
+scope = "global"
+action = { kind = "open_popup", popup_id = "com.tasty.git-viewer/viewer" }

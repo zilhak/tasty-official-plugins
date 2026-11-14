@@ -1,0 +1,79 @@
+manifest_version = 1
+id = "com.tasty.agent-stream"
+name = "Agent Stream"
+version = "0.2.0"
+description = "Tails AI agent session transcripts and normalizes them into structured stream events"
+api_version = "1"
+# 배포 번들에는 포함하지 않는다(docs/plugins/agent-stream/index.md). 대화 기록을 네트워크로 내보낼 수 있어 재검토가 필요하다.
+# 개발 번들 동기화는 이 플래그와 별개다. 웹훅의 순차 요청 등록은 사용자가 따로 구성한다.
+bundle = false
+permissions = [
+    # surface.meta.get(claude-session-id 조회) · surface.locate(대상 생존 확인).
+    "surface.read",
+    # 대화 기록 파일 읽기. 프로세스의 직접 파일 접근을 호스트 권한 검사가 막지는 않는다.
+    "fs.read",
+    # 재시작 복구를 위한 데이터 디렉터리의 watches.json 저장.
+    "fs.write",
+    # SSE 엔드포인트가 TCP 포트를 연다(`agent_stream.serve`). 기본 bind 는 loopback 이고,
+    # 그보다 넓은 주소는 토큰 없이는 거부한다 — docs/plugins/agent-stream/index.md#sse-엔드포인트.
+    "network",
+]
+lang_dir = "lang"
+
+[entry]
+type = "process"
+command = "tasty-plugin-agent-stream"
+
+[[contributes.ipc_namespace]]
+prefix = "agent_stream"
+
+[[contributes.cli]]
+name = "agent-stream"
+help_group = "agents"
+description = "Tail an AI agent session transcript and read normalized stream events"
+description_i18n_key = "agent_stream.cli.desc"
+subcommands = [
+    { name = "watch",   ipc_method = "agent_stream.watch",   args = "watch_args",   description = "Start reading the agent session transcript for a surface. The session ID must be present in surface metadata.", description_i18n_key = "agent_stream.cli.sub.watch.description" },
+    { name = "turn-start", ipc_method = "agent_stream.turn_start", args = "turn_start_args", description = "Open a turn on a watched surface and tag its events with the caller's request_id. In a webhook IpcSequence, call this before claude.tell. Rejects unwatched surfaces and overlapping turns.", description_i18n_key = "agent_stream.cli.sub.turn-start.description" },
+    { name = "unwatch", ipc_method = "agent_stream.unwatch", args = "unwatch_args", description = "Stop tailing a surface. Emits a final turn_end{reason=stream:unwatched} event.", description_i18n_key = "agent_stream.cli.sub.unwatch.description" },
+    { name = "list",    ipc_method = "agent_stream.list",    args = "no_args",      description = "List every surface currently being tailed with its session id, transcript path, byte offset and status", description_i18n_key = "agent_stream.cli.sub.list.description" },
+    { name = "poll",    ipc_method = "agent_stream.poll",    args = "poll_args",    description = "Read collected stream events by sequence cursor (non-destructive). Events are text / thinking / tool_use / turn_end.", description_i18n_key = "agent_stream.cli.sub.poll.description" },
+    { name = "serve",      ipc_method = "agent_stream.serve",      args = "serve_args", description = "Open the SSE endpoint (GET /events) so an external consumer can subscribe. The port is required — there is no automatic fallback. Calling it again rebinds with the new settings.", description_i18n_key = "agent_stream.cli.sub.serve.description" },
+    { name = "serve-stop", ipc_method = "agent_stream.serve_stop", args = "no_args",    description = "Close the SSE endpoint and end every open subscription", description_i18n_key = "agent_stream.cli.sub.serve-stop.description" },
+    { name = "serve-info", ipc_method = "agent_stream.serve_info", args = "no_args",    description = "Report endpoint status and counters for each subscriber. The token is never included.", description_i18n_key = "agent_stream.cli.sub.serve-info.description" },
+]
+
+[contributes.cli.arg_groups.watch_args]
+flags = [
+    { name = "surface",    type = "u32",  flag = "--surface",    required = false, help = "Surface ID running the agent (defaults to caller's TASTY_SURFACE_ID)", help_i18n_key = "agent_stream.cli.arg.watch_args.surface.help" },
+    { name = "from_start", type = "bool", flag = "--from-start", required = false, help = "Replay the transcript from byte 0 instead of starting at the current end of file", help_i18n_key = "agent_stream.cli.arg.watch_args.from_start.help" },
+]
+
+[contributes.cli.arg_groups.unwatch_args]
+flags = [
+    { name = "surface", type = "u32", flag = "--surface", required = false, help = "Surface ID to stop tailing (defaults to caller's TASTY_SURFACE_ID)", help_i18n_key = "agent_stream.cli.arg.unwatch_args.surface.help" },
+]
+
+[contributes.cli.arg_groups.turn_start_args]
+flags = [
+    { name = "surface",      type = "u32",    flag = "--surface",      required = false, help = "Surface running the agent whose turn to open (defaults to caller's TASTY_SURFACE_ID). Must already be watched.", help_i18n_key = "agent_stream.cli.arg.turn_start_args.surface.help" },
+    { name = "request_id",   type = "string", flag = "--request-id",   required = true,  help = "Caller-provided ID attached as request_id to each event in this turn, so the receiving application can match events to requests.", help_i18n_key = "agent_stream.cli.arg.turn_start_args.request_id.help" },
+    { name = "timeout_secs", type = "u32",    flag = "--timeout-secs", required = false, help = "Idle timeout for this turn in seconds (default 600, range 10-86400). If no event and no turn_end arrive for this long, the turn is closed with turn_end{reason=stream:turn_timeout}.", help_i18n_key = "agent_stream.cli.arg.turn_start_args.timeout_secs.help" },
+]
+
+[contributes.cli.arg_groups.poll_args]
+flags = [
+    # surface라는 인자는 CLI가 자동으로 채우므로 선택적 필터에는 다른 이름을 쓴다.
+    { name = "filter_surface", type = "u32", flag = "--surface", required = false, help = "Only return events collected for this surface (no default — omitting it returns every watched surface)", help_i18n_key = "agent_stream.cli.arg.poll_args.filter_surface.help" },
+    { name = "after_seq", type = "i64", flag = "--after-seq", required = false, help = "Return events with seq strictly greater than this cursor (default: 0 = from the oldest buffered event)", help_i18n_key = "agent_stream.cli.arg.poll_args.after_seq.help" },
+    { name = "limit",     type = "u32", flag = "--limit",     required = false, help = "Maximum number of events to return (default 100, max 1000)", help_i18n_key = "agent_stream.cli.arg.poll_args.limit.help" },
+]
+
+[contributes.cli.arg_groups.serve_args]
+flags = [
+    { name = "port",  type = "u32",    flag = "--port",  required = true,  help = "TCP port to listen on. Required — the endpoint never picks a port by itself, so the address stays the same across restarts.", help_i18n_key = "agent_stream.cli.arg.serve_args.port.help" },
+    { name = "bind",  type = "string", flag = "--bind",  required = false, help = "Bind address (default 127.0.0.1). A non-loopback address is rejected unless --token is given.", help_i18n_key = "agent_stream.cli.arg.serve_args.bind.help" },
+    { name = "token", type = "string", flag = "--token", required = false, help = "Shared subscription token. Subscribers present it as 'Authorization: Bearer <token>' or '?token=<token>'. Omit for no authentication (loopback only).", help_i18n_key = "agent_stream.cli.arg.serve_args.token.help" },
+]
+
+[contributes.cli.arg_groups.no_args]

@@ -1,0 +1,31 @@
+[clipboard_viewer.tool]
+label = "クリップボードビューア"
+
+[clipboard_viewer.command]
+open_viewer = "クリップボードビューアを開く"
+
+[clipboard_viewer.popup]
+title = "クリップボードビューア"
+header = "クリップボード"
+snapshot_badge = "スナップショット"
+close = "閉じる"
+close_tooltip = "閉じる (Esc)"
+empty_title = "クリップボードは空です"
+empty_sub = "テキスト、画像、ファイルをコピーしてから再度開くと、ここにスナップショットが表示されます。"
+read_failed_title = "クリップボードを読み取れませんでした"
+read_failed_sub = "システムクリップボードのハンドルを開けませんでした。それを占有している可能性のある他のアプリを閉じてから開き直してください。"
+already_open_title = "クリップボードビューアは既に開いています"
+already_open_sub = "スナップショットウィンドウは一度に1つだけ実行されます — 既存のウィンドウを前面に表示しました。"
+image_no_preview = "インラインプレビューには対応していません"
+pretty_print = "整形して表示"
+html_meta_line = "{chars}文字 · {lines}行"
+html_meta_lines = "{chars}文字 · {lines}行"
+other_more_lines = "他 {n} 行"
+other_unrecognized_formats = "認識されないフォーマット {n} 件"
+
+[clipboard_viewer.type]
+text = "テキスト"
+files = "ファイル"
+image = "画像"
+html = "HTML"
+other = "その他"

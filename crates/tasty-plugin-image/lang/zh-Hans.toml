@@ -1,0 +1,101 @@
+[surface.kind]
+image = "图像"
+
+[image.cli]
+desc = "图像 Surface 查看器和绘图画布"
+
+[image.namespace]
+desc = "图像 Surface IPC 命名空间"
+
+[image_viewer]
+no_image = "未加载图像"
+prev = "上一张图像"
+next = "下一张图像"
+refresh = "刷新"
+edit = "编辑"
+new_image = "新建图像"
+save = "保存"
+cancel = "取消"
+brush_size = "画笔："
+color = "颜色："
+new_image_title = "新建图像"
+width = "宽度："
+height = "高度："
+save_path_title = "另存为"
+save_path_placeholder = "路径/图像.png"
+browse = "使用 Tasty 文件选择器浏览…"
+undo = "撤销"
+redo = "重做"
+fit = "适应大小"
+zoom_in = "放大"
+zoom_out = "缩小"
+
+[image.state]
+missing = "未找到图像"
+missing_sub = "可能已被移动或删除。"
+permission = "权限被拒绝"
+permission_sub = "没有读取此文件的权限。"
+decode = "无法打开此图像"
+decode_sub = "文件已损坏或格式不受支持。"
+too_large = "图像过大，无法打开"
+too_large_sub = "单边超过 {} px，或解码所需内存超过 {}。"
+too_large_size = "{} × {} px"
+retry = "重试"
+
+[image.save_as]
+exists = "{} 已存在。使用其他名称保存 PNG。"
+
+[button]
+ok = "确定"
+cancel = "取消"
+save = "保存"
+
+# 프리셋 편집기 필드 라벨 (호스트가 t() 로 해석).
+[preset.field]
+file = "文件"
+file_hint = "图像文件路径"
+
+[image.cli.sub.open]
+description = "将 Surface 转换为图像种类并加载指定文件"
+
+[image.cli.sub.save]
+description = "将当前图像 Surface 以 PNG 格式保存到磁盘"
+
+[image.cli.sub.export]
+description = "将当前图像 Surface 导出到指定 PNG 路径"
+
+[image.cli.sub.next]
+description = "转到同一目录中的下一张图像"
+
+[image.cli.sub.prev]
+description = "转到同一目录中的上一张图像"
+
+[image.cli.sub.paste]
+description = "将剪贴板图像粘贴为浮动选区"
+
+[image.cli.sub.reload]
+description = "从磁盘重新读取文件（编辑会话处于活动状态时延后执行）"
+
+[image.cli.sub.list]
+description = "列出所有已打开的图像 Surface"
+
+[image.cli.arg.open_args.path]
+help = "要打开的图像文件路径"
+
+[image.cli.arg.open_args.surface]
+help = "目标 Surface ID"
+
+[image.cli.arg.save_args.surface]
+help = "目标 Surface ID"
+
+[image.cli.arg.save_args.path]
+help = "覆盖保存路径（默认使用 Surface 已打开文件的路径，并将扩展名改为 .png）"
+
+[image.cli.arg.export_args.path]
+help = "导出目标 PNG 文件路径"
+
+[image.cli.arg.export_args.surface]
+help = "目标 Surface ID"
+
+[image.cli.arg.nav_args.surface]
+help = "目标 Surface ID"

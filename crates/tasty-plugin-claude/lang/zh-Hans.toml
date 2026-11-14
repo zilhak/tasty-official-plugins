@@ -1,0 +1,571 @@
+[claude.cli]
+desc = "Claude Code CLI 集成（launch、spawn、kill 等）"
+
+[claude]
+"settings.spawn_child_warn_threshold" = "子数量警告阈值"
+"settings.no_output_notice_secs" = "子无输出时通知父之前的等待秒数"
+"settings.continue_checklist_round_limit" = "Gate 默认轮数上限（Gate 未设置时使用）"
+"settings.default_permission_mode" = "子会话的默认权限模式"
+"settings.auto_resume_enabled" = "临时 API 错误（服务器过载）后自动继续"
+"settings.auto_resume_delay_secs" = "继续前的等待秒数"
+"settings.auto_resume_max_attempts" = "放弃前连续自动继续的次数"
+"settings.permission_mode.inherit" = "继承（使用 Claude Code 自身的设置）"
+"settings.permission_mode.manual" = "每次询问（manual）"
+"settings.permission_mode.plan" = "仅规划（plan）"
+"settings.permission_mode.accept_edits" = "接受文件编辑（acceptEdits）"
+"settings.permission_mode.auto" = "自动（auto）"
+"settings.permission_mode.dont_ask" = "不询问（dontAsk）"
+"settings.permission_mode.bypass" = "绕过所有权限检查（bypassPermissions）"
+
+[claude.checklist]
+body = """
+结束本轮前，检查：
+1. 结果是否确实满足了请求，而不只是完成了最容易做的部分？
+2. 如果修改了代码或配置，是否实际验证过（构建/测试/运行），而不只是认为它能正常工作？
+3. 是否还有后续工作？如果有，说明具体内容。如果没有，明确说明。
+
+{{goal}}
+如果以上三项确实全部满足，在回复中任意位置包含原样字符串 [[TASTY-CHECKLIST-DONE]]。否则，继续工作。
+"""
+goal_clause = """
+本次会话设定的目标：{}
+根据该目标判断刚才描述的后续工作。如果其中有无需用户决策且可以自行完成的工作，不得在此停止，继续执行。如果剩余工作全部需要用户判断或超出目标范围，可以停止。
+"""
+no_data_dir = "插件数据目录不可用（宿主未注入 TASTY_PLUGIN_DATA_DIR）——无法启用或禁用检查清单"
+io_error = "检查清单标记 I/O 失败：{}"
+
+[claude.params]
+unowned_session_options = "缺少匹配的会话所有者或已保存的会话记录，无法恢复旧版 Claude 模型/推理强度选项。已保留现有恢复信息。"
+invalid_session_option = "会话选项无效：{}。使用非空字符串令牌，且不得以连字符开头或包含空白字符/控制字符。"
+invalid_effort = "effort 无效。允许的值：{}。"
+missing_surface_id = "缺少必需参数 'surface'（或 'surface_id'）"
+missing_surface_no_env = "缺少必需参数 'surface'（或 'surface_id'）（环境中也未设置 TASTY_SURFACE_ID）"
+target_surface_not_a_number = "目标 Surface 值无效：{}。使用 32 位无符号整数。超出范围的值会被拒绝，以免选中其他 Surface。"
+surface_conflict = "'surface' 和 'surface_id' 选择了不同目标（{}）。指定一个字段，或为两个字段使用相同的值。"
+missing_child_index = "缺少必需参数 'child'（或 'child_index'）"
+child_index_not_a_number = "'child' 值无效：{}。使用 32 位无符号整数。超出范围的值会被拒绝，以免选中其他子实例。"
+missing_text = "缺少必需参数 'text'"
+missing_message = "缺少必需参数 'message'"
+missing_caller_surface = "缺少必需参数 'caller_surface'"
+missing_target_surface = "缺少必需参数 'target_surface'"
+missing_command = "缺少必需参数 'command'"
+missing_name = "缺少必需参数 'name'"
+missing_file = "缺少必需参数 'file'"
+missing_body_file = "缺少必需参数 'body_file'"
+invalid_permission_mode = "'permission_mode' 无效：{}"
+permission_mode_conflicts_with_profile = "--permission-mode 不能与设置了 permissions.defaultMode 的配置档同时使用。选择一个权限模式来源。"
+
+[claude.hook]
+missing_event = "缺少必需参数 'event'"
+unknown_event = "未知的 Claude 钩子事件：'{}'"
+
+[claude.auto_resume]
+message = "上一轮因临时 API 错误而停止。从中断处继续。"
+limit_title = "Claude 自动恢复已停止"
+limit_body = "Surface {}：连续发生 {} 次 API 错误（{}），已停止恢复。检查会话并手动继续。"
+
+[claude.notify]
+done_message = "Surface {}：状态已变更（通过 {}）"
+remote_result_message = "Surface {0}：已存储本轮结果 {1}（{2}）。读取命令：tasty claude remote-results --id {1}"
+stop_failure_hint = " ——本轮因 API 错误（{}）而结束，正在等待输入"
+stalled_message = "Surface {}：发生错误后无输出——子实例似乎卡住了（仍处于活动状态，无完成信号）"
+stalled_no_error_message = "Surface {}：长时间无输出且无完成信号——子实例似乎卡住了（可能正在等待某个提示的输入，但该提示的钩子始终未送达）"
+stalled_background_wait_message = "Surface {}：已等待后台工作（{}）{} 分钟，期间无输出"
+stalled_background_task_quiet_message = "Surface {}：后台工作 {} 已有 {} 分钟未输出"
+stalled_hint = " 最近的错误：{}"
+stop_failure_background_message = "Surface {}：本轮因 API 错误（{}）而结束，但后台工作（{}）仍在运行，因此子实例继续等待"
+
+[claude.launch]
+workspace_create_missing_id = "宿主 workspace.create 响应缺少 'id'"
+
+[claude.codex]
+bad_context = "Codex 调用方上下文中没有有效的 thread_id。未创建子实例，也未使用其他父实例。"
+parent_failed = "无法通过 codex.parent 确定 Codex 父实例（Codex 插件是否已安装并启用？）：{}"
+parent_malformed = "codex.parent 返回了非预期响应：{}"
+parent_mismatch = "--surface {} 不是此 Codex 对话的父实例。省略 --surface；Codex 调用方的父实例会自动确定。"
+not_a_child = "Surface {} 不是此 Codex 对话的子实例。"
+route_not_saved = "无法保存结果返回位置：{}"
+child_route_not_saved = "已创建子 Surface {}，但无法保存其结果返回位置：{}"
+no_data_dir = "Claude 插件没有数据目录，无法将结果返回给 Codex 父实例。"
+ambiguous_workspace = "此 Codex 对话的子实例位于多个工作区（{}）。传入 --workspace 选择一个。"
+route_not_released = "Surface {} 仍将结果返回给 Codex 对话，且无法解除该路由，因此未发送指令：{}"
+
+[claude.remote]
+attach_child = "Surface {} 是已附加远程父实例的子实例。只有该父实例能通过其附加连接修改它。"
+attach_parent = "已附加远程父实例的子实例只能由该父实例通过其附加连接修改。"
+unsupported = "所附加服务器上的 Tasty 不支持远程子智能体。更新服务器上的 Tasty。未创建任何内容。"
+lookup_failed = "无法检查目标是否为已附加的远程工作区：{}"
+result_bad_id = "结果 ID 无效：{}（应为 16 个小写十六进制字符）"
+result_not_found = "没有已存储的远程结果 {}。可能已过期（保留 7 天）或从未送达；运行不带 --id 的 tasty claude remote-results 列出结果。"
+outcome_unknown = "服务器上的执行结果未知（{}）。子实例可能已存在，也可能不存在。重试前使用 children 检查。"
+path_not_absolute = "{} {} 不是绝对路径。对于已附加远程工作区中的子实例，指定远程计算机上的绝对路径。"
+path_missing = "{} {} 在运行子实例的远程计算机上不存在。"
+bind_failed = "已在服务器上创建子 Surface {}，但无法设置其完成报告位置（{}）。其通知尚未放行；{}"
+child_of_other_parent = "子 Surface {} 属于其他父实例（{}）。其结果只发送给创建它的父实例，因此未发送指令。为此父实例 Spawn 一个新的子实例。"
+child_without_owner = "子 Surface {} 没有结果所有者记录（创建时尚未引入所有者记录，或记录已丢失），因此未发送指令。Spawn 一个新的子实例。"
+child_closed = "子实例已关闭。"
+child_not_closed = "无法关闭子实例（{}）。使用 kill 关闭。"
+no_child = "服务器已运行 spawn，但未报告新的子实例：{}"
+commit_failed = "已创建子实例，但无法放行其通知（{}）。其完成通知仍保留在服务器上。"
+hooks_missing = "服务器上的 Claude Code 未安装 Tasty Stop 和 StopFailure 钩子，因此此子实例的完成状态可能始终无法报告。在服务器上运行 'tasty claude install'。"
+no_target = "请求未指定此附加父实例的子实例。"
+
+[claude.child]
+unknown_index = "父 Surface {1} 下没有索引为 {0} 的子实例（可用索引：{2}）"
+
+[claude.respawn]
+missing_child_surface_id = "宿主 terminal.respawn 响应缺少 'child_surface_id'：{}"
+
+[claude.spawn]
+missing_child_surface_id = "宿主 terminal.spawn 响应缺少 'child_surface_id'：{}"
+warning_threshold = "此父实例现在有 {} 个子实例，超过警告阈值（{}）。"
+warning_idle_children = " 索引为 {} 的空闲子实例可通过 respawn 复用，无需 Spawn 新的子实例。"
+warning_stale_children = " 最近一次前台查询发现索引为 {} 的子实例正在运行 Shell，但它们从未报告完成。考虑 respawn 前，检查其当前状态。"
+
+[claude.install]
+mod_failed = "无法安装通知模组：{}"
+no_home_dir = "无法确定主目录"
+settings_root_not_object = "~/.claude/settings.json 的根值不是 JSON 对象"
+hooks_not_object = "~/.claude/settings.json 的 'hooks' 键值不是 JSON 对象"
+hooks_event_not_array = "~/.claude/settings.json 的 'hooks.{}' 不是 JSON 数组"
+install_failed = "安装失败：{}"
+uninstall_failed = "卸载失败：{}"
+
+[claude.profile]
+no_data_dir = "插件数据目录不可用（宿主未注入 TASTY_PLUGIN_DATA_DIR）——无法注册或附加配置档"
+invalid_short_name = "'{}' 不是有效的配置档名称（仅允许小写字母、数字和 '-'，最多 32 个字符）"
+empty_names = "未指定配置档名称"
+unknown_profile = "没有名为 '{}' 的已注册配置档"
+not_attachable = "'{}' 是内置列表条目，无法按名称附加"
+gate_name_conflict = "'{}' 已是 Stop 钩子的 Gate 名称。选择其他名称，或使用 'claude gate-unregister {}' 移除。"
+source_not_readable = "无法读取配置档源 '{}'：{}"
+source_not_json_object = "配置档源 '{}' 不是 JSON 对象"
+io_error = "'{}'：{}"
+error_prefix = "配置档：{}"
+mutually_exclusive_file_and_profile = "--profile-file 和 --profile 互斥——只能指定一个"
+builtin_always_installed = "内置——始终安装（Claude Code 事件：{}）"
+builtin_always_installed_with_matcher = "内置——始终安装（Claude Code 事件：{}，匹配器：{}）"
+gate_attachable = "Stop 钩子的 Gate——可像已注册配置档一样按名称附加（参见 'claude gate-show <name>'）"
+
+[claude.gate]
+no_data_dir = "插件数据目录不可用（宿主未注入 TASTY_PLUGIN_DATA_DIR）——无法注册或注销 Gate"
+invalid_short_name = "'{}' 不是有效的 Gate 名称（仅允许小写字母、数字和 '-'，最多 32 个字符）"
+unknown_gate = "没有名为 '{}' 的已注册 Gate"
+body_not_readable = "无法读取 Gate 正文 '{}'：{}"
+body_missing_sentinel = "Gate 正文缺少完成标记 '{}'。将其包含在正文中，让模型知道完成时要输出什么；否则 Gate 只能在达到轮数上限时停止。"
+empty_sentinel = "完成标记不能为空：空值会匹配所有消息，导致第一轮就通过。"
+rounds_below_one = "--rounds 必须大于或等于 1"
+profile_name_conflict = "'{}' 已是会话配置档名称。选择其他名称，或使用 'claude profile-unregister {}' 将其移除。"
+io_error = "'{}'：{}"
+error_prefix = "gate: {}"
+
+[claude.profile_merge]
+not_an_object = "配置档 '{}' 的顶层值不是 JSON 对象"
+scalar_conflict = "配置档在 '{}' 处发生合并冲突：{} 与 {} —— 拒绝静默放宽权限"
+
+[claude.reboot]
+notice = "tasty claude reboot：此会话已由 tasty 的 Reboot 功能重新启动（claude -r 恢复同一会话）。上一轮可能已被中断——继续前先检查最后的工作状态。"
+malformed_session_id = "Surface {} 的 claude-session-id 元数据格式错误：{}"
+no_foreground_process = "无法确定 Surface {} 的前台进程"
+lock_poisoned = "Reboot 进行中状态锁已中毒：{}"
+already_in_progress = "Surface {} 已在执行 Reboot"
+spawn_thread_failed = "创建 Reboot 线程失败：{}"
+profile_file_not_readable = "无法读取配置档文件 '{}'：{}"
+profile_file_not_json = "配置档文件 '{}' 不是有效的 JSON：{}"
+no_active_session = "Surface {} 上没有活动的 Claude 会话（未设置 claude-session-id 元数据——是否已安装 tasty 钩子？运行 `tasty claude install`）"
+
+[settings.subtab]
+claude = "Claude Code"
+
+[claude.cli.sub.launch]
+description = "在新工作区中启动 Claude Code"
+
+[claude.cli.sub.spawn]
+description = "在工作区中 Spawn 一个子 Claude 实例。立即返回；子实例每次转为 idle/needs_input 时都会向调用方 Surface 发送通知，退出时再发送一次——不限于首次状态转换。"
+
+[claude.cli.sub.children]
+description = "列出指定 Claude 父实例的子实例"
+
+[claude.cli.sub.parent]
+description = "显示指定 Claude 子实例的父实例"
+
+[claude.cli.sub.state]
+description = "查询单个子实例的状态：idle、needs_input、active 或 exited（与实际存续的 Surface 交叉核对）"
+
+[claude.cli.sub.tell]
+description = "向 Claude 实例发送消息（支持多行，在末尾提交）。立即返回；目标每次转为 idle/needs_input 时都会向调用方 Surface 发送通知，退出时再发送一次——不限于首次状态转换。"
+
+[claude.cli.sub.broadcast]
+description = "向 Claude 父实例的所有子实例广播文本"
+
+[claude.cli.sub.kill]
+description = "按子实例索引终止 Claude 子实例"
+
+[claude.cli.sub.codex-returns]
+description = "列出以 Codex 为父实例、尚未能将轮次结果交给 Codex 插件的子实例轮次结果，同时显示接收方、正文和重试状态。--retry 将所有列出的结果重新排入立即发送的队列，包括已停止自动重试的结果，并立即返回，不等待发送。"
+
+[claude.cli.sub.remote-results]
+description = "列出远程附加子实例返回给 Surface 父实例（Claude 会话或 Shell）的轮次结果，或显示单个结果及其正文。每个结果均先存储，再将其 ID 写入父实例的完成日志；子实例关闭后结果仍保留。"
+
+[claude.cli.sub.respawn]
+description = "Respawn 一个 Claude 子实例"
+
+[claude.cli.sub.reboot]
+description = "重新启动 Surface 中的 Claude 实例并恢复同一会话（延迟终止 + claude -r）。将此调用作为一轮的最后一个操作——延迟结束后的所有操作都会被中断。"
+
+[claude.cli.sub.child-profile]
+description = "将持久化 Claude 会话配置档附加到子实例（将 --child 解析为其 Surface，然后在其上执行与 'claude reboot --profile' 相同的操作序列）。与 Reboot 不同，此操作不会中断调用方的当前轮次——仅重新启动子实例。子实例转为 idle/needs_input 时会向调用方 Surface 发送通知，退出时再发送一次。"
+
+[claude.cli.sub.install]
+description = "安装或更新 Tasty 钩子和受管理的 Claude 通知模组；保留现有用户钩子和插件路径。响应包含 installed 和 updated 钩子事件以及 mod_updated。"
+
+[claude.cli.sub.uninstall]
+description = "移除 Tasty 钩子以及受管理的通知模组路径和资源，保留其他用户设置。"
+
+[claude.cli.sub.hook]
+description = "Claude Code 钩子集成。由 Claude Code 钩子系统调用时，从 stdin 读取 JSON 载荷（session_id, cwd, prompt_id, message, notification_type, error, agent_id, background_tasks, tool_name, tool_response, prompt, source, reason, last_assistant_message）。同时防御性读取 waiting_on_background_work，尽管官方钩子文档和实际观测的载荷均未包含该字段。"
+
+[claude.cli.sub.checklist-hook]
+description = "Stop 钩子的 Gate 判定。从 stdin 读取 JSON 载荷（session_id, prompt_id, stop_hook_active, last_assistant_message）；--gate 选择用于判定的已注册 Gate（默认：continue-checklist）。"
+
+[claude.cli.sub.checklist-enable]
+description = "启用 Stop 钩子的 Gate（创建其启用标记）。默认为内置的 continue-checklist Gate。"
+
+[claude.cli.sub.checklist-disable]
+description = "禁用 Stop 钩子的 Gate（移除其启用标记）。即使已禁用也会成功。"
+
+[claude.cli.sub.checklist-status]
+description = "显示 Stop 钩子的 Gate 当前是否启用。使用 'claude gate-list' 一次查看所有 Gate 的启用或禁用状态。"
+
+[claude.cli.sub.notify-stop-failure]
+description = "内部使用：子实例的一轮因 API 错误结束，但仍因后台工作而等待时，向调用方的通知日志写入一行。如果该轮直接结束，则不写入任何内容，因为完成行已指明错误。用作 claude-stop-failure 的 hook.set 命令。"
+
+[claude.cli.sub.notify-error]
+description = "内部使用：子实例的输出长时间没有变化时，通知调用方该子实例可能已停滞。用作 claude-error-stalled 的 hook.set 命令。不更改子实例状态，也不移除或重新注册完成钩子。"
+
+[claude.cli.sub.notify-done]
+description = "内部使用：向调用方报告 spawn/tell 状态转换，并移除匹配的一次性钩子。如果仍能找到目标 Surface，则重新注册三个完成钩子。用作 claude-idle/needs-input/process-exit 的 hook.set 命令。"
+
+[claude.cli.sub.profile-register]
+description = "按名称注册 Claude 会话配置档（将文件复制到插件私有存储；重新注册同名配置档会更新其内容）"
+
+[claude.cli.sub.profile-unregister]
+description = "移除已注册的 Claude 会话配置档"
+
+[claude.cli.sub.profile-list]
+description = "列出所有可按名称附加的内容——已注册的 Claude 会话配置档和 Stop 钩子的 Gate——以及始终安装的内置钩子"
+
+[claude.cli.sub.profile-show]
+description = "显示按名称附加的内容——已注册 Claude 会话配置档的原始设置 JSON，或为 Gate 生成的 Stop 钩子片段"
+
+[claude.cli.sub.profile-current]
+description = "显示附加到 Surface 的 Claude 会话配置档（如有），以及始终安装的内置钩子"
+
+[claude.cli.sub.gate-register]
+description = "按名称注册 Stop 钩子的 Gate（将正文文件复制到插件私有存储；重新注册同名 Gate 会替换正文和定义）"
+
+[claude.cli.sub.gate-unregister]
+description = "移除已注册的 Stop 钩子 Gate（删除其定义和正文副本）"
+
+[claude.cli.sub.gate-list]
+description = "列出已注册及内置的 Stop 钩子 Gate，以及各 Gate 的实际生效标记、轮数上限和启用或禁用状态"
+
+[claude.cli.sub.gate-show]
+description = "显示 Stop 钩子 Gate 的定义和正文"
+
+[claude.cli.arg.launch_args.workspace]
+help = "要创建的工作区名称（默认为 \"claude\"）"
+
+[claude.cli.arg.launch_args.directory]
+help = "启动 claude 前通过 cd 切换到的工作目录"
+
+[claude.cli.arg.launch_args.task]
+help = "通过 --task <text> 传递给 claude 的初始任务"
+
+[claude.cli.arg.launch_args.profile_file]
+help = "启动 claude 时通过 --settings 注入的 Claude 会话配置档（设置 JSON）。与 --profile 互斥"
+
+[claude.cli.arg.launch_args.profile]
+help = "要附加的已注册 Claude 会话配置档或 Stop 钩子 Gate 名称，多个名称以逗号分隔（合并为一个文件——参见 'claude profile-register' 和 'claude gate-register'）。与 --profile-file 互斥"
+
+[claude.cli.arg.launch_args.permission_mode]
+help = "子实例权限模式：acceptEdits|auto|bypassPermissions|manual|dontAsk|plan。通过 --permission-mode 传递，并在本次调用中覆盖 default_permission_mode。省略时使用该插件设置；值为 inherit 或未设置时不添加标志，由 Claude Code 设置控制。显式指定的模式不能与设置 permissions.defaultMode 的 --profile/--profile-file 组合使用。"
+
+[claude.cli.arg.spawn_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.spawn_args.workspace]
+help = "目标工作区（ID 或名称）"
+
+[claude.cli.arg.spawn_args.pane]
+help = "目标窗格 ID（默认为工作区中的第一个窗格）"
+
+[claude.cli.arg.spawn_args.cwd]
+help = "Claude 子进程的工作目录"
+
+[claude.cli.arg.spawn_args.role]
+help = "附加到子实例的角色标签（供 broadcast --role 使用）"
+
+[claude.cli.arg.spawn_args.nickname]
+help = "标签页上显示的昵称"
+
+[claude.cli.arg.spawn_args.prompt]
+help = "Spawn 后发送给子实例的初始提示词"
+
+[claude.cli.arg.spawn_args.profile_file]
+help = "启动子实例时通过 --settings 注入的 Claude 会话配置档（设置 JSON）。与 --profile 互斥"
+
+[claude.cli.arg.spawn_args.profile]
+help = "要附加的已注册 Claude 会话配置档或 Stop 钩子 Gate 名称，多个名称以逗号分隔（合并为一个文件——参见 'claude profile-register' 和 'claude gate-register'）。与 --profile-file 互斥"
+
+[claude.cli.arg.spawn_args.permission_mode]
+help = "子实例权限模式：acceptEdits|auto|bypassPermissions|manual|dontAsk|plan。通过 --permission-mode 传递，并在本次调用中覆盖 default_permission_mode。省略时使用该插件设置；值为 inherit 或未设置时不添加标志，由 Claude Code 设置控制。显式指定的模式不能与设置 permissions.defaultMode 的 --profile/--profile-file 组合使用。"
+
+[claude.cli.arg.children_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.parent_args.surface]
+help = "要查询父 Surface 的子 Claude Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.state_args.surface]
+help = "要查询的子 Claude Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.tell_args.message]
+help = "要发送的消息文本。保留换行；消息自动提交。"
+
+[claude.cli.arg.tell_args.surface]
+help = "接收消息的目标 Claude Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.tell_args.caller_surface]
+help = "应接收完成通知的 Surface（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.notify_done_args.caller_surface]
+help = "发出 spawn/tell 命令且应接收通知的 Surface"
+
+[claude.cli.arg.notify_done_args.target_surface]
+help = "spawn/tell 刚完成的 Surface"
+
+[claude.cli.arg.notify_done_args.command]
+help = "已完成的命令：spawn 或 tell"
+
+[claude.cli.arg.notify_error_args.caller_surface]
+help = "发出 spawn/tell 命令且应接收通知的 Surface"
+
+[claude.cli.arg.notify_error_args.target_surface]
+help = "出错后停滞的子 Surface"
+
+[claude.cli.arg.broadcast_args.text]
+help = "要广播的文本。使用 \\r 提交（例如 \"hello\\r\"）"
+
+[claude.cli.arg.broadcast_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.broadcast_args.role]
+help = "仅发送给具有此角色标签的子实例"
+
+[claude.cli.arg.kill_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.kill_args.child_index]
+help = "要终止的子实例索引"
+
+[claude.cli.arg.respawn_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.respawn_args.child_index]
+help = "要执行 Respawn 的子实例索引"
+
+[claude.cli.arg.respawn_args.cwd]
+help = "覆盖经 Respawn 创建的进程的工作目录"
+
+[claude.cli.arg.respawn_args.role]
+help = "替换子实例的角色标签"
+
+[claude.cli.arg.respawn_args.nickname]
+help = "替换子实例的显示昵称"
+
+[claude.cli.arg.respawn_args.prompt]
+help = "发送给经 Respawn 创建的子实例的初始提示词"
+
+[claude.cli.arg.respawn_args.profile_file]
+help = "重新启动子实例时通过 --settings 注入的 Claude 会话配置档（设置 JSON）。与 --profile 互斥"
+
+[claude.cli.arg.respawn_args.profile]
+help = "要附加的已注册 Claude 会话配置档或 Stop 钩子 Gate 名称，多个名称以逗号分隔（合并为一个文件，参见 'claude profile-register' 和 'claude gate-register'）。与 --profile-file 互斥"
+
+[claude.cli.arg.respawn_args.permission_mode]
+help = "子实例权限模式：acceptEdits|auto|bypassPermissions|manual|dontAsk|plan。通过 --permission-mode 传递，并在本次调用中覆盖 default_permission_mode。省略时使用该插件设置；设为 inherit 或未设置时不添加标志，由 Claude Code 设置控制。显式指定的模式不能与设置了 permissions.defaultMode 的 --profile/--profile-file 同时使用。"
+
+[claude.cli.arg.reboot_args.surface]
+help = "目标 Claude Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.reboot_args.delay]
+help = "终止 Claude 前等待的秒数（默认：5）"
+
+[claude.cli.arg.reboot_args.prompt]
+help = "追加到发给重启后的 Claude 的 Reboot 通知提示词中的额外文本"
+
+[claude.cli.arg.reboot_args.profile_file]
+help = "恢复时通过 --settings 附加的 Claude 会话配置档（设置 JSON）。持久保存在 Surface 上，由后续 Reboot 继承，直到使用 --clear-profile 清除。与 --profile 互斥"
+
+[claude.cli.arg.reboot_args.profile]
+help = "要附加的已注册 Claude 会话配置档或 Stop 钩子 Gate 名称，多个名称以逗号分隔（合并为一个文件，参见 'claude profile-register' 和 'claude gate-register'）。持久保存在 Surface 上（后续每次 Reboot 都从注册表重新解析，因此会应用对配置档或 Gate 的修改），并持续继承，直到使用 --clear-profile 清除。与 --profile-file 互斥"
+
+[claude.cli.arg.codex_returns_args.retry]
+help = "将所有待发送结果重新排队以立即发送，包括已停止自动重试的结果。命令不等待发送，因此打印的列表是请求时的待发送列表"
+
+[claude.cli.arg.remote_results_args.id]
+help = "完成日志中的结果 ID。显示该结果及其正文；省略时列出已存储的结果，不含正文"
+
+[claude.cli.arg.children_args.format]
+help = "格式：table | json。默认值：table（父 ID 表）"
+
+[claude.cli.arg.children_args.workspace]
+help = "子实例所在的工作区（ID 或名称）。仅在从子实例分布于多个工作区的 Codex 对话中调用时使用"
+
+[claude.cli.arg.kill_args.workspace]
+help = "子实例所在的工作区（ID 或名称）。仅在从子实例分布于多个工作区的 Codex 对话中调用时使用"
+
+[claude.cli.arg.broadcast_args.workspace]
+help = "子实例所在的工作区（ID 或名称）。仅在从子实例分布于多个工作区的 Codex 对话中调用时使用"
+
+[claude.cli.arg.respawn_args.workspace]
+help = "子实例所在的工作区（ID 或名称）。仅在从子实例分布于多个工作区的 Codex 对话中调用时使用"
+
+[claude.cli.arg.reboot_args.clear_profile]
+help = "恢复前分离先前附加的会话配置档（通过路径或名称指定）"
+
+[claude.cli.arg.reboot_args.permission_mode]
+help = "子实例权限模式：acceptEdits|auto|bypassPermissions|manual|dontAsk|plan。通过 --permission-mode 传递，并在本次调用中覆盖 default_permission_mode。省略时使用该插件设置；设为 inherit 或未设置时不添加标志，由 Claude Code 设置控制。显式指定的模式不能与设置了 permissions.defaultMode 的 --profile/--profile-file 同时使用。"
+
+[claude.cli.arg.child_profile_args.surface]
+help = "父 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.child_profile_args.child_index]
+help = "要附加配置档的子实例索引（由 'claude children' 显示）"
+
+[claude.cli.arg.child_profile_args.delay]
+help = "终止子实例的 Claude 前等待的秒数（默认：5）"
+
+[claude.cli.arg.child_profile_args.prompt]
+help = "追加到发给重启后的子实例的 Reboot 通知提示词中的额外文本"
+
+[claude.cli.arg.child_profile_args.profile_file]
+help = "恢复时通过 --settings 附加到子 Surface 的 Claude 会话配置档（设置 JSON）。持久保存在子 Surface 上，由其后续 Reboot 继承，直到使用 --clear-profile 清除。与 --profile 互斥"
+
+[claude.cli.arg.child_profile_args.profile]
+help = "要附加到子 Surface 的已注册 Claude 会话配置档或 Stop 钩子 Gate 名称，多个名称以逗号分隔（合并为一个文件，参见 'claude profile-register' 和 'claude gate-register'）。持久保存在子 Surface 上（后续每次 Reboot 都从注册表重新解析），并持续继承，直到使用 --clear-profile 清除。与 --profile-file 互斥"
+
+[claude.cli.arg.child_profile_args.clear_profile]
+help = "恢复前分离子实例先前附加的会话配置档（通过路径或名称指定）"
+
+[claude.cli.arg.child_profile_args.permission_mode]
+help = "子实例权限模式：acceptEdits|auto|bypassPermissions|manual|dontAsk|plan。通过 --permission-mode 传递，并在本次调用中覆盖 default_permission_mode。省略时使用该插件设置；设为 inherit 或未设置时不添加标志，由 Claude Code 设置控制。显式指定的模式不能与设置了 permissions.defaultMode 的 --profile/--profile-file 同时使用。"
+
+[claude.cli.arg.hook_args.event]
+help = "钩子事件名称（例如 stop, stop-failure, notification, session-end, prompt-submit, session-start, subagent-stop, pre-tool-use, post-tool-use, background-start）"
+
+[claude.cli.arg.hook_args.surface]
+help = "钩子触发所针对的 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.hook_args.session]
+help = "Claude Code 会话 ID。Claude Code 调用钩子时，从 stdin JSON 的 'session_id' 自动填充。"
+
+[claude.cli.arg.hook_args.message]
+help = "钩子消息文本（用于提取通知令牌）。从 stdin JSON 的 'message' 自动填充。"
+
+[claude.cli.arg.hook_args.notification_type]
+help = "Claude Code 通知子类型（例如 permission_prompt, auth_success）。从 stdin JSON 的 'notification_type' 自动填充。决定通知将状态设为 needs_input、设为 active，还是保持不变。值缺失时设为 needs_input；值未列出时保持状态不变。"
+
+[claude.cli.arg.hook_args.error]
+help = "导致本轮结束的 API 错误种类（例如 overloaded, rate_limit, server_error, authentication_failed）。在 StopFailure 钩子中从 stdin JSON 的 'error' 自动填充。"
+
+[claude.cli.arg.hook_args.prompt_id]
+help = "Claude Code 提示词/轮次 ID。在 Stop 钩子中从 stdin JSON 的 'prompt_id' 自动填充。将此次 stop 与同一轮的 Stop 钩子 Gate 判定关联。"
+
+[claude.cli.arg.hook_args.agent_id]
+help = "钩子在子智能体内触发时的子智能体 ID（主线程中无此值）。从 stdin JSON 的 'agent_id' 自动填充。携带此值的 stop-failure 是子智能体的 API 错误，主轮次仍继续，因此忽略该事件。"
+
+[claude.cli.arg.hook_args.background_tasks]
+help = "仍附加到会话的后台任务，以 JSON 数组表示。在 Stop 钩子中从 stdin JSON 的 'background_tasks' 自动填充。若 stop 中存在状态不表示已结束的项（已结束状态为 completed, failed, cancelled, canceled, killed, stopped, error, done；状态未知或缺失视为未结束），则仅表示主响应结束，后台工作仍在继续，因此子实例保持活跃而不转为空闲。"
+
+[claude.cli.arg.hook_args.waiting_on_background_work]
+help = "会话是否在等待后台工作完成（\"true\"/\"false\"）。官方钩子文档（于 2026-09-28 核查）和已观测的 Claude Code 2.1.283 载荷中均无此字段；若收到，则从 stdin JSON 的 'waiting_on_background_work' 防御性读取，存在此值时使用它代替 --background-tasks 进行判定。"
+
+[claude.cli.arg.hook_args.tool_name]
+help = "background-start 事件中运行的工具。在 PostToolUse 中从 stdin JSON 的 'tool_name' 自动填充。Bash 和 Agent (Task) 可以启动后台工作。"
+
+[claude.cli.arg.hook_args.tool_response]
+help = "background-start 事件中的工具结果。在 PostToolUse 中从 stdin JSON 的 'tool_response' 自动填充。后台 Bash 命令携带 backgroundTaskId，后台 Agent 携带 agentId；插件记录这些值，以便在该工作仍在运行时收到 StopFailure 后，使子实例保持活跃。"
+
+[claude.cli.arg.hook_args.prompt]
+help = "提示词文本。在 UserPromptSubmit 中从 stdin JSON 的 'prompt' 自动填充。以 <task-notification> 开头的提示词通过 <task-id> 报告已结束的后台工作。"
+
+[claude.cli.arg.hook_args.source]
+help = "会话的启动方式（startup, resume, clear, compact, fork）。在 SessionStart 时从 stdin JSON 的 'source' 自动填充。通过 resume 重新打开的会话会记录恢复时使用的 --settings，以便统计其中的 Stop 钩子 Gate。"
+
+[claude.cli.arg.hook_args.cwd]
+help = "Claude 会话的工作目录。从 stdin JSON 的 'cwd' 自动填充。子实例等待后台工作时，插件使用此值和会话 ID，在 Claude Code 的临时文件夹中查找所等待任务的输出文件，并监测文件是否仍在增长。"
+
+[claude.cli.arg.hook_args.reason]
+help = "会话结束的原因（clear, resume, logout, prompt_input_exit, other）。在 SessionEnd 时从 stdin JSON 的 'reason' 自动填充。除 clear 和 resume 外的任何值都表示 Claude 进程已结束，因此会清除为其记录的设置。"
+
+[claude.cli.arg.hook_args.last_assistant_message]
+help = "助手在本轮的最终消息。在 Stop 钩子中从 stdin JSON 的 'last_assistant_message' 自动填充。当 Surface 运行 Tasty 智能体任务时，此消息会作为该轮的最终答案报告。"
+
+[claude.cli.arg.checklist_hook_args.surface]
+help = "触发 Gate 的目标 Surface ID，用于查找该会话的目标。默认为调用方的 TASTY_SURFACE_ID。"
+
+[claude.cli.arg.checklist_hook_args.session_id]
+help = "Claude Code 会话 ID。从 stdin JSON 的 'session_id' 自动填充。"
+
+[claude.cli.arg.checklist_hook_args.prompt_id]
+help = "Claude Code 提示词/轮次 ID——每个新用户轮次都会改变，在阻止结束后连续延长的轮次链中保持不变。从 stdin JSON 的 'prompt_id' 自动填充。"
+
+[claude.cli.arg.checklist_hook_args.stop_hook_active]
+help = "Claude Code 自身的 stop-hook-active 标志是否已设置（仅用于合理性检查，并非主要决策信号）。从 stdin JSON 的 'stop_hook_active'（\"true\"/\"false\"）自动填充。"
+
+[claude.cli.arg.checklist_hook_args.last_assistant_message]
+help = "助手的最后一条消息文本，用于搜索完成标记。从 stdin JSON 的 'last_assistant_message' 自动填充。"
+
+[claude.cli.arg.checklist_hook_args.block_cap]
+help = "Claude Code 连续阻止 Stop 钩子结束轮次的次数上限（CLAUDE_CODE_STOP_HOOK_BLOCK_CAP）。Gate 命令传入环境变量值；为空时使用默认值 8。达到上限的阻止操作不会延续轮次，因此会将子进程报告为空闲。"
+
+[claude.cli.arg.checklist_hook_args.gate]
+help = "Stop 钩子 Gate 的名称，此钩子根据其正文、完成标记和轮次上限进行判定（参见 'claude gate-register'）。默认为内置的 continue-checklist Gate。"
+
+[claude.cli.arg.checklist_gate_args.gate]
+help = "要启用/禁用/查询的 Stop 钩子 Gate 名称（参见 'claude gate-register'）。默认为内置的 continue-checklist Gate。"
+
+[claude.cli.arg.profile_register_args.name]
+help = "注册配置档的短名称（小写字母、数字、'-'，最多 32 个字符）"
+
+[claude.cli.arg.profile_register_args.file]
+help = "要注册的设置 JSON 文件路径（复制到插件专用存储）"
+
+[claude.cli.arg.profile_name_args.name]
+help = "已注册配置档的短名称"
+
+[claude.cli.arg.profile_current_args.surface]
+help = "要查询的 Surface ID（默认为调用方的 TASTY_SURFACE_ID）"
+
+[claude.cli.arg.gate_register_args.name]
+help = "注册 Gate 的短名称（小写字母、数字、'-'，最多 32 个字符）。与会话配置档名称共享同一命名空间——若另一方已存在同名项，则拒绝注册，不会静默遮蔽。"
+
+[claude.cli.arg.gate_register_args.body_file]
+help = "要注册的检查清单正文（Markdown）路径（复制到插件专用存储）。必须包含此 Gate 的有效完成标记，否则模型不会获知如何声明完成。"
+
+[claude.cli.arg.gate_register_args.sentinel]
+help = "模型结束轮次时必须输出的完成标记。默认为内置标记。不得为空（空标记会匹配所有消息）。"
+
+[claude.cli.arg.gate_register_args.rounds]
+help = "此 Gate 的兜底轮次上限（大于或等于 1）。省略时使用插件设置 'continue-checklist round limit'。"
+
+[claude.cli.arg.gate_name_args.name]
+help = "已注册 Gate 的短名称"
+
+[claude.cli.arg.spawn_args.model]
+help = "仅用于此子会话的模型（别名、完整 ID 或提供商标识符）。覆盖配置档的模型设置而不修改配置档；恢复同一会话时保留。省略时使用 Claude 默认值。"
+
+[claude.cli.arg.spawn_args.effort]
+help = "仅用于此子会话的推理强度：low|medium|high|xhigh|max|ultracode。覆盖配置档的推理强度设置而不修改配置档；恢复同一会话时保留。可用性取决于 Claude CLI 和模型。"

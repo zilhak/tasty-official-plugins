@@ -1,0 +1,39 @@
+[surface.kind]
+html = "HTML"
+
+[html]
+"namespace.desc" = "HTML 查看器 Surface 命名空间"
+"cli.desc" = "HTML 查看器命令"
+"settings.zoom" = "默认缩放"
+"settings.zoom_suffix" = "%"
+"settings.color_scheme" = "配色方案"
+"settings.allow_remote" = "允许远程内容"
+"settings.sandbox" = "在沙箱中运行脚本"
+"settings.note" = "控制内置 HTML 查看器如何渲染从终端打开的预览。默认阻止远程内容。"
+"settings.scheme.follow" = "跟随主题"
+"settings.scheme.light" = "浅色"
+"settings.scheme.dark" = "深色"
+
+# 파일 핸들러 표시명 (호스트가 t() 로 해석).
+[file_handler.host]
+"svg-viewer" = "SVG 查看器"
+
+[settings.subtab]
+html = "HTML"
+
+# 프리셋 편집기 필드 라벨 (호스트가 t() 로 해석).
+[preset.field]
+url = "URL"
+url_hint = "https://…"
+
+[html.cli]
+desc = "HTML 查看器命令"
+
+[html.cli.sub.open]
+description = "设置现有 HTML Surface 的 URL"
+
+[html.cli.arg.open_args.url]
+help = "URL（http://、https:// 或 file://）或本地文件路径。相对路径以当前目录为基准解析。"
+
+[html.cli.arg.open_args.surface]
+help = "目标 HTML Surface ID（默认为调用方的 TASTY_SURFACE_ID）"

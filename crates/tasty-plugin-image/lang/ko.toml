@@ -1,0 +1,101 @@
+[surface.kind]
+image = "이미지"
+
+[image.cli]
+desc = "이미지 서피스 뷰어 및 그리기 캔버스"
+
+[image.namespace]
+desc = "Image surface IPC 네임스페이스"
+
+[image_viewer]
+no_image = "로드된 이미지 없음"
+prev = "이전 이미지"
+next = "다음 이미지"
+refresh = "새로고침"
+edit = "편집"
+new_image = "새 이미지"
+save = "저장"
+cancel = "취소"
+brush_size = "굵기:"
+color = "색상:"
+new_image_title = "새 이미지"
+width = "너비:"
+height = "높이:"
+save_path_title = "다른 이름으로 저장"
+save_path_placeholder = "경로/이미지.png"
+browse = "Tasty 파일 선택 창에서 찾아보기…"
+undo = "실행 취소"
+redo = "다시 실행"
+fit = "맞춤"
+zoom_in = "확대"
+zoom_out = "축소"
+
+[image.state]
+missing = "이미지를 찾을 수 없습니다"
+missing_sub = "이동했거나 삭제되었을 수 있습니다."
+permission = "권한이 없습니다"
+permission_sub = "이 파일을 읽을 권한이 없습니다."
+decode = "이미지를 열 수 없습니다"
+decode_sub = "파일이 손상되었거나 지원하지 않는 형식입니다."
+too_large = "이미지가 너무 커서 열 수 없습니다"
+too_large_sub = "한 변이 {}\u00A0px를 넘거나 디코딩에 {}보다 많은 메모리가 필요합니다."
+too_large_size = "{} × {}\u00A0px"
+retry = "다시 시도"
+
+[image.save_as]
+exists = "{} 파일이 이미 있습니다. 다른 이름으로 PNG를 저장하세요."
+
+[button]
+ok = "확인"
+cancel = "취소"
+save = "저장"
+
+# 프리셋 편집기 필드 라벨 (호스트가 t() 로 해석).
+[preset.field]
+file = "파일"
+file_hint = "이미지 파일 경로"
+
+[image.cli.sub.open]
+description = "서피스를 이미지 종류로 변환하고 지정 파일 로드"
+
+[image.cli.sub.save]
+description = "현재 이미지 서피스를 디스크에 PNG로 저장"
+
+[image.cli.sub.export]
+description = "현재 이미지 서피스를 지정 PNG 경로로 내보내기"
+
+[image.cli.sub.next]
+description = "같은 디렉터리의 다음 이미지로 이동"
+
+[image.cli.sub.prev]
+description = "같은 디렉터리의 이전 이미지로 이동"
+
+[image.cli.sub.paste]
+description = "클립보드 이미지를 떠 있는 선택 영역으로 붙여넣기"
+
+[image.cli.sub.reload]
+description = "디스크에서 파일 다시 읽기(편집 세션 중이면 연기)"
+
+[image.cli.sub.list]
+description = "열린 이미지 서피스 모두 나열"
+
+[image.cli.arg.open_args.path]
+help = "열 이미지 파일 경로"
+
+[image.cli.arg.open_args.surface]
+help = "대상 서피스 ID"
+
+[image.cli.arg.save_args.surface]
+help = "대상 서피스 ID"
+
+[image.cli.arg.save_args.path]
+help = "저장 경로 재정의(기본값: 서피스에서 연 파일의 확장자를 .png로 변경)"
+
+[image.cli.arg.export_args.path]
+help = "내보낼 PNG 파일 경로"
+
+[image.cli.arg.export_args.surface]
+help = "대상 서피스 ID"
+
+[image.cli.arg.nav_args.surface]
+help = "대상 서피스 ID"

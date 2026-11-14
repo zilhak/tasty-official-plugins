@@ -1,0 +1,36 @@
+manifest_version = 1
+id = "com.tasty.clipboard-viewer"
+name = "Clipboard Viewer"
+version = "0.2.0"
+description = "Read-only viewer of the current system clipboard"
+api_version = "1"
+# 클립보드를 직접 읽으므로 호스트의 권한 검사를 거치지 않는다. 사용 목적의 선언으로 남긴다.
+permissions = ["clipboard.read", "ui.popup", "ui.tool_item"]
+lang_dir = "lang"
+
+[entry]
+type = "process"
+command = "tasty-plugin-clipboard-viewer"
+
+[[contributes.popup]]
+id = "viewer"
+trigger = { kind = "ipc" }
+rendering = "egui-mesh"
+size_hint = { width = 480, height = 360 }
+anchor = "screen-center"
+dismiss_on_outside_click = true
+
+[[contributes.tool]]
+id = "open-viewer"
+label_i18n_key = "clipboard_viewer.tool.label"
+action = { kind = "open_popup", popup_id = "com.tasty.clipboard-viewer/viewer" }
+order_hint = 100
+
+# Tools 메뉴와 같은 팝업을 여는 독립 단축키.
+[[contributes.commands]]
+id = "open_viewer"
+title_i18n_key = "clipboard_viewer.command.open_viewer"
+default_keybinding = "ctrl+shift+h"
+binding_mode = "independent"
+scope = "global"
+action = { kind = "open_popup", popup_id = "com.tasty.clipboard-viewer/viewer" }
