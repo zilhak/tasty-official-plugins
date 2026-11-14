@@ -164,6 +164,11 @@ jobs:
         run: scripts/check.sh lint
       - name: test (lib, bins)
         run: scripts/check.sh test --lib --bins --no-fail-fast
+      # The source checks on the plugin crates are integration tests, so the --lib --bins
+      # run above leaves them out. tasty ran them on Windows too. They read the sources
+      # as text and run no shell scripts.
+      - name: test (plugin-guards)
+        run: cargo test --locked -p plugin-guards
 
       # The repo-gates integration tests run the version-bump gate's shell scripts, so
       # macOS checks them with the BSD tools. Windows does not run them.
