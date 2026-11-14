@@ -175,6 +175,10 @@ this crate only.
   call `install_locale_font_fallback`, and pass the face number from
   `locale_font_face_from_env`, and no file under `crates/` repeats the system CJK font
   names that tasty keeps in one place.
+- `webkit_named_tests`: each markdown WebKitGTK test file holds one `#[ignore]` test,
+  and an automatic workflow job runs it by its full name with
+  `-p tasty-plugin-markdown`, `--ignored`, and `--exact`, so a renamed test cannot pass
+  with `0 passed`.
 
 The checks that walk the sources fail when they find fewer files or plugins than a floor
 measured in this repository, so an empty walk does not pass.

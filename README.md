@@ -57,7 +57,8 @@ The `pin` tests (`crates/plugin-pin-check/tests/pin.rs`) fail if the tasty entri
 different revs, if a tasty crate in `Cargo.lock` comes from another source, if a plugin
 crate is not a local workspace crate, or if a plugin manifest version differs from its
 crate version. They also fail if a crate of the egui family locks other versions than
-the tasty `Cargo.lock` at the pin, or if `egui` or `epaint` is not locked.
+the tasty `Cargo.lock` at the pin, or if `egui` or `epaint` is not locked, and if a
+plugin's `PLUGIN_ID` constant differs from the id in its manifest or is missing.
 
 ## What is built
 
