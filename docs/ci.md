@@ -179,6 +179,11 @@ this crate only.
   and an automatic workflow job runs it by its full name with
   `-p tasty-plugin-markdown`, `--ignored`, and `--exact`, so a renamed test cannot pass
   with `0 passed`.
+- `lang_parity`: each plugin's `lang/<code>.toml` has the keys and placeholder slots of
+  `en.toml`, and a value equal to English is allowlisted. Keys still waiting for a
+  translation are listed in the test. The literal keys passed to `t`, `t_args`, `t_fmt`,
+  `t_fmt2`, `t_fmt_fit`, and `t_replace` in the shipped plugin code exist in a plugin
+  catalog, and each catalog key is used in Rust or TOML or listed as an orphan.
 
 The checks that walk the sources fail when they find fewer files or plugins than a floor
 measured in this repository, so an empty walk does not pass.
