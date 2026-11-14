@@ -1603,9 +1603,11 @@ EOF2
             # could spell a uses key another way stop the check too (Y): an explicit key (?), a
             # double-quoted key with a backslash escape, a merge key (<<), a key or an item that
             # starts with a tag (!), an anchor (&), an alias (*), or a flow collection ({ [),
-            # and a value that starts with one of these. A one-line flow sequence of plain
-            # words ([self-hosted, Linux, X64]) cannot hold a key and passes. The body of a block
-            # scalar (run: |) and the rest of a quoted scalar over several lines are data.
+            # and a value that starts with one of these, and a quote in the place of a key (at
+            # the start of a line or after "- ") that the line does not close. A one-line flow
+            # sequence of plain words ([self-hosted, Linux, X64]) cannot hold a key and passes.
+            # The body of a block scalar (run: |) and the rest of a quoted value over several
+            # lines are data.
             awk '
                 function lead(t) { match(t, /^ */); return RLENGTH }
                 # The position of the quote that ends the quoted scalar at the start of t, or 0.
@@ -1635,7 +1637,8 @@ EOF2
                     # The key: a quoted scalar or plain text, followed by ": " or a final ":".
                     if (r ~ /^["\047]/) {
                         e = qend(r)
-                        if (e == 0) { mq = substr(r, 1, 1); next }
+                        # A quote in the place of a key that the line does not close.
+                        if (e == 0) { y(); next }
                         v = substr(r, e + 1)
                         if (v !~ /^[[:space:]]*:([[:space:]]|$)/) next
                         key = substr(r, 1, e); sub(/^[[:space:]]*:/, "", v)
@@ -1668,7 +1671,7 @@ EOF2
 $(sed -n "s/^U$TAB//p" "$WORK/structure.uses")"
             fi
             if [ -s "$WORK/structure.uses" ]; then
-                die "a job that builds the archives in $path uses a YAML form the gate does not read (an explicit ? key, a double-quoted key with a backslash escape, a merge key, a tag, an anchor, an alias, or a flow collection), which could spell a uses: key another way; judge the plugin versions by hand:
+                die "a job that builds the archives in $path uses a YAML form the gate does not read (an explicit ? key, a double-quoted key with a backslash escape, a merge key, a tag, an anchor, an alias, a flow collection, or a quote in the place of a key that its line does not close), which could spell a uses: key another way; judge the plugin versions by hand:
 $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             fi
             continue

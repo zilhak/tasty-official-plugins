@@ -3448,6 +3448,8 @@ fn a_package_job_action_not_written_as_owner_repo_at_ref_is_undecidable() {
         "      - uses: |\n          actions/cache@v4\n",
         "      - uses: docker://alpine:3.20\n",
         "      - name: x\n        uses: ../other/action@v1\n",
+        "      - \"uses\": ./.github/actions/x\n",
+        "      - 'uses': ./.github/actions/x\n",
     ] {
         let f = ArchiveFixture::new();
         f.edit(
@@ -3504,6 +3506,8 @@ fn yaml_forms_that_hide_a_uses_key_in_the_package_job_are_undecidable() {
         "      - name: x\n        uses: &u actions/cache@v4\n",
         "      - !!str uses: ./.github/actions/x\n",
         "      - <<: m\n        run: echo x\n",
+        "      - name: x\n        run: echo a\n          'b\n      - uses: actions/cache@v4\n",
+        "      - \"a\n        b\": x\n",
         "      - name: x\n        !!str uses: ./.github/actions/x\n",
         "      - { uses: ./.github/actions/x }\n",
         "      - [a]\n",
