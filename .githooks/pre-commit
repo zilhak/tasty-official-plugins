@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Checks merge commits, formatting and plugin versions before a commit.
+# Install: bash scripts/dev-setup.sh. The checks: docs/branching.md.
+# Ported from tasty .githooks/pre-commit (M.1, A.2 and P.1 only).
+# The check functions run through the CHECKS array, which shellcheck does not follow.
+# shellcheck disable=SC2329
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+STAGED_ALL=$(git diff --cached --name-only --diff-filter=ACMR || true)
+STAGED_RS=$(printf '%s\n' "$STAGED_ALL" | grep -E '\.rs$' || true)
+
+red()    { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+yellow() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
+green()  { printf '\033[32m%s\033[0m\n' "$*"; }
+
+# ─
+# M.1  merge commits
+# Only back merges and promotions between develop, release and main. Same decision as pre-merge-commit.
+merge_commit_permitted() {
+    [ -f scripts/lib/merge-policy.sh ] || return 1
+    # shellcheck source=scripts/lib/merge-policy.sh
+    . scripts/lib/merge-policy.sh
+    merge_commit_allowed
+}
+if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 && ! merge_commit_permitted; then
+    red "✘ A merge commit cannot be made here. Use rebase and fast-forward merges."
+    echo
+    yellow "▸ History stays linear: changes land with rebase."
+    yellow "  Merge commits are only for back merges and promotions between develop, release and main."
+    yellow "  Abort the merge in progress and try again as follows."
+    echo
+    yellow "▸ Commands:"
+    yellow "    git merge --abort"
+    yellow "    git rebase <target-branch>       # on a conflict, check what both sides meant"
+    yellow "    # then, on the target branch"
+    yellow "    git merge --ff-only <work-branch>"
+    echo
+    exit 1
+fi
+
+FAIL=0
+fail() { red "  ✘ $*"; FAIL=1; }
+
+# ─
+# A.2  cargo fmt --check
+check_cargo_fmt() {
+    if [ -z "$STAGED_RS" ]; then return; fi
+    if ! cargo fmt --all --check 2>/dev/null; then
+        fail "[A.2 cargo fmt] The code is not formatted. Run \`cargo fmt --all\` and git add again."
+    fi
+}
+
+# ─
+# P.1  plugin versions follow plugin changes
+check_plugin_version_bump() {
+    local staged_any base rc ref
+    staged_any=$(git diff --cached --name-only --diff-filter=ACMRD || true)
+    if [ -z "$staged_any" ]; then return; fi
+
+    # A lane work tree can leave the bump to the merge step. A tree without the mode file checks as usual.
+    if [ -f scripts/lib/plugin-bump-mode.sh ]; then
+        # shellcheck source=scripts/lib/plugin-bump-mode.sh
+        . scripts/lib/plugin-bump-mode.sh
+        if [ "$(plugin_bump_mode)" = deferred ]; then
+            yellow "▸ [P.1] This work tree has tasty.pluginBump=deferred. Skipping the plugin version check."
+            yellow "    The merge step adds the bumps per commit with scripts/plugin-bump-fixup.sh."
+            return
+        fi
+    fi
+
+    # Compare with the merge base of develop. A clone without a local develop uses origin/develop.
+    base=""
+    for ref in develop origin/develop; do
+        base=$(git merge-base "$ref" HEAD 2>/dev/null || true)
+        [ -z "$base" ] || break
+    done
+    if [ -z "$base" ]; then
+        yellow "▸ [P.1] No merge base with develop or origin/develop. Comparing with HEAD."
+        base=HEAD
+    fi
+
+    set +e
+    bash scripts/check-plugin-version-bump.sh --staged --base "$base"
+    rc=$?
+    set -e
+    case "$rc" in
+        0) ;;
+        1) red "▸ [P.1] Plugin content changed but its version did not. Raise the versions listed above."
+           FAIL=1 ;;
+        *) # A failing check also stops the commit.
+           red "▸ [P.1] The version check could not decide (exit code $rc). Fix the cause shown above."
+           FAIL=1 ;;
+    esac
+}
+
+CHECKS=(
+    check_cargo_fmt
+    check_plugin_version_bump
+)
+
+defined=$(grep -cE '^check_[a-z_]+\(\) \{' "$0" || true)
+
+if [ "${#CHECKS[@]}" -eq 0 ] || [ "$defined" -eq 0 ]; then
+    red "▸ [hook] No checks are registered (${defined} functions, ${#CHECKS[@]} in the run list)."
+    red "    Check the CHECKS array and the check_* function definitions."
+    red "    The commit stops because the checks cannot run."
+    exit 1
+fi
+
+if [ "$defined" -ne "${#CHECKS[@]}" ]; then
+    red "▸ [hook] ${defined} check functions but ${#CHECKS[@]} entries in the run list."
+    if [ "$defined" -gt "${#CHECKS[@]}" ]; then
+        red "    Add the missing check functions to CHECKS."
+    else
+        red "    Check the function names in CHECKS."
+    fi
+    exit 1
+fi
+
+RAN=0
+for _check in "${CHECKS[@]}"; do
+    "$_check"
+    RAN=$((RAN + 1))
+done
+
+if [ "$FAIL" -ne 0 ]; then
+    echo >&2
+    red "✘ The pre-commit checks failed. Fix the items above and commit again."
+    exit 1
+fi
+
+green "✓ pre-commit checks passed ($RAN/$defined checks)"
+exit 0

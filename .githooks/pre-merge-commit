@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Blocks merge commits except back merges and promotions. Fast-forward merges do not run this hook.
+# A merge commit made with git commit after resolving a conflict is checked by M.1 in pre-commit
+# with the same decision. Allowed merges: docs/branching.md.
+# Install: bash scripts/dev-setup.sh
+# Ported from tasty .githooks/pre-merge-commit.
+set -e
+
+red()    { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+yellow() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Without the decision file every merge commit is blocked.
+if [ -f scripts/lib/merge-policy.sh ]; then
+    # shellcheck source=scripts/lib/merge-policy.sh
+    . scripts/lib/merge-policy.sh
+    if merge_commit_allowed; then
+        exit 0
+    fi
+fi
+
+red 'A merge commit cannot be made here. Use rebase and fast-forward merges.'
+yellow 'Merge commits are only for back merges and promotions between develop, release and main.'
+yellow 'Abort the merge in progress first:'
+yellow '    git merge --abort'
+yellow 'Then bring the target branch into the work branch:'
+yellow '    git rebase <target-branch>'
+yellow 'Switch to the target branch and merge the work branch:'
+yellow '    git merge --ff-only <work-branch>'
+yellow 'On a conflict, find out why both changes are needed and combine them.'
+yellow 'When unsure how to resolve it, git rebase --abort stops the rebase.'
+exit 1

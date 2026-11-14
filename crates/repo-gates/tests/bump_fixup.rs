@@ -815,3 +815,119 @@ fn mode_refuses_shared_scope_main_worktree_and_unknown_values() {
     assert!(r.output.starts_with("enforced|"), "{r:?}");
     assert!(r.output.contains("unknown value"), "{r:?}");
 }
+
+/// Runs the real pre-commit, with bash and cargo replaced by BASH_ENV functions that only
+/// record the calls.
+fn run_pre_commit(dir: &Path, version_rc: i32) -> (Run, String) {
+    let stub_dir = tempfile::tempdir().expect("temp dir");
+    let calls = stub_dir.path().join("calls");
+    let env_file = stub_dir.path().join("stubs.sh");
+    fs::write(
+        &env_file,
+        r#"
+bash() {
+    printf '%s\n' "$*" >> "$HOOK_CALLS"
+    case "$1" in
+        *check-plugin-version-bump.sh) return "$HOOK_VERSION_RC" ;;
+        *) return 0 ;;
+    esac
+}
+cargo() {
+    printf 'cargo %s\n' "$*" >> "$HOOK_CALLS"
+    return 0
+}
+"#,
+    )
+    .expect("write the stubs");
+    let out = git_env::command("bash")
+        .arg(repo_file(".githooks/pre-commit"))
+        .current_dir(dir)
+        .env("BASH_ENV", &env_file)
+        .env("HOOK_CALLS", &calls)
+        .env("HOOK_VERSION_RC", version_rc.to_string())
+        .output()
+        .expect("run pre-commit");
+    let run = Run {
+        code: out.status.code().unwrap_or(-1),
+        output: format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    };
+    (run, fs::read_to_string(&calls).unwrap_or_default())
+}
+
+/// The hook reads the mode decision from scripts/lib at the repository root, so the synthetic
+/// repository gets a copy.
+fn stage_plugin_change_with_mode_lib(dir: &Path) {
+    let lib = fs::read_to_string(repo_file("scripts/lib/plugin-bump-mode.sh")).expect("mode file");
+    write(dir, "scripts/lib/plugin-bump-mode.sh", &lib);
+    write(
+        dir,
+        "crates/tasty-plugin-alpha/assets/note.txt",
+        "changed asset\n",
+    );
+    git(dir, &["add", "-A"]);
+}
+
+#[test]
+fn pre_commit_skips_p1_in_a_deferred_lane_worktree() {
+    let tmp = seed();
+    let d = tmp.path();
+    let wt = with_linked_worktree(d);
+    git(
+        &wt,
+        &["config", "--worktree", "tasty.pluginBump", "deferred"],
+    );
+    stage_plugin_change_with_mode_lib(&wt);
+
+    // Even when the checker would report a violation (1), deferral mode does not call it.
+    let (r, calls) = run_pre_commit(&wt, 1);
+    assert_eq!(r.code, 0, "{r:?}\ncalls:\n{calls}");
+    assert!(
+        !calls.contains("check-plugin-version-bump.sh --staged"),
+        "{calls}"
+    );
+    assert!(r.output.contains("tasty.pluginBump=deferred"), "{r:?}");
+}
+
+#[test]
+fn pre_commit_still_enforces_p1_without_the_worktree_setting() {
+    let tmp = seed();
+    let d = tmp.path();
+    let wt = with_linked_worktree(d);
+    for dir in [d, wt.as_path()] {
+        stage_plugin_change_with_mode_lib(dir);
+        let (r, calls) = run_pre_commit(dir, 1);
+        assert_eq!(r.code, 1, "{r:?}\ncalls:\n{calls}");
+        assert!(
+            calls.contains("check-plugin-version-bump.sh --staged"),
+            "{calls}"
+        );
+        assert!(r.output.contains("[P.1]"), "{r:?}");
+
+        let (r, calls) = run_pre_commit(dir, 0);
+        assert_eq!(r.code, 0, "{r:?}\ncalls:\n{calls}");
+        assert!(
+            calls.contains("check-plugin-version-bump.sh --staged"),
+            "{calls}"
+        );
+    }
+}
+
+#[test]
+fn pre_commit_enforces_p1_when_shared_config_asks_for_deferral() {
+    let tmp = seed();
+    let d = tmp.path();
+    let wt = with_linked_worktree(d);
+    git(d, &["config", "--local", "tasty.pluginBump", "deferred"]);
+    stage_plugin_change_with_mode_lib(&wt);
+
+    let (r, calls) = run_pre_commit(&wt, 1);
+    assert_eq!(r.code, 1, "{r:?}\ncalls:\n{calls}");
+    assert!(
+        calls.contains("check-plugin-version-bump.sh --staged"),
+        "{calls}"
+    );
+}

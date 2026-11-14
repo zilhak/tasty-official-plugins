@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Compares the plugin versions of the commits to push with what the remote already has.
+# Install: bash scripts/dev-setup.sh. The checks: docs/branching.md.
+# Ported from tasty .githooks/pre-push (B.9 only; CI runs the builds).
+set -e -o pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+# Git exports repository-local paths to hooks; do not leak them into synthetic repos.
+GIT_LOCAL_ENV_VARS="$(git rev-parse --local-env-vars)"
+red()    { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+green()  { printf '\033[32m%s\033[0m\n' "$*"; }
+yellow() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
+
+FAIL=0
+STARTED=$SECONDS
+LOG_ROOT="$(git rev-parse --git-path hook-logs)"
+mkdir -p "$LOG_ROOT"
+LOG_DIR="$(mktemp -d "$LOG_ROOT/pre-push.XXXXXX")"
+SUMMARY="$LOG_DIR/summary.log"
+printf 'Running the pre-push checks. Full logs: %s\n' "$LOG_DIR"
+
+# Checks the exit code of a command directly. The output goes to a log per check; on failure
+# the last 60 lines are shown.
+run_check() {
+    local id="$1" title="$2" started=$SECONDS rc=0
+    shift 2
+    yellow "start: $title"
+    if (
+        while IFS= read -r name; do
+            [ -z "$name" ] || unset "$name"
+        done <<< "$GIT_LOCAL_ENV_VARS"
+        cd "$REPO_ROOT" || exit 1
+        "$@"
+    ) > "$LOG_DIR/$id.log" 2>&1; then
+        green "pass: $title ($((SECONDS - started))s)"
+        printf 'pass: %s (%ss)\n' "$title" "$((SECONDS - started))" >> "$SUMMARY"
+    else
+        rc=$?
+        tail -60 "$LOG_DIR/$id.log" >&2
+        red "fail: $title ($((SECONDS - started))s, exit code $rc). Full log: $LOG_DIR/$id.log"
+        printf 'fail: %s (%ss)\n' "$title" "$((SECONDS - started))" >> "$SUMMARY"
+        FAIL=1
+    fi
+}
+
+finish() {
+    printf '\npre-push checks (%ss in total)\n' "$((SECONDS - STARTED))"
+    cat "$SUMMARY"
+    if [ "$FAIL" -ne 0 ]; then
+        red "The push stopped. Fix the failed items, commit, and push again."
+        return 1
+    fi
+    green "All pre-push checks that ran passed."
+}
+
+GIT_NULL_SHA=0000000000000000000000000000000000000000
+PUSH_REMOTE="${1:-origin}"
+PUSH_REFS=""
+PUSH_INVOKED_BY_GIT=0
+# The ref list from git. Run by hand, the hook does not wait on stdin.
+if [ "$#" -ge 1 ] && [ ! -t 0 ]; then
+    PUSH_INVOKED_BY_GIT=1
+    PUSH_REFS="$(cat)"
+fi
+
+# ─
+# B.9  plugin versions against the versions on the remote
+check_published_plugin_version() {
+    local considered=0 judged=0 failed=0 rc
+    local local_ref local_sha remote_ref remote_sha
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        [ -n "${local_ref:-}" ] || continue
+        considered=$((considered + 1))
+        if [ "$local_sha" = "$GIT_NULL_SHA" ]; then
+            echo "$remote_ref: a ref to delete; no version check."
+            continue
+        fi
+        if [ "$remote_sha" = "$GIT_NULL_SHA" ]; then
+            echo "$remote_ref: a new ref; there is no remote version to compare with."
+            continue
+        fi
+        if ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+            red "$remote_ref: the remote commit ${remote_sha} is not here."
+            red "Run git fetch $PUSH_REMOTE and try again. A shallow clone needs git fetch --unshallow."
+            failed=1
+            continue
+        fi
+        judged=$((judged + 1))
+        rc=0
+        bash scripts/check-plugin-version-bump.sh --range "$remote_sha" "$local_sha" || rc=$?
+        if [ "$rc" -eq 1 ]; then
+            red "$remote_ref: a changed plugin must have a higher version than the remote has."
+            red "Raise the versions in Cargo.toml and tasty-plugin.toml of the plugins listed above together,"
+            red "update Cargo.lock with cargo metadata, and commit the three files together."
+            failed=1
+        elif [ "$rc" -ne 0 ]; then
+            red "$remote_ref: the version check could not decide (exit code $rc). See the error above."
+            failed=1
+        fi
+    done <<EOF2
+$PUSH_REFS
+EOF2
+    echo "${considered} refs: ${judged} checked, $((considered - judged)) skipped"
+    return "$failed"
+}
+
+if [ "$PUSH_INVOKED_BY_GIT" -eq 1 ]; then
+    if [ -z "$PUSH_REFS" ]; then
+        green "Nothing to push; no checks."
+        exit 0
+    fi
+    run_check B.9 'plugin versions' check_published_plugin_version
+else
+    yellow 'skipped: plugin versions — run by hand, so there are no remote refs from git.'
+    yellow 'To check by hand: bash scripts/check-plugin-version-bump.sh --range <remote commit> HEAD'
+    printf 'skipped: plugin versions — no ref list from git\n' >> "$SUMMARY"
+fi
+
+finish
