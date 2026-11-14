@@ -3,34 +3,28 @@
 #
 #   scripts/package-plugin.sh stage --platform NAME --out DIR [--target TRIPLE]
 #                                   [--profile NAME] [--all]
-#   scripts/package-plugin.sh sign-manifests --platform NAME --out DIR
 #   scripts/package-plugin.sh pack --platform NAME --out DIR
 #   scripts/package-plugin.sh all --platform NAME --out DIR [stage options]
 #
-# The steps run in this order: stage, (codesign binaries, done by the workflow),
-# sign-manifests, pack. Signing works on the staged copies, never on the
-# manifests under crates/.
+# The steps run in this order: stage, pack. The packages are not signed: tasty
+# signs the bundled manifests when it packages the plugins, so pack fails if a
+# .sig file would go into an archive.
 #
 # stage   Builds with `scripts/check.sh build` (profile dist by default) and copies
 #         each plugin into DIR/NAME/stage/<id>/: the executable, tasty-plugin.toml,
 #         and lang/. Plugins whose manifest says `bundle = false` are skipped
 #         unless --all is given, as in tasty's own packaging scripts.
-# sign-manifests
-#         Signs each staged tasty-plugin.toml into tasty-plugin.toml.sig, the same
-#         way as tasty's scripts/sign-bundle.sh (Ed25519 over the SHA-256 digest of
-#         the manifest, raw 64 bytes). The private key is read from the PEM file
-#         named by PLUGIN_MANIFEST_SIGNING_KEY_FILE. Without it, signing is skipped
-#         and an "unsigned" line is logged.
 # pack    Writes DIR/NAME/dist/<id>-<version>-NAME.tar.gz for each staged plugin,
 #         then DIR/NAME/dist/SHA256SUMS-NAME.txt (sha256sum format) and
 #         DIR/NAME/dist/plugins-NAME.tsv (id, version, platform, file, sha256).
+#         Fails if the stage or an archive contains a .sig file.
 #
 # NAME is a platform label such as linux-x64 or windows-arm64. The executable path
 # comes from cargo's compiler-artifact messages and the manifest and lang/ from
 # crates/<crate>/ in this repository, so no target/ path is assembled by hand.
 #
 # Needs bash, tar, sha256sum or shasum, and jq or python3. Runs under Git Bash on
-# Windows. Signing needs openssl 1.1.1 or later.
+# Windows.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -41,7 +35,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
@@ -164,35 +158,11 @@ for line in sys.stdin:
   echo "staged $count plugins in $STAGE_DIR" >&2
 }
 
-cmd_sign_manifests() {
-  [[ -d "$STAGE_DIR" ]] || die "nothing staged in $STAGE_DIR"
-  local key="${PLUGIN_MANIFEST_SIGNING_KEY_FILE:-}"
-  if [[ -z "$key" ]]; then
-    echo "unsigned: PLUGIN_MANIFEST_SIGNING_KEY_FILE is not set, manifest signing skipped" >&2
-    return 0
-  fi
-  [[ -f "$key" ]] || die "signing key not found: $key"
-  command -v openssl >/dev/null 2>&1 || die "openssl not found"
-
-  local tmp manifest sig size
-  tmp=$(mktemp -d)
-  # shellcheck disable=SC2064 # expand $tmp now
-  trap "rm -rf '$tmp'" RETURN
-  for manifest in "$STAGE_DIR"/*/tasty-plugin.toml; do
-    sig="$manifest.sig"
-    openssl dgst -sha256 -binary "$manifest" >"$tmp/digest"
-    openssl pkeyutl -sign -inkey "$key" -rawin -in "$tmp/digest" -out "$sig"
-    size=$(wc -c <"$sig" | tr -d ' ')
-    if [[ "$size" != "64" ]]; then
-      rm -f "$sig"
-      die "$sig is $size bytes, expected 64 (is the key Ed25519?)"
-    fi
-    echo "signed $manifest" >&2
-  done
-}
-
 cmd_pack() {
   [[ -d "$STAGE_DIR" ]] || die "nothing staged in $STAGE_DIR"
+  local sigs
+  sigs=$(find "$STAGE_DIR" -name '*.sig')
+  [[ -z "$sigs" ]] || die "signature files in the stage; packages are not signed: $sigs"
   rm -rf "$DIST_DIR"
   mkdir -p "$DIST_DIR"
 
@@ -205,11 +175,11 @@ cmd_pack() {
   for dir in "$STAGE_DIR"/*/; do
     id=$(basename "$dir")
     version=$(manifest_string version "$dir/tasty-plugin.toml")
-    if [[ ! -f "$dir/tasty-plugin.toml.sig" ]]; then
-      echo "unsigned: $id has no tasty-plugin.toml.sig" >&2
-    fi
     file="$id-$version-$PLATFORM.tar.gz"
     tar -czf "$DIST_DIR/$file" -C "$STAGE_DIR" "$id"
+    if tar -tzf "$DIST_DIR/$file" | grep -q '\.sig$'; then
+      die "$file contains a .sig file; packages are not signed"
+    fi
     hash=$(sha256_of "$DIST_DIR/$file")
     printf '%s  %s\n' "$hash" "$file" >>"$sums"
     printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$version" "$PLATFORM" "$file" "$hash" >>"$index"
@@ -223,9 +193,8 @@ shift
 
 case "$sub" in
   stage) parse_args "$@"; cmd_stage ;;
-  sign-manifests) parse_args "$@"; cmd_sign_manifests ;;
   pack) parse_args "$@"; cmd_pack ;;
-  all) parse_args "$@"; cmd_stage; cmd_sign_manifests; cmd_pack ;;
+  all) parse_args "$@"; cmd_stage; cmd_pack ;;
   -h | --help | help) usage 0 ;;
   *) die "unknown subcommand: $sub" ;;
 esac

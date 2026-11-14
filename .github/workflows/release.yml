@@ -1,9 +1,8 @@
 name: Release (skeleton)
 
-# Builds, packages, and (when secrets exist) signs the plugins for every
-# platform and uploads the result as workflow artifacts. It does not create a
-# GitHub Release and has no tag trigger. Signing keys, signing scope, and key
-# rotation are not decided yet; see docs/ci.md.
+# Builds and packages the plugins for every platform and uploads the result as
+# workflow artifacts. It does not create a GitHub Release and has no tag
+# trigger. The packages are not signed; see docs/ci.md.
 
 on:
   workflow_dispatch:
@@ -133,45 +132,8 @@ jobs:
           [[ "$INCLUDE_UNBUNDLED" == "true" ]] && args+=(--all)
           scripts/package-plugin.sh stage "${args[@]}"
 
-      # 2. Binary codesigning. Placeholder: secrets cannot be used in `if:`, so
-      # each step reads them through env and skips when they are empty.
-      - name: Codesign binaries (macOS, placeholder)
-        if: runner.os == 'macOS'
-        env:
-          APPLE_CODESIGN_CERTIFICATE_P12: ${{ secrets.APPLE_CODESIGN_CERTIFICATE_P12 }}
-        run: |
-          if [[ -z "$APPLE_CODESIGN_CERTIFICATE_P12" ]]; then
-            echo "unsigned: macOS codesign and notarization skipped (no certificate secret)"
-            exit 0
-          fi
-          echo "::error::macOS codesign is not implemented yet; see docs/ci.md"
-          exit 1
-      - name: Authenticode sign binaries (Windows, placeholder)
-        if: runner.os == 'Windows'
-        env:
-          WINDOWS_CODESIGN_CERTIFICATE: ${{ secrets.WINDOWS_CODESIGN_CERTIFICATE }}
-        run: |
-          if [[ -z "$WINDOWS_CODESIGN_CERTIFICATE" ]]; then
-            echo "unsigned: Windows Authenticode signing skipped (no certificate secret)"
-            exit 0
-          fi
-          echo "::error::Authenticode signing is not implemented yet; see docs/ci.md"
-          exit 1
-
-      # 3. Manifest signatures (tasty-plugin.toml.sig) on the staged copies.
-      - name: Sign manifests
-        env:
-          PLUGIN_MANIFEST_SIGNING_KEY: ${{ secrets.PLUGIN_MANIFEST_SIGNING_KEY }}
-        run: |
-          if [[ -n "$PLUGIN_MANIFEST_SIGNING_KEY" ]]; then
-            key="$RUNNER_TEMP/plugin-manifest-signing-key.pem"
-            (umask 077 && printf '%s\n' "$PLUGIN_MANIFEST_SIGNING_KEY" > "$key")
-            trap 'rm -f "$key"' EXIT
-            export PLUGIN_MANIFEST_SIGNING_KEY_FILE="$key"
-          fi
-          scripts/package-plugin.sh sign-manifests --platform ${{ matrix.platform }} --out "$PKG_OUT"
-
-      # 4. Archive each signed <id>/ folder, then 5. write the SHA-256 lists.
+      # 2. Archive each <id>/ folder and write the SHA-256 lists. The packages are
+      # not signed, and pack fails if a .sig file would go into an archive.
       - name: Pack
         run: scripts/package-plugin.sh pack --platform ${{ matrix.platform }} --out "$PKG_OUT"
 
@@ -181,6 +143,5 @@ jobs:
           path: ${{ env.PKG_OUT }}/${{ matrix.platform }}/dist/
           if-no-files-found: error
 
-  # There is no publish job on purpose. Publishing waits for the stage 2
-  # release decisions (signing keys, where packages go, the lock file format).
-  # This workflow must not create or upload a GitHub Release.
+  # There is no publish job yet. This workflow must not create or upload a
+  # GitHub Release.
