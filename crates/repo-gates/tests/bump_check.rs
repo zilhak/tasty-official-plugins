@@ -497,6 +497,65 @@ fn the_first_commit_has_no_baseline_and_says_so() {
     );
 }
 
+/// Only an unborn HEAD is a first commit. A --base that names no object is undecidable.
+#[test]
+fn a_base_that_names_no_commit_is_undecidable_not_a_first_commit() {
+    let tmp = seed_repo();
+    let d = tmp.path();
+    write(
+        d,
+        &format!("{PLUGIN}/src/main.rs"),
+        "fn main() {\n    let msg = \"staged\";\n}\n",
+    );
+    run_git(d, &["add", "-A"]);
+
+    let (code, text) = check(
+        d,
+        &[
+            "--staged",
+            "--base",
+            "0123456789012345678901234567890123456789",
+        ],
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(!text.contains("first commit"), "{text}");
+    assert!(text.contains("cannot find the --base rev"), "{text}");
+}
+
+/// Staged mode compares the whole base..index difference: a change committed after the base
+/// still counts when only an unrelated file is staged on top of it.
+#[test]
+fn staged_mode_lists_the_changes_between_the_base_and_the_index() {
+    let tmp = seed_repo();
+    let d = tmp.path();
+    let base = {
+        let out = git_env::command("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(d)
+            .output()
+            .expect("rev-parse");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    write(
+        d,
+        &format!("{PLUGIN}/src/main.rs"),
+        "fn main() {\n    let msg = \"committed\";\n}\n",
+    );
+    commit_all(d, "change the plugin without a bump");
+    write(d, "notes.md", "unrelated\n");
+    run_git(d, &["add", "-A"]);
+
+    let (code, text) = check(d, &["--staged", "--base", &base]);
+    assert_eq!(
+        code, 1,
+        "the committed change after the base was not listed:\n{text}"
+    );
+    assert!(
+        text.contains("crates/tasty-plugin-fixture: shipped content changed"),
+        "{text}"
+    );
+}
+
 #[test]
 fn crates_that_disagree_on_the_edition_are_undecidable() {
     let tmp = seed_repo();

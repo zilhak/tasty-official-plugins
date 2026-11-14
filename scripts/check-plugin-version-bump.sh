@@ -54,8 +54,15 @@ fi
 
 if [ "$MODE" = staged ]; then
     if ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
-        echo "[plugin-version] skip: no commit to compare with (first commit). 0 judged."
-        exit 0
+        # Only an unborn HEAD (the first commit) has nothing to compare with. A base that
+        # names no commit is a wrong argument or a missing object, not a first commit.
+        head_ref=$(git symbolic-ref --quiet HEAD 2>/dev/null) || head_ref=""
+        if [ "$BASE" = HEAD ] && [ -n "$head_ref" ] \
+            && ! git rev-parse --verify --quiet "$head_ref" >/dev/null; then
+            echo "[plugin-version] skip: no commit to compare with (first commit). 0 judged."
+            exit 0
+        fi
+        die "cannot find the --base rev: $BASE (in a shallow clone, raise fetch-depth)"
     fi
     BEFORE_REV="$BASE"
     AFTER_PREFIX=""          # `:path`
@@ -208,8 +215,9 @@ ver_gt() {
 SCAN_ROOT=crates
 
 if [ "$MODE" = staged ]; then
-    CHANGED=$(git diff --cached --name-only --diff-filter=ACMRD -- "$SCAN_ROOT/")
-    OUTSIDE=$(git diff --cached --name-only --diff-filter=ACMRD -- . ":(exclude)$SCAN_ROOT/")
+    # The whole difference between the base and the index, not only what is staged on HEAD.
+    CHANGED=$(git diff --cached --name-only --diff-filter=ACMRD "$BASE" -- "$SCAN_ROOT/")
+    OUTSIDE=$(git diff --cached --name-only --diff-filter=ACMRD "$BASE" -- . ":(exclude)$SCAN_ROOT/")
 else
     CHANGED=$(git diff --name-only --diff-filter=ACMRD "$BEFORE" "$AFTER" -- "$SCAN_ROOT/")
     OUTSIDE=$(git diff --name-only --diff-filter=ACMRD "$BEFORE" "$AFTER" -- . ":(exclude)$SCAN_ROOT/")
