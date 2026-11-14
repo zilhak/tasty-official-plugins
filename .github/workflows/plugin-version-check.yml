@@ -7,7 +7,9 @@ name: Plugin version check
 on:
   # Path dependencies and root build inputs count too, so the paths are not listed narrowly.
   # The patterns apply in order: everything, minus Markdown, plus the build input directories
-  # again, minus docs. Markdown under src, lang and assets is checked.
+  # and the notice files that every plugin archive carries (THIRD_PARTY_LICENSES.md and
+  # LICENSES/, whatever the extension) again, minus docs. Markdown under src, lang and assets
+  # is checked.
   push:
     branches: [develop, release, main]
     paths:
@@ -16,6 +18,8 @@ on:
       - '**/src/**'
       - '**/lang/**'
       - '**/assets/**'
+      - 'THIRD_PARTY_LICENSES.md'
+      - 'LICENSES/**'
       - '!docs/**'
   pull_request:
     branches: [develop, release, main]
@@ -25,6 +29,8 @@ on:
       - '**/src/**'
       - '**/lang/**'
       - '**/assets/**'
+      - 'THIRD_PARTY_LICENSES.md'
+      - 'LICENSES/**'
       - '!docs/**'
   workflow_dispatch:
 
