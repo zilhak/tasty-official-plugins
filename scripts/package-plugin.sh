@@ -6,9 +6,9 @@
 #   scripts/package-plugin.sh pack --platform NAME --out DIR
 #   scripts/package-plugin.sh all --platform NAME --out DIR [stage options]
 #
-# The steps run in this order: stage, pack. The packages are not signed: tasty
-# signs the bundled manifests when it packages the plugins, so pack fails if a
-# .sig file would go into an archive.
+# The steps run in this order: stage, pack. The packages are not signed, so pack
+# fails if a .sig file would go into an archive. tasty signs the manifests of the
+# plugins it bundles when it packages them.
 #
 # stage   Builds with `scripts/check.sh build` (profile dist by default) and copies
 #         each plugin into DIR/NAME/stage/<id>/: the executable, tasty-plugin.toml,

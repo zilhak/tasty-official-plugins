@@ -3,7 +3,8 @@ name: Release
 # A v* tag push releases the plugins: create-release checks the tag and opens a
 # draft GitHub Release, release-meta and package build the release files on
 # every platform as workflow artifacts, and publish uploads them to the draft
-# and publishes it. If any job fails, the Release stays a draft. A manual run
+# and publishes it. If create-release fails, no Release is created; if a later
+# job fails, the Release stays a draft. A manual run
 # (workflow_dispatch) builds the same files as workflow artifacts and creates no
 # Release. The packages are not signed. See docs/ci.md.
 
