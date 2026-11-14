@@ -1732,8 +1732,9 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             # After a separator a command starts.
             function sep() { want = 0; opts = 0; redir = 0; coproc = 0; cmd = 1 }
             # $( ), <( ), >( ), and backticks: the text inside is commands; the substitution is
-            # part of the word around it, and the state outside comes back after it. $(( )) and
-            # (( )) are arithmetic (A): only the command substitutions inside are read.
+            # part of the word around it, and the state outside comes back after it. A new line
+            # inside it starts a command, as at the top level. $(( )) and (( )) are arithmetic
+            # (A): only the command substitutions inside are read, and a new line starts nothing.
             function opensub(t) {
                 sd++; st[sd] = t; pc[sd] = 0; bd[sd] = 0; sw[sd] = word; sr[sd] = raw
                 scmd[sd] = cmd; swant[sd] = want; sopts[sd] = opts; sredir[sd] = redir; shst[sd] = hst
@@ -1753,7 +1754,7 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             }
             {
                 s = $0; n = length(s)
-                if (q == "" && !cont && sd == 0) { cmd = 1; want = 0; opts = 0; redir = 0; coproc = 0 }
+                if (q == "" && !cont && !(sd > 0 && st[sd] == "A")) { cmd = 1; want = 0; opts = 0; redir = 0; coproc = 0 }
                 cont = 0
                 for (i = 1; i <= n; i++) {
                     c = substr(s, i, 1)

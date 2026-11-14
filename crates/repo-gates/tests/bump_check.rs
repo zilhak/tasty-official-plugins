@@ -3343,9 +3343,9 @@ fn sources_behind_redirections_options_and_odd_quoting_are_caught() {
 
 /// Braces inside a word, the words after a substitution, case patterns, and here-document
 /// bodies are no command positions, so ordinary code there is only a change of check.sh. A
-/// source in a brace group, a substitution, after a case pattern, after the end of a
-/// here-document, and after an indexed or += assignment is still found, and a
-/// here-document without its end word stops the check.
+/// source in a brace group, a substitution (also on a later line of it, and inside ${ }),
+/// after a case pattern, after the end of a here-document, and after an indexed or +=
+/// assignment is still found, and a here-document without its end word stops the check.
 #[test]
 fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
     for code in [
@@ -3370,6 +3370,9 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
         "echo ${#x} ${x%%*/} ${x:-a b}",
         "echo ${x:-; . REVIEW_MARK}",
         "x=$(( (1 + (2)) << 3 ))",
+        "y=$(\n  cd scripts\n  pwd\n)",
+        "artifacts=$(\n  scripts/check.sh build --message-format=json |\n    cat\n)",
+        "x=$((\n  1 << 2\n))",
     ] {
         let f = ArchiveFixture::new();
         f.edit(
@@ -3397,6 +3400,11 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
         "y=$(( $(. scripts/lib/extra.sh) ))",
         "cat<<EOF\nDon't forget\nEOF\n. scripts/lib/extra.sh",
         "y=${y:-$(. scripts/lib/extra.sh)}",
+        "y=${y:-`. scripts/lib/extra.sh`}",
+        "y=$(\n  foo bar\n  . scripts/lib/extra.sh\n)",
+        "y=`\n  foo bar\n  . scripts/lib/extra.sh\n`",
+        "cat <(\n  foo bar\n  . scripts/lib/extra.sh\n)",
+        "y=$( (\n  a\n  . scripts/lib/extra.sh\n) )",
     ] {
         let f = ArchiveFixture::new();
         f.write("scripts/lib/extra.sh", "export REVIEW_MARK=1\n");
@@ -3432,6 +3440,28 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
         &f.check(&HEAD_RANGE),
         "opens a quote (') that is not closed by the end of the file",
     );
+
+    // A source on a later line of a substitution over several lines is found, and a change
+    // of the sourced file alone stays undecidable.
+    let f = ArchiveFixture::new();
+    f.write(
+        "scripts/lib/extra.sh",
+        "printf '%s' '--cfg=REVIEW_MARK_1'\n",
+    );
+    f.edit(
+        "scripts/check.sh",
+        "set -euo pipefail\n",
+        "set -euo pipefail\nRUSTFLAGS=$(printf '%s' '-Cdebuginfo=0 '\n\
+         . scripts/lib/extra.sh\n)\nexport RUSTFLAGS\n",
+    );
+    f.commit("source a helper in a substitution");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "sources scripts/lib/extra.sh");
+    f.write(
+        "scripts/lib/extra.sh",
+        "printf '%s' '--cfg=REVIEW_MARK_2'\n",
+    );
+    f.commit("change the helper");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "sources scripts/lib/extra.sh");
 }
 
 /// The package job may use only actions written as owner/repo@ref or owner/repo/path@ref on
