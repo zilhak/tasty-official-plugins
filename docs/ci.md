@@ -339,11 +339,14 @@ would leave that range unchecked.
   line that starts with `#` is a comment or data of a string, a here-document, a continued
   line, or a YAML block scalar takes a shell or YAML parser to tell, and a review changed
   the build through one such line in a multi-line `awk` program. Region markers and the
-  end of a top or job region may still carry a trailing comment.
+  end of a top or job region may still carry a trailing comment. Comment lines no deeper
+  than the key of a top or job region, and blank lines, right before its end belong to
+  what follows (the head comment of the next job, a comment before `jobs:`), not to the
+  region; a deeper comment there could be data of a block scalar and counts.
 - `scripts/check.sh` is compared whole, like the other scripts: any change, also one of a
   subcommand that does not build, like `licenses` or `audit`, or of the hook warning,
-  asks every plugin with an archive for a bump, once per release. Leaving parts of `check.sh` out by text matching
-  could not be made safe: a one-line help branch, a function closed by an indented brace,
+  asks every plugin with an archive for a bump, once per release. Leaving parts of
+  `check.sh` out by text matching could not be made safe: a one-line help branch, a function closed by an indented brace,
   or compared code that calls a left-out function could change the build unseen. The hook
   warning runs as `( warn_hooks ) || true`, so it cannot change variables or functions of
   the shell that builds; that keeps the warning from changing the build shell and is not
@@ -353,13 +356,19 @@ would leave that range unchecked.
     `package-plugin.sh`, `notice-set.sh`, `plugin-build.sh`) of a file the list does not
     name, or of a path that is not written out (a variable or a command substitution;
     none is in use now). A command position is the start of a line, a place after one of
-    `; & | ( ) { }` or a backtick, and a place after `then`, `do`, `else`, `elif`, `if`,
-    `while`, `until`, `!`, `coproc` (and its name), `time`, `exec`, `builtin`, `command`
-    (and their options that start with `-`, `--` too), an assignment, or a redirection
-    (`> /dev/null`, `2>&1`, `</dev/null`, `&>x`, with the target attached or next). Quoted
-    text and text after an unquoted `#` are not commands, so a comment or a string that
-    mentions a source does not stop the check; a quoted target (`. "scripts/lib/x.sh"`) is
-    read as its path. `release.yml` is no shell region file and is not read this way.
+    `; & | ( )` or the words `{` and `}`, the start of `$( )`, `<( )`, `>( )`, or a
+    backtick substitution, the place after the `)` of a case pattern, and a place after
+    `then`, `do`, `else`, `elif`, `if`, `while`, `until`, `!`, `coproc` (and its name),
+    `time`, `exec`, `builtin`, `command` (and their options that start with `-`, `--`
+    too), an assignment (also `a[0]=` and `+=`), or a redirection (`> /dev/null`, `2>&1`,
+    `</dev/null`, `&>x`, with the target attached or next). Quoted text, text after an
+    unquoted `#`, braces inside a word (`find ... -exec rm {} \;`), the words after a
+    substitution that ends inside a word (`echo $(pwd) a\ b`), case patterns, and the
+    bodies of here-documents (`<<WORD`, `<<-WORD`, quoted words, several on one line; not
+    `<<<`) are not commands, so a comment, a string, or a here-document that mentions a
+    source does not stop the check; a here-document without its end word does. A quoted
+    target (`. "scripts/lib/x.sh"`) is read as its path. `release.yml` is no shell region
+    file and is not read this way.
   - a word in command position written with a backslash or with `$'...'` or `$"..."`
     quoting (`\. x`, `sou\rce x`, `$'.' x`). The check does not take such words apart;
     the message names the file and the line.
@@ -368,10 +377,16 @@ would leave that range unchecked.
     comment are fine). A local action or reusable workflow (`./`), a Docker image, a value
     on the next line or in a block scalar, and a flow mapping are undecidable, because
     the content they run would not be judged. So are YAML forms in that job that could
-    spell a `uses:` key another way: an explicit key (`? uses`), a double-quoted key with
-    a backslash escape (`"u\x73es"`), an anchor (`&name`), an alias (`*name`), and a merge
-    key (`<<:`). The body of a block scalar (`run: |`) is data: it is skipped, by its
-    indentation, for these checks and for the `uses:` check.
+    spell a `uses:` key another way. Each line is read as indentation, `- ` items, a key,
+    and a value, and only that structure is checked: an explicit key (`? uses`), a
+    double-quoted key with a backslash escape (`"u\x73es"`), a merge key (`<<:`), a key
+    or an item that starts with a tag (`!!str uses:`), an anchor (`&name`), an alias
+    (`*name`), or a flow collection, and a value that starts with one of these. A one-line
+    flow sequence of plain words (`[self-hosted, Linux, X64]`, as in the runner lists of
+    the matrix) cannot hold a key and passes. Text inside a scalar value (JSON in a `run:`
+    line, `"a: *b"`, `*.sha256,*.txt`) is not read, nor are the body of a block scalar
+    (`run: |`, skipped by its indentation) and the rest of a quoted scalar over several
+    lines.
   - a change under `crates/<dir>/` where `<dir>` has no `Cargo.toml` on either side. Such
     a folder is no crate, so no plugin version would cover the change. A file directly in
     `crates/` stays an archive input (above).
