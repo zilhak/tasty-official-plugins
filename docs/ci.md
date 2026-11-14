@@ -152,6 +152,32 @@ shebang. It prints each file, runs `shellcheck -x` on them, and runs actionlint 
 with `PATH="$(bash scripts/install-lint-tools.sh):$PATH" bash scripts/lint-scripts.sh`;
 outside CI the tools go to `~/.cache/tasty-official-plugins/lint-tools`.
 
+## Source checks on the plugins
+
+The `plugin-guards` crate holds source checks that tasty ran on the plugin crates before
+they moved here. They are integration tests (`crates/plugin-guards/tests/`), so they run in
+the `check` job with `scripts/check.sh test` on Linux and not in the `--lib --bins` runs
+on Windows and macOS. Run them with `cargo test --locked -p plugin-guards`. They read the
+sources as text and use the source readers of `tasty-doc-guards` from the pinned tasty
+commit, a dev-dependency of this crate only.
+
+- `notify_mod_language_lists`: the language lists in the Claude mod's TypeScript (the
+  notify heading, the gate reason, and the heading test) match
+  `tasty_i18n::BUILTIN_CODES`.
+- `plugin_locale_literals`: the shipped code of the plugins with a manifest holds no
+  string literal with Hangul, kana, or CJK ideographs. Test-only code, comment lines, and
+  diagnostic calls are left out.
+- `read_only_handle_mtime`: no Rust source under `crates/` sets a modification time
+  through a handle from `File::open`, which fails on Windows, and the number of mtime
+  changes per file matches the list in the test.
+- `plugin_locale_font_call_convention`: the four egui plugins read `TASTY_LOCALE_FONT`,
+  call `install_locale_font_fallback`, and pass the face number from
+  `locale_font_face_from_env`, and no file under `crates/` repeats the system CJK font
+  names that tasty keeps in one place.
+
+The checks that walk the sources fail when they find fewer files or plugins than a floor
+measured in this repository, so an empty walk does not pass.
+
 ## Advisory check
 
 The `audit` job in `ci.yml` installs `cargo-audit` at the version in `CARGO_AUDIT_VERSION`
