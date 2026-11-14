@@ -32,11 +32,12 @@ permissions:
   contents: read
 
 # A newer pull request run cancels the older one, since both check the same base and head.
-# Other runs (push, manual) get a group of their own: each one checks only its own range,
-# and in a shared group GitHub would cancel a run that is still pending when a newer one
-# arrives, leaving that range unchecked.
+# Every other run (push, manual) is a group of its own, keyed by the run id: each one checks
+# only its own range, and in a shared group GitHub would replace a run that is still
+# pending when a newer one arrives, leaving that range unchecked. A commit sha is not
+# enough, since the same commit can be pushed to two branches or run by hand.
 concurrency:
-  group: plugin-version-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: plugin-version-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
