@@ -11,7 +11,7 @@ workflow.
 
 | File | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: clippy, unit tests, and the `plugin-guards` source checks on Windows x64 and macOS arm64, and on macOS also the `repo-gates` integration tests. `lint` job: shellcheck on every shell script and actionlint on every workflow. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
+| `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: clippy, unit tests, and the `plugin-guards` source checks on Windows x64 and macOS arm64, and on macOS also the `repo-gates` integration tests. `lint` job: shellcheck on every shell script and actionlint on every workflow. `audit` job: runs `cargo audit` on `Cargo.lock`. `licenses` job: checks the dependency licenses against `deny.toml` with cargo-deny. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
 | `.github/workflows/release.yml` | push of a `v*` tag; manual (`workflow_dispatch`) | On a tag, releases the plugins on a GitHub Release of this repository (see [Releases](#releases)). A manual run builds the same release files as workflow artifacts and creates no Release |
 | `.github/workflows/plugin-version-check.yml` | push to `develop`, `release`, or `main`, pull request to one of them, for changes outside Markdown and `docs/`; manual | Checks that each plugin whose build output changed raised its version (see [Plugin version check](#plugin-version-check)), then runs the `repo-gates` tests |
 
@@ -42,8 +42,8 @@ they are not shared with tasty.
 | `linux-x64` | `x86_64-unknown-linux-gnu` | `[self-hosted, Linux, X64]` |
 | `linux-arm64` | `aarch64-unknown-linux-gnu` | `[self-hosted, Linux, ARM64]` |
 
-The `check`, `lint`, and `audit` jobs run on `[self-hosted, Linux, X64]`, and the `test`
-job on the Windows x64 and macOS runners.
+The `check`, `lint`, `audit`, and `licenses` jobs run on `[self-hosted, Linux, X64]`, and
+the `test` job on the Windows x64 and macOS runners.
 
 These are the same five platforms that tasty releases. Linux ARM64 is included because
 tasty ships a Linux ARM64 package, and the full-package lock file needs a plugin hash
@@ -130,6 +130,8 @@ are pinned in `install-lint-tools.sh`: an archive with another sum fails the job
 install that is already there and reports the pinned versions is reused. To update a tool,
 change its version and sums together. actionlint publishes its sums in the release's
 `checksums.txt`; shellcheck publishes none, so take the sum of the downloaded archive.
+The download, checksum, and publish steps described below are in
+`scripts/lib/tool-cache.sh`, which `scripts/install-cargo-deny.sh` uses too.
 
 Jobs that share a tool cache can install at the same time without a lock. Each run
 downloads, checks, and unpacks into a folder of its own next to the install
@@ -228,6 +230,39 @@ updated here with `cargo update -p <crate>`, with a patch bump of each plugin wh
 dependency closure holds it ([Plugin version check](#plugin-version-check)). A crate of
 the egui family and a tasty crate are fixed in tasty and arrive with a pin move. If the
 log shows that fetching the database failed, rerun the job.
+
+## License check
+
+The `licenses` job in `ci.yml` checks the licenses of every package in the dependency
+graph (all features, every target, dev-dependencies included) against the policy in
+`deny.toml`. It runs `scripts/install-cargo-deny.sh` and then `scripts/check.sh licenses`,
+which runs `cargo deny --locked --workspace check licenses`. `--workspace` takes every
+workspace member as a root.
+
+- The allow list is the one in tasty's `deny.toml`, so the plugins and the host they ship
+  with follow one policy. Entries that no crate here uses stay, and
+  `unused-allowed-license = "allow"` keeps them from warning. Change the list in tasty
+  first and copy it here.
+- Only the license check runs. Advisories stay with the `audit` job, so cargo-deny does
+  not download an advisory database, and bans and sources are not checked. A plain
+  `cargo deny check` would run those checks with their defaults and is not the check of
+  this repository. A `repo-gates` test (`deny_policy`) fails if `deny.toml` gains an
+  `[advisories]`, `[bans]`, or `[sources]` setting or an exception, or if
+  `scripts/check.sh licenses` runs another check.
+- No exceptions: `deny.toml` has no `[[licenses.exceptions]]` and no allow entry for one
+  crate. When a crate fails the check, update it or replace the dependency that brings it
+  in. When neither is possible, the maintainers decide; the check is not widened to pass.
+- The result depends only on the commit, unlike `audit`, so it is a job of its own: a new
+  advisory does not hide a license result.
+
+`scripts/install-cargo-deny.sh` installs cargo-deny 0.20.2 from its GitHub release into
+`$RUNNER_TOOL_CACHE/cargo-deny/cargo-deny-<version>-<triple>`, with the SHA-256 sums of
+the Linux x86_64 and aarch64 musl archives pinned in the script, and never into
+`~/.cargo/bin`. Outside CI it uses `$CARGO_DENY_CACHE`, else
+`~/.cache/tasty-official-plugins/cargo-deny`. To update the tool, change the version and
+both sums together; the release publishes a `.sha256` file next to each archive. Run the
+check locally with `PATH="$(bash scripts/install-cargo-deny.sh):$PATH" scripts/check.sh
+licenses`.
 
 ## Plugin version check
 

@@ -146,6 +146,7 @@ scripts/check.sh lint            # cargo clippy --workspace --all-targets --lock
 scripts/check.sh test [ARGS]     # cargo test --workspace --locked [ARGS]
 scripts/check.sh build [ARGS]    # cargo build --locked -p <each plugin> [ARGS]
 scripts/check.sh audit           # cargo audit --file Cargo.lock (needs cargo-audit, not part of all)
+scripts/check.sh licenses        # cargo deny check licenses (needs cargo-deny, not in all)
 scripts/check.sh list-plugins    # the PLUGINS list: the nine plugin crates, one per line
 scripts/check.sh list-bins       # PLUGINS without LIBS: the eight with an executable
 bash scripts/dev-setup.sh        # use the .githooks hooks, then cargo fetch --locked
@@ -233,10 +234,12 @@ changes one of its versions, the pin test fails, so the crate is updated in tast
 and arrives here with a pin move. Unsound and unmaintained advisories appear as warnings
 in the job log and do not fail the job.
 
-This repository has no `deny.toml` and runs no `cargo deny` check. tasty keeps its
-decisions in its own `deny.toml`. The notes below are the same decisions for what this
-repository builds. It is not a list of every advisory that applies to `Cargo.lock`; the
-`audit` job log shows those.
+`deny.toml` holds only the license policy, which the `licenses` job checks with
+`cargo deny check licenses` (see [docs/ci.md](docs/ci.md#license-check)); advisories are
+left to `cargo audit`, and no advisory decision is kept in `deny.toml`. tasty keeps its
+advisory decisions in its own `deny.toml`. The notes below are the same decisions for
+what this repository builds. It is not a list of every advisory that applies to
+`Cargo.lock`; the `audit` job log shows those.
 
 RUSTSEC-2026-0192: `ttf-parser` 0.25.1 is unmaintained. It has no known vulnerability, and
 the advisory names no fixed version.
