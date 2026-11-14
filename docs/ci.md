@@ -326,41 +326,55 @@ would leave that range unchecked.
   every plugin with an archive for a bump, once per release: the notice set (`LICENSE`,
   `THIRD_PARTY_LICENSES.md`, every file in `LICENSES/`), `.gitattributes`, and the
   packaging code (`scripts/package-plugin.sh`, `scripts/lib/notice-set.sh`,
-  `scripts/lib/plugin-build.sh`, `scripts/check.sh` without the parts below, and the
-  `package` job of `release.yml` with the top-level `env` and `defaults` it inherits). A
-  file directly in `crates/`, outside every crate (`crates/.gitattributes`), counts the
-  same way, because it decides how the files of every crate check out.
+  `scripts/lib/plugin-build.sh`, `scripts/check.sh`, and the `package` job of
+  `release.yml` with the top-level `env` and `defaults` it inherits). A file directly in
+  `crates/`, outside every crate (`crates/.gitattributes`), counts the same way, because
+  it decides how the files of every crate check out.
 - The notice set and `.gitattributes` are compared by path, file mode, and blob, so a
   move, a mode change, or a file that becomes a link counts. A symbolic link among them
   (a root notice file, or a file in `LICENSES/`) is undecidable on every run: the
   packaging copies through the link, so its target could change unseen. The scripts are
   compared without whole-line comments and blank lines, so a comment change needs no
   bump, while a comment after code still counts.
-- `scripts/check.sh` is compared whole except the parts that the list leaves out because
-  they do not build or pack: the functions `cmd_fmt`, `cmd_lint`, `cmd_test`, `cmd_audit`,
-  `cmd_licenses`, and `warn_hooks`, the case branches `fmt)`, `lint)`, `test)`, `audit)`,
-  and `licenses)`, the help branch (`-h | --help | help)` up to its `;;`, which only
-  prints the head comment), and the branch that calls `warn_hooks`; a case statement left
-  with no branch goes too. The `all)` branch stays. `warn_hooks` also runs for `build`, so
-  its call is left out only as `( warn_hooks ) || true`: the subshell cannot change the
-  shell that builds, and a call outside a subshell is compared. So a new subcommand like
-  `licenses`, with its line in the head comment, or the hook warning, needs no bump, while
-  top-level code, the build functions, the arrays, and a new `cmd_*` function count (a new
-  function is compared until the list leaves it out, on purpose). A function defined
-  twice in `check.sh` is undecidable, because the later definition replaces the earlier
-  one. A left-out one-line function with more code on its line, a left-out function that
-  is not closed before the next definition, and a left-out branch that is not closed by
-  `;;` before another branch head or `esac` are undecidable too.
-- On every run, not only when they change, these are undecidable: a `source` or `.` in a
-  listed script (`check.sh`, `package-plugin.sh`, `notice-set.sh`, `plugin-build.sh`) of a
-  file the list does not name, or of a path that is not written out (a variable or a
-  command substitution; none is in use now), and a `uses: ./` (a local action or reusable
-  workflow) in the `package` job of `release.yml`. The content of such a file would not be
-  judged.
+- `scripts/check.sh` is compared whole, like the other scripts. A change of comments or
+  blank lines only needs no bump; any other change, also one of a subcommand that does not
+  build, like `licenses` or `audit`, or of the hook warning, asks every plugin with an
+  archive for a bump, once per release. Leaving parts of `check.sh` out by text matching
+  could not be made safe: a one-line help branch, a function closed by an indented brace,
+  or compared code that calls a left-out function could change the build unseen. The hook
+  warning runs as `( warn_hooks ) || true`, so it cannot change variables or functions of
+  the shell that builds; that keeps the warning from changing the build shell and is not
+  a rule of the version check.
+- On every run, not only when they change, these are undecidable:
+  - a `source` or `.` in a listed script or shell region file (`check.sh`,
+    `package-plugin.sh`, `notice-set.sh`, `plugin-build.sh`) of a file the list does not
+    name, or of a path that is not written out (a variable or a command substitution;
+    none is in use now). A command position is the start of a line, a place after one of
+    `; & | ( ) { }` or a backtick, and a place after `then`, `do`, `else`, `elif`, `if`,
+    `while`, `until`, `!`, `time`, `exec`, `builtin`, `command`, or an assignment. Quoted
+    text and text after an unquoted `#` are not commands, so a comment or a string that
+    mentions a source needs nothing; a quoted target (`. "scripts/lib/x.sh"`) is read as
+    its path. `release.yml` is no shell region file and is not read this way.
+  - a `uses:` key in the `package` job of `release.yml` whose value is not
+    `owner/repo@ref` or `owner/repo/path@ref` on the same line (quotes and a trailing
+    comment are fine). A local action or reusable workflow (`./`), a Docker image, a value
+    on the next line or in a block scalar, and a flow mapping are undecidable, because
+    the content they run would not be judged.
+  - a change under `crates/<dir>/` where `<dir>` has no `Cargo.toml` on either side. Such
+    a folder is no crate, so no plugin version would cover the change. A file directly in
+    `crates/` stays an archive input (above).
+- A file that a listed script runs in another way than `source` or `.` (`bash x.sh`,
+  `eval "$(cat x)"`) is judged only through the line that calls it: the commit that adds
+  the call needs a bump, but later changes of that file alone are not seen. Review adds
+  such a file to the list. Today the only such call runs `scripts/check.sh`, which is
+  listed. The same holds for a source inside a quoted command substitution
+  (`"$(. x.sh)"`), since quoted text is not read as commands.
 - The list is read from both trees that are compared: the before rev, and the after rev or
   the index. Its blob and script lines count from either side, so a commit cannot drop an
-  input from the list and change it at once. When the except or region lines of a path
-  differ between the two lists, that path counts as changed. A side without the list (a
+  input from the list and change it at once. When the region lines of a path differ
+  between the two lists, that path counts as changed. An `except` line, which an earlier
+  form of the list used to leave parts of a script out, is an unknown kind in the after
+  list (undecidable) and is dropped from the before list. A side without the list (a
   commit before it existed) uses the list of the other side. A region of `release.yml`
   that cannot be found is undecidable; a trailing comment on a marker, or on the key line
   of another job, does not move a region.
