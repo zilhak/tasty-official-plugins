@@ -1280,6 +1280,41 @@ fn a_pin_move_that_changes_only_test_code_needs_no_bump() {
     assert!(text.contains("nothing to judge"), "{text}");
 }
 
+/// A test-only module file that is added and later removed ships nothing either way; needs
+/// the real judge.
+#[test]
+fn a_pin_move_that_adds_or_removes_a_test_only_module_file_needs_no_bump() {
+    let f = PinFixture::new();
+    f.tasty_write(
+        "crates/tasty-a/src/lib.rs",
+        &format!("{TASTY_A_LIB}\n#[cfg(test)]\nmod more;\n"),
+    );
+    f.tasty_write(
+        "crates/tasty-a/src/more.rs",
+        "#[test]\nfn more() {\n    assert_eq!(super::a(), 1);\n}\n",
+    );
+    let t2 = f.tasty_commit("add a test module file");
+    f.move_pin(&t2);
+    f.commit("move the pin to the added test file");
+
+    let (code, text) = f.check_judged(&HEAD_RANGE);
+    assert_eq!(code, 0, "adding a test-only file asked for a bump:\n{text}");
+    assert!(text.contains("nothing to judge"), "{text}");
+
+    f.tasty_write("crates/tasty-a/src/lib.rs", TASTY_A_LIB);
+    fs::remove_file(f.tasty.join("crates/tasty-a/src/more.rs")).expect("remove more.rs");
+    let t3 = f.tasty_commit("remove the test module file");
+    f.move_pin(&t3);
+    f.commit("move the pin past the removed test file");
+
+    let (code, text) = f.check_judged(&HEAD_RANGE);
+    assert_eq!(
+        code, 0,
+        "removing a test-only file asked for a bump:\n{text}"
+    );
+    assert!(text.contains("nothing to judge"), "{text}");
+}
+
 /// Case 4: Only the formatting changed.
 #[test]
 fn a_pin_move_that_changes_only_formatting_needs_no_bump() {

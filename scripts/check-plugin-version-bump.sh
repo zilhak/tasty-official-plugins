@@ -470,7 +470,12 @@ pin_edition() {  # <src> <commit> <dir> <name>
 # without blank lines, the crate manifest without its version line, anything else as is.
 pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
     local f="$1/$3" out fmt vline
-    [ -f "$f" ] || { printf '<absent>'; return; }
+    if [ ! -f "$f" ]; then
+        # A missing Rust file and a copy emptied as test-only count as the same, as in
+        # shipped_sum; other files tell a missing file from an empty one.
+        case "$3" in *.rs) printf '<no-ship>' ;; *) printf '<absent>' ;; esac
+        return
+    fi
     case "$3" in
         *.rs)
             if [ -f "$2/$3" ]; then out=$(cat "$2/$3"); else out=$(cat "$f"); fi
