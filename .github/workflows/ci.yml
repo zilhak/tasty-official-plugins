@@ -25,6 +25,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Fail instead of installing a missing toolchain into the runner's shared
+  # RUSTUP_HOME. rustup 1.28.1 and later install it by default; see docs/ci.md.
+  RUSTUP_AUTO_INSTALL: "0"
 
 defaults:
   run:
@@ -48,8 +51,10 @@ jobs:
       # docs/ci.md. Jobs do not install toolchains, targets, or packages.
       - name: Show toolchain
         run: |
-          rustup show active-toolchain
-          cargo --version
+          if ! rustup show active-toolchain || ! cargo --version; then
+            echo "::error::The toolchain in rust-toolchain.toml is not installed on this runner; see docs/ci.md#what-the-runners-need"
+            exit 1
+          fi
 
       # tasty-plugin-markdown's Linux dev-dependencies (webkit2gtk, gtk,
       # javascriptcore-rs) link against WebKitGTK 4.1 (libwebkit2gtk-4.1-dev, which
@@ -107,8 +112,10 @@ jobs:
       # docs/ci.md. Jobs do not install toolchains, targets, or packages.
       - name: Show toolchain
         run: |
-          rustup show active-toolchain
-          cargo --version
+          if ! rustup show active-toolchain || ! cargo --version; then
+            echo "::error::The toolchain in rust-toolchain.toml is not installed on this runner; see docs/ci.md#what-the-runners-need"
+            exit 1
+          fi
 
       - name: clippy
         run: scripts/check.sh lint
@@ -134,8 +141,10 @@ jobs:
       # docs/ci.md. Jobs do not install toolchains, targets, or packages.
       - name: Show toolchain
         run: |
-          rustup show active-toolchain
-          cargo --version
+          if ! rustup show active-toolchain || ! cargo --version; then
+            echo "::error::The toolchain in rust-toolchain.toml is not installed on this runner; see docs/ci.md#what-the-runners-need"
+            exit 1
+          fi
 
       # Installed under this runner's tool cache, not in ~/.cargo/bin, and reused
       # by later runs of the same version.
@@ -186,8 +195,10 @@ jobs:
       # docs/ci.md. Jobs do not install toolchains, targets, or packages.
       - name: Show toolchain
         run: |
-          rustup show active-toolchain
-          cargo --version
+          if ! rustup show active-toolchain || ! cargo --version; then
+            echo "::error::The toolchain in rust-toolchain.toml is not installed on this runner; see docs/ci.md#what-the-runners-need"
+            exit 1
+          fi
 
       # windows-arm64 is cross-built on an x64 Windows host, as in tasty.
       - name: Check target

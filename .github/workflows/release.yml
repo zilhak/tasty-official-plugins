@@ -22,6 +22,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Fail instead of installing a missing toolchain into the runner's shared
+  # RUSTUP_HOME. rustup 1.28.1 and later install it by default; see docs/ci.md.
+  RUSTUP_AUTO_INSTALL: "0"
   # Relative so Git Bash tar on Windows never sees a drive letter.
   PKG_OUT: target/package
 
@@ -66,8 +69,10 @@ jobs:
       # docs/ci.md. Jobs do not install toolchains, targets, or packages.
       - name: Show toolchain
         run: |
-          rustup show active-toolchain
-          cargo --version
+          if ! rustup show active-toolchain || ! cargo --version; then
+            echo "::error::The toolchain in rust-toolchain.toml is not installed on this runner; see docs/ci.md#what-the-runners-need"
+            exit 1
+          fi
 
       # windows-arm64 is cross-built on an x64 Windows host, as in tasty.
       - name: Check target

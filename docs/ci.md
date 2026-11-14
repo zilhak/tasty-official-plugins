@@ -58,7 +58,15 @@ would only order runs of this repository, which the runner queue already does.
 Jobs do not change machine-wide state: they install no system packages, no toolchains
 or targets, and nothing into `~/.cargo/bin`. The jobs check for the toolchain, the
 build target, and the Linux WebKitGTK files, and fail with a message that points here
-when one is missing. Each runner needs:
+when one is missing.
+
+Both workflows set `RUSTUP_AUTO_INSTALL=0`. rustup 1.28.1 and later install a missing
+toolchain named in `rust-toolchain.toml` by default, which would change the runner's
+`RUSTUP_HOME`, shared with other runners of the same user. With the variable set, a job
+on a runner without the toolchain fails at "Show toolchain" instead. The workflows do not
+change the persistent rustup setting (`rustup set auto-install`).
+
+Each runner needs:
 
 | Runner | Needs |
 |---|---|
