@@ -14,9 +14,11 @@ NOTICE_ASSET="assets/NOTICE.md"
 # a checkout without the license texts, so it fails too. dotglob is turned on only inside
 # this function and set back to the caller's state before it returns.
 notice_set_files() {
-  local f found=0 bad="" saved
-  saved=$(shopt -p dotglob)
-  shopt -s dotglob
+  local f found=0 bad="" restore=0
+  if ! shopt -q dotglob; then
+    shopt -s dotglob
+    restore=1
+  fi
   echo "LICENSE"
   echo "THIRD_PARTY_LICENSES.md"
   for f in LICENSES/*; do
@@ -28,7 +30,7 @@ notice_set_files() {
     echo "$f"
     found=1
   done
-  eval "$saved"
+  if [[ $restore -eq 1 ]]; then shopt -u dotglob; fi
   if [[ -n "$bad" ]]; then
     echo "error: $bad is not a regular file; LICENSES/ holds files only" >&2
     return 1
