@@ -1211,7 +1211,7 @@ impl PinFixture {
 
 const HEAD_RANGE: [&str; 3] = ["--range", "HEAD^", "HEAD"];
 
-/// 1. A pin move that changes only a crate in alpha's closure.
+/// Case 1: A pin move that changes only a crate in alpha's closure.
 #[test]
 fn a_pin_move_flags_only_the_plugins_whose_closure_changed() {
     let f = PinFixture::new();
@@ -1242,7 +1242,7 @@ fn a_pin_move_flags_only_the_plugins_whose_closure_changed() {
     );
 }
 
-/// 2. The same move with alpha's patch version raised passes.
+/// Case 2: The same move with alpha's patch version raised passes.
 #[test]
 fn a_pin_move_with_the_bump_passes() {
     let f = PinFixture::new();
@@ -1260,7 +1260,7 @@ fn a_pin_move_with_the_bump_passes() {
     assert!(text.contains("pass — 1 judged"), "{text}");
 }
 
-/// 3. Only the #[cfg(test)] part changed; needs the real judge.
+/// Case 3: Only the #[cfg(test)] part changed; needs the real judge.
 #[test]
 fn a_pin_move_that_changes_only_test_code_needs_no_bump() {
     let f = PinFixture::new();
@@ -1280,7 +1280,7 @@ fn a_pin_move_that_changes_only_test_code_needs_no_bump() {
     assert!(text.contains("nothing to judge"), "{text}");
 }
 
-/// 4. Only the formatting changed.
+/// Case 4: Only the formatting changed.
 #[test]
 fn a_pin_move_that_changes_only_formatting_needs_no_bump() {
     let f = PinFixture::new();
@@ -1297,7 +1297,7 @@ fn a_pin_move_that_changes_only_formatting_needs_no_bump() {
     assert!(text.contains("nothing to judge"), "{text}");
 }
 
-/// 5. A file inside the crate but outside src/ (read with include_str!) is content.
+/// Case 5: A file inside the crate but outside src/ (read with include_str!) is content.
 #[test]
 fn a_pin_move_that_changes_a_crate_file_outside_src_is_content() {
     let f = PinFixture::new();
@@ -1312,7 +1312,7 @@ fn a_pin_move_that_changes_a_crate_file_outside_src_is_content() {
     assert!(!text.contains("crates/tasty-plugin-beta:"), "{text}");
 }
 
-/// 6. A listed input at the tasty root (lang/) reaches only the plugins that link its crate.
+/// Case 6: A listed input at the tasty root (lang/) reaches only the plugins that link its crate.
 #[test]
 fn a_pin_move_that_changes_a_listed_root_input_flags_its_crate() {
     let f = PinFixture::new();
@@ -1332,7 +1332,7 @@ fn a_pin_move_that_changes_a_listed_root_input_flags_its_crate() {
     assert!(!text.contains("crates/tasty-plugin-beta:"), "{text}");
 }
 
-/// 7. An unlisted path outside a crate stops the check.
+/// Case 7: An unlisted path outside a crate stops the check.
 #[test]
 fn a_pin_move_with_an_unlisted_outside_input_is_undecidable() {
     let f = PinFixture::new();
@@ -1354,7 +1354,7 @@ fn a_pin_move_with_an_unlisted_outside_input_is_undecidable() {
     assert!(text.contains("tasty-extra-inputs.txt"), "{text}");
 }
 
-/// 8. The old commit cannot be found anywhere (no TASTY_GIT_DIR, not in the cargo database,
+/// Case 8: The old commit cannot be found anywhere (no TASTY_GIT_DIR, not in the cargo database,
 /// and the URL does not have it).
 #[test]
 fn a_pin_move_from_an_unreadable_commit_is_undecidable() {
@@ -1373,7 +1373,7 @@ fn a_pin_move_from_an_unreadable_commit_is_undecidable() {
     assert!(text.contains("11111111"), "{text}");
 }
 
-/// 15. A lower version together with a pin move is undecidable, not a pass.
+/// Case 15: A lower version together with a pin move is undecidable, not a pass.
 #[test]
 fn a_pin_move_with_a_lower_version_is_undecidable() {
     let f = PinFixture::new();
