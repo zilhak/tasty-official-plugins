@@ -91,11 +91,12 @@ The `pre-merge-commit` and `pre-commit` hooks enforce this table (install with
   of a crates.io crate in that closure (one bump per release covers several such updates);
   the `pre-commit` hook and the Plugin version check workflow check this. Lane worktrees
   may defer it with `git config --worktree tasty.pluginBump deferred`; the merge step runs
-  `scripts/plugin-bump-fixup.sh` per commit and checks each commit again:
+  `scripts/plugin-bump-fixup.sh` per commit and checks each commit again. The loop stops
+  at the first commit that fails:
 
   ```
   git rebase --exec 'bash scripts/plugin-bump-fixup.sh' <base>
-  for c in $(git rev-list --reverse <base>..HEAD); do bash scripts/check-plugin-version-bump.sh --range "$c^" "$c"; done
+  for c in $(git rev-list --reverse <base>..HEAD); do bash scripts/check-plugin-version-bump.sh --range "$c^" "$c" || exit 1; done
   ```
 - A manual run of `release.yml` builds the release files as workflow artifacts with the
   tag `unreleased` in `release-meta.toml` and creates no Release.

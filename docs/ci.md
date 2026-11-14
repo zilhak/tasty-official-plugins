@@ -136,13 +136,16 @@ the job.
 `plugin-version-check.yml` runs `scripts/check-plugin-version-bump.sh --range` on the two
 commits of the event: the pull request base and head, or the push before and after
 (`HEAD^` and `HEAD` for a manual run). It runs for every change except Markdown outside
-`src`, `lang`, and `assets`, and `docs/`, and cancels the older run on the same ref.
+`src`, `lang`, and `assets`, and `docs/`. A newer pull request run cancels the older one
+on the same ref. Push runs are not cancelled, because each one checks only its own
+before..after range and a cancelled run would leave that range unchecked.
 
 - `cargo fetch --locked` comes first, so `cargo tree --offline` works on a runner without
   a warm cache.
 - `scripts/install-judge.sh` installs `strip-cfg-test` from the pinned tasty commit into
   `$RUNNER_TOOL_CACHE/strip-cfg-test/<first 8 characters of the tasty sha>`, never into
-  `~/.cargo/bin`. It leaves test-only Rust code out of the comparison.
+  `~/.cargo/bin`. It leaves test-only Rust code out of the comparison. The step fails if
+  the install gives no runnable file.
 - The first push of a ref has nothing to compare and is skipped with a message. A range
   start that is missing from the clone (after a force push) fails the job.
 - Exit codes: 0 pass or nothing to judge, 1 a plugin needs a version bump, 2 undecidable.
@@ -151,8 +154,11 @@ commits of the event: the pull request base and head, or the push before and aft
   build inputs. A tasty pin move or a changed `[workspace.dependencies]` entry needs a bump
   of each plugin whose dependency closure holds a changed crate. An update of a crates.io
   crate in `Cargo.lock` needs one too, unless the plugin is already above its version at
-  the latest release tag. `[profile.*]`, `.cargo/config.toml`, and `rust-toolchain.toml`
-  pass with a note; `[workspace]` and unknown sections are undecidable.
+  the latest release tag on `origin/main` (the local `main` only when there is no
+  `origin/main`). `[profile.*]`, `.cargo/config.toml`, and `rust-toolchain.toml` pass with
+  a note; `[workspace]` and unknown sections are undecidable, and so is a changed
+  `[workspace.dependencies]` line that cannot be read or that no package in `Cargo.lock`
+  answers to.
 
 ## Static C runtime on Windows
 
