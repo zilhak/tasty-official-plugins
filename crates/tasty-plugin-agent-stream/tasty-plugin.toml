@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.agent-stream"
 name = "Agent Stream"
-version = "0.2.0"
+version = "0.2.1"
 description = "Tails AI agent session transcripts and normalizes them into structured stream events"
 api_version = "1"
 # 배포 번들에는 포함하지 않는다(docs/plugins/agent-stream/index.md). 대화 기록을 네트워크로 내보낼 수 있어 재검토가 필요하다.

@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.image"
 name = "Image"
-version = "0.2.0"
+version = "0.2.1"
 description = "Image surface viewer / paint canvas"
 api_version = "1"
 permissions = [

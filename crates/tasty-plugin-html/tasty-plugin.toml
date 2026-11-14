@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.html"
 name = "HTML Viewer"
-version = "0.2.0"
+version = "0.2.1"
 description = "HTML viewer surface. Uses tasty's native WebView overlay toolkit."
 api_version = "1"
 permissions = [

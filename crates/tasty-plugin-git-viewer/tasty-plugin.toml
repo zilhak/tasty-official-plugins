@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.git-viewer"
 name = "Git Viewer"
-version = "0.2.0"
+version = "0.2.1"
 description = "Read-only git status / log / diff popup"
 api_version = "1"
 permissions = ["ui.popup", "ui.tool_item", "fs.read"]

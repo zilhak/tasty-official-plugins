@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.clipboard-viewer"
 name = "Clipboard Viewer"
-version = "0.2.0"
+version = "0.2.1"
 description = "Read-only viewer of the current system clipboard"
 api_version = "1"
 # 클립보드를 직접 읽으므로 호스트의 권한 검사를 거치지 않는다. 사용 목적의 선언으로 남긴다.
