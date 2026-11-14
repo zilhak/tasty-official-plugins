@@ -12,6 +12,10 @@
 #                                   archives, left out before the comparison:
 #                                     function  the definition of the function named pattern
 #                                     line      every line that matches pattern
+#                                     branch    a case branch, from the head line that
+#                                               matches pattern to the first line that
+#                                               ends with ;; (exit 2 when another branch
+#                                               head or esac comes first)
 #                                   then a case statement left with no branch goes too
 #   region  path  how  open  close  only the parts that packaging runs, compared like a
 #                                   script; every region line of a path is one comparison
@@ -50,6 +54,7 @@ except	scripts/check.sh	line	^[[:space:]]*test\)[[:space:]]*cmd_test([[:space:]]
 except	scripts/check.sh	line	^[[:space:]]*audit\)[[:space:]]*cmd_audit[[:space:]]*;;[[:space:]]*(#.*)?$
 except	scripts/check.sh	line	^[[:space:]]*licenses\)[[:space:]]*cmd_licenses[[:space:]]*;;[[:space:]]*(#.*)?$
 except	scripts/check.sh	line	^[[:space:]]*[a-z]+([[:space:]]*\|[[:space:]]*[a-z]+)*\)[[:space:]]*warn_hooks([[:space:]]*\|\|[[:space:]]*true)?[[:space:]]*;;[[:space:]]*(#.*)?$
+except	scripts/check.sh	branch	^[[:space:]]*-h[[:space:]]*\|[[:space:]]*--help[[:space:]]*\|[[:space:]]*help\)
 region	.github/workflows/release.yml	top	^env:[[:space:]]*$
 region	.github/workflows/release.yml	top	^defaults:[[:space:]]*$
 region	.github/workflows/release.yml	job	^  package:[[:space:]]*$

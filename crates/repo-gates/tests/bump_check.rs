@@ -2170,6 +2170,9 @@ fn archive_list() -> String {
 }
 
 const FIXTURE_CHECK_SH: &str = r#"#!/usr/bin/env bash
+# The check entry point.
+#
+#   scripts/check.sh build   build the plugin crates
 set -euo pipefail
 
 PLUGINS=(
@@ -2218,6 +2221,13 @@ case "$sub" in
   build) cmd_build "$@" ;;
   list-bins) cmd_list_bins ;;
   audit) cmd_audit ;;
+  -h | --help | help)
+    sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    echo "unknown subcommand: $sub" >&2
+    exit 2
+    ;;
 esac
 "#;
 
@@ -2925,6 +2935,60 @@ fn check_sh_changes_like_the_license_and_hook_lanes_need_no_bump() {
     );
     f.commit("add a doc subcommand");
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
+}
+
+/// The real commits that added the license check and the hook warning also added a line to
+/// the head comment and moved the range of the help branch, which only prints that comment.
+/// The help branch is left out, so these commits need no bump either; a help branch that is
+/// not closed by ;; stops the check.
+#[test]
+fn check_sh_changes_like_the_real_license_and_hook_commits_need_no_bump() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/check.sh",
+        "#   scripts/check.sh build   build the plugin crates\n",
+        "#   scripts/check.sh build   build the plugin crates\n\
+         # fmt, test, build, and all warn when this clone does not run .githooks.\n",
+    );
+    f.edit("scripts/check.sh", "'2,4p'", "'2,5p'");
+    f.edit(
+        "scripts/check.sh",
+        "sub=\"${1:-all}\"\n",
+        "warn_hooks() {\n  echo \"warning: no hooks\" >&2\n  return 0\n}\n\n\
+         sub=\"${1:-all}\"\n\ncase \"$sub\" in\n  \
+         all | fmt | test | build) warn_hooks || true ;;\nesac\n",
+    );
+    f.commit("warn when the hooks do not run");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+
+    f.edit(
+        "scripts/check.sh",
+        "# fmt, test, build, and all warn when this clone does not run .githooks.\n",
+        "# fmt, test, build, and all warn when this clone does not run .githooks.\n\
+         #   scripts/check.sh licenses   cargo deny license policy\n",
+    );
+    f.edit("scripts/check.sh", "'2,5p'", "'2,6p'");
+    f.edit(
+        "scripts/check.sh",
+        "cmd_audit() { run cargo audit; }\n",
+        "cmd_audit() { run cargo audit; }\n\
+         cmd_licenses() { run cargo deny --locked --workspace check licenses; }\n",
+    );
+    f.edit(
+        "scripts/check.sh",
+        "  audit) cmd_audit ;;\n",
+        "  audit) cmd_audit ;;\n  licenses) cmd_licenses ;;\n",
+    );
+    f.commit("add the license check");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+
+    f.edit(
+        "scripts/check.sh",
+        "\"$0\" | sed 's/^# \\{0,1\\}//'\n    ;;\n",
+        "\"$0\" | sed 's/^# \\{0,1\\}//'\n",
+    );
+    f.commit("drop the ;; of the help branch");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "is not closed by ;; before line");
 }
 
 /// What runs for check.sh build outside the named functions counts: top-level statements and

@@ -1487,9 +1487,12 @@ code_lines() {
 
 # Drops the parts of a script that <excepts> ("how<TAB>pattern" lines) names: a function
 # definition (how function, pattern the name; a one-line definition or the lines up to a
-# closing } in column 0) or every line that matches an extended regular expression (how
-# line). A trailing comment does not hide a definition line. A definition that cannot be
-# read, or a function that is not closed before another definition starts, stops the check.
+# closing } in column 0), every line that matches an extended regular expression (how
+# line), or a case branch (how branch: from the head line that matches pattern to the first
+# line that ends with ;;). A trailing comment does not hide a definition, head, or closing
+# line. A definition that cannot be read, a function that is not closed before another
+# definition starts, and a branch that is not closed before another branch head or esac
+# stop the check.
 except_drop() {  # <excepts file> <source file> <out file> <what>
     if ! X="$1" awk '
         function bare(s) { sub(/[[:space:]]+#.*$/, "", s); sub(/[[:space:]]+$/, "", s); return s }
@@ -1497,6 +1500,14 @@ except_drop() {  # <excepts file> <source file> <out file> <what>
             while ((getline l < ENVIRON["X"]) > 0) {
                 n++; how[n] = l; pat[n] = l; sub(/\t.*/, "", how[n]); sub(/^[^\t]*\t/, "", pat[n])
             }
+        }
+        inbr {
+            b = bare($0)
+            if (b ~ /;;$/) { inbr = 0; next }
+            if (b ~ /^[[:space:]]*esac$/ || b ~ /^[[:space:]]*[^[:space:]#()][^()]*\)([[:space:]]|$)/) {
+                bad = "the case branch from line " start " is not closed by ;; before line " NR; exit
+            }
+            next
         }
         infn {
             b = bare($0)
@@ -1508,6 +1519,10 @@ except_drop() {  # <excepts file> <source file> <out file> <what>
             b = bare($0)
             for (i = 1; i <= n; i++) {
                 if (how[i] == "line" && $0 ~ pat[i]) next
+                if (how[i] == "branch" && b ~ pat[i]) {
+                    if (b ~ /;;$/) next
+                    inbr = 1; start = NR; next
+                }
                 if (how[i] != "function") continue
                 head = "^" pat[i] "[[:space:]]*\\(\\)[[:space:]]*\\{"
                 if (b !~ head) continue
@@ -1520,6 +1535,7 @@ except_drop() {  # <excepts file> <source file> <out file> <what>
         }
         END {
             if (bad == "" && infn) bad = "the function " fname " from line " start " is not closed"
+            if (bad == "" && inbr) bad = "the case branch from line " start " is not closed by ;;"
             if (bad != "") { print bad > "/dev/stderr"; exit 3 }
         }' "$2" > "$3" 2>"$WORK/except.err"; then
         die "$4: $(cat "$WORK/except.err"). The parts left out are listed in $ARCHIVE_INPUTS; judge the plugin versions by hand or fix the list."
@@ -1625,8 +1641,8 @@ regions_in() {  # <list file> <path> <out file>
 excepts_in() {  # <list file> <path> <out file>
     P="$2" awk -F '\t' '$1 == "except" && $2 == ENVIRON["P"] { print $3 "\t" $4 }' "$1" > "$3" \
         || die "cannot read the except lines of $2."
-    if awk -F '\t' '($1 != "function" && $1 != "line") || $2 == "" || ($1 == "function" && $2 !~ /^[A-Za-z_][A-Za-z0-9_]*$/)' "$3" | grep -q .; then
-        die "$ARCHIVE_INPUTS: an except line of $2 that is not read (how is function with a plain name, or line with a pattern)."
+    if awk -F '\t' '($1 != "function" && $1 != "line" && $1 != "branch") || $2 == "" || ($1 == "function" && $2 !~ /^[A-Za-z_][A-Za-z0-9_]*$/)' "$3" | grep -q .; then
+        die "$ARCHIVE_INPUTS: an except line of $2 that is not read (how is function with a plain name, or line or branch with a pattern)."
     fi
 }
 
