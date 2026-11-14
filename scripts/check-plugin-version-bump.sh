@@ -1682,7 +1682,8 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
         # builtin command (and their - options), after an assignment (also a[i]= and +=), and
         # after a redirection. Quoted text, text after an unquoted #, the words after a
         # substitution that ends inside a word, case patterns, and here-document bodies are no
-        # commands; the word after source or . is its target, without its quotes. A command
+        # commands, except the substitutions in a body whose end word has no quote or
+        # backslash; the word after source or . is its target, without its quotes. A command
         # word written with a backslash or with $'...' or $"..." quoting is not read: it stops
         # the check (Q), and so do a here-document without its end word (H) and a quote that
         # is still open at the end of the file (O). A here-document starts at << or <<- outside
@@ -1691,17 +1692,23 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
         # brace, and the substitutions inside it and inside arithmetic are read as commands.
         awk '
             # Ends a word. raw is the word as written, word the word without its quotes.
-            function endword(   w, r, cop, d, h) {
+            function endword(   w, r, cop, d, dr, h) {
                 if (!inword) return
                 w = word; r = raw; h = hst; word = ""; raw = ""; inword = 0; hst = -1
                 cop = coproc; coproc = 0
-                # A here-document: its body, from the next line to its end word, is data.
-                if (hdnext) { d = w; gsub(/\\/, "", d); hw[++hn] = d; hdash[hn] = hdnext - 1; hdnext = 0; redir = 0; return }
+                # A here-document: its body runs from the next line to its end word. With a
+                # quote or a backslash in the end word the body is data; without, only the
+                # substitutions in it are read.
+                if (hdnext) {
+                    d = w; gsub(/\\/, "", d); hw[++hn] = d; hdash[hn] = hdnext - 1
+                    hquo[hn] = (r ~ /["\047\\]/); hdnext = 0; redir = 0; return
+                }
                 # << or <<- anywhere outside quotes (cat<<EOF, cmd>f<<EOF), not <<<.
                 if (h >= 0) {
                     d = substr(w, h + 1); sub(/^<<-?/, "", d); gsub(/\\/, "", d)
-                    if (d == "") hdnext = hdsh ? 2 : 1
-                    else { hw[++hn] = d; hdash[hn] = hdsh }
+                    dr = substr(r, hrst + 1); sub(/^<<-?/, "", dr)
+                    if (dr == "") hdnext = hdsh ? 2 : 1
+                    else { hw[++hn] = d; hdash[hn] = hdsh; hquo[hn] = (dr ~ /["\047\\]/) }
                     w = substr(w, 1, h); r = substr(r, 1, hrst)
                     if (w ~ /^[0-9]*$/) return
                 }
@@ -1746,11 +1753,16 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
                 cmd = scmd[sd]; want = swant[sd]; opts = sopts[sd]; redir = sredir[sd]; sd--
             }
             BEGIN { hst = -1 }
-            hmode {
+            # A line of a here-document body outside the substitutions in it: its end word,
+            # data (a quoted end word), or text whose substitutions are read (below).
+            hmode && sd == hbase && bd[sd] == 0 {
                 l = $0
                 if (hdash[hi]) sub(/^\t+/, "", l)
-                if (l == hw[hi] && ++hi > hn) { hmode = 0; hn = 0 }
-                next
+                if (l == hw[hi]) {
+                    if (++hi > hn) { hmode = 0; hn = 0; word = ""; raw = ""; inword = 0 }
+                    next
+                }
+                if (hquo[hi]) next
             }
             {
                 s = $0; n = length(s)
@@ -1758,6 +1770,18 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
                 cont = 0
                 for (i = 1; i <= n; i++) {
                     c = substr(s, i, 1)
+                    c2 = substr(s, i + 1, 1); c3 = substr(s, i + 2, 1)
+                    # The body of a here-document with an unquoted end word: quotes are text, a
+                    # backslash escapes the next character, and $( ), $(( )), backticks, and ${ }
+                    # are read as outside quotes. The body goes on where they close.
+                    if (hmode && sd == hbase) {
+                        if (c == "\\") { i++; continue }
+                        if (c == "$" && c2 == "{") { bd[sd]++; i++; continue }
+                        if (c == "$" && c2 == "(") { i++; if (c3 == "(") { i++; opensub("A") } else opensub("("); continue }
+                        if (c == "`") { opensub("`"); continue }
+                        if (bd[sd] > 0 && c == "}") bd[sd]--
+                        continue
+                    }
                     if (q == "\047") { raw = raw c; if (c == "\047") q = ""; else word = word c; continue }
                     if (q == "\"") {
                         raw = raw c
@@ -1770,7 +1794,6 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
                         i++; word = word "\\" substr(s, i, 1); raw = raw "\\" substr(s, i, 1); inword = 1; continue
                     }
                     if (c == "\047" || c == "\"") { q = c; qline = NR; raw = raw c; inword = 1; continue }
-                    c2 = substr(s, i + 1, 1); c3 = substr(s, i + 2, 1)
                     # Arithmetic: parentheses are counted, << is a shift.
                     if (sd > 0 && st[sd] == "A") {
                         if (c == "$" && c2 == "(") { i++; if (c3 == "(") { i++; opensub("A") } else opensub("("); continue }
@@ -1820,8 +1843,8 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
                     if (c == "&") { endword(); sep(); continue }
                     word = word c; raw = raw c; inword = 1
                 }
-                if (q == "" && !cont && !(sd > 0 && st[sd] == "A") && bd[sd] == 0) {
-                    endword(); if (hn > 0 && !hdnext) { hmode = 1; hi = 1 }
+                if (q == "" && !cont && !(sd > 0 && st[sd] == "A") && bd[sd] == 0 && !(hmode && sd == hbase)) {
+                    endword(); if (hn > 0 && !hdnext && !hmode) { hmode = 1; hi = 1; hbase = sd }
                 }
             }
             END {

@@ -3342,7 +3342,8 @@ fn sources_behind_redirections_options_and_odd_quoting_are_caught() {
 }
 
 /// Braces inside a word, the words after a substitution, case patterns, and here-document
-/// bodies are no command positions, so ordinary code there is only a change of check.sh. A
+/// bodies are no command positions, so ordinary code there is only a change of check.sh.
+/// The substitutions in the body of a here-document with an unquoted end word are read. A
 /// source in a brace group, a substitution (also on a later line of it, and inside ${ }),
 /// after a case pattern, after the end of a here-document, and after an indexed or +=
 /// assignment is still found, and a here-document without its end word stops the check.
@@ -3373,6 +3374,10 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
         "y=$(\n  cd scripts\n  pwd\n)",
         "artifacts=$(\n  scripts/check.sh build --message-format=json |\n    cat\n)",
         "x=$((\n  1 << 2\n))",
+        "cat <<'EOF'\n$(. REVIEW_MARK)\nsource REVIEW_MARK\nEOF",
+        "cat <<\"EOF\"\n$(. REVIEW_MARK)\nEOF",
+        "cat <<\\EOF\n$(. REVIEW_MARK)\nEOF",
+        "cat <<EOF\nsource REVIEW_MARK\nDon't panic\n\\$(. REVIEW_MARK)\n$(( 1 << 2 ))\n$(date)\nEOF",
     ] {
         let f = ArchiveFixture::new();
         f.edit(
@@ -3405,6 +3410,10 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
         "y=`\n  foo bar\n  . scripts/lib/extra.sh\n`",
         "cat <(\n  foo bar\n  . scripts/lib/extra.sh\n)",
         "y=$( (\n  a\n  . scripts/lib/extra.sh\n) )",
+        "RUSTFLAGS=$(cat <<EOF\n$(. scripts/lib/extra.sh; printf '%s' ' -Cdebuginfo=0')\nEOF\n)",
+        "cat <<EOF\n`. scripts/lib/extra.sh`\nEOF",
+        "cat <<EOF\n${x:-$(. scripts/lib/extra.sh)}\nEOF",
+        "cat <<-EOF\n\t$(. scripts/lib/extra.sh)\n\tEOF",
     ] {
         let f = ArchiveFixture::new();
         f.write("scripts/lib/extra.sh", "export REVIEW_MARK=1\n");
