@@ -1681,20 +1681,26 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
         # substitution that ends inside a word, case patterns, and here-document bodies are no
         # commands; the word after source or . is its target, without its quotes. A command
         # word written with a backslash or with $'...' or $"..." quoting is not read: it stops
-        # the check (Q), and so does a here-document without its end word (H).
+        # the check (Q), and so do a here-document without its end word (H) and a quote that
+        # is still open at the end of the file (O). A here-document starts at << or <<- outside
+        # quotes, also inside a word (cat<<EOF), but not at <<< or in arithmetic ($(( )),
+        # (( )), for (( ))), where << is a shift. ${ } is part of its word up to its closing
+        # brace, and the substitutions inside it and inside arithmetic are read as commands.
         awk '
             # Ends a word. raw is the word as written, word the word without its quotes.
-            function endword(   w, r, cop, d) {
+            function endword(   w, r, cop, d, h) {
                 if (!inword) return
-                w = word; r = raw; word = ""; raw = ""; inword = 0
+                w = word; r = raw; h = hst; word = ""; raw = ""; inword = 0; hst = -1
                 cop = coproc; coproc = 0
                 # A here-document: its body, from the next line to its end word, is data.
                 if (hdnext) { d = w; gsub(/\\/, "", d); hw[++hn] = d; hdash[hn] = hdnext - 1; hdnext = 0; redir = 0; return }
-                if (r ~ /^[0-9]*<<-?/ && r !~ /^[0-9]*<<</) {
-                    d = w; sub(/^[0-9]*<<-?/, "", d); gsub(/\\/, "", d)
-                    if (d == "") hdnext = (r ~ /^[0-9]*<<-/) ? 2 : 1
-                    else { hw[++hn] = d; hdash[hn] = (r ~ /^[0-9]*<<-/) }
-                    return
+                # << or <<- anywhere outside quotes (cat<<EOF, cmd>f<<EOF), not <<<.
+                if (h >= 0) {
+                    d = substr(w, h + 1); sub(/^<<-?/, "", d); gsub(/\\/, "", d)
+                    if (d == "") hdnext = hdsh ? 2 : 1
+                    else { hw[++hn] = d; hdash[hn] = hdsh }
+                    w = substr(w, 1, h); r = substr(r, 1, hrst)
+                    if (w ~ /^[0-9]*$/) return
                 }
                 if (redir) { redir = 0; return }
                 if (want) { print "S\t" NR "\t" w "\t" $0; want = 0; cmd = 0; return }
@@ -1723,17 +1729,19 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             # After a separator a command starts.
             function sep() { want = 0; opts = 0; redir = 0; coproc = 0; cmd = 1 }
             # $( ), <( ), >( ), and backticks: the text inside is commands; the substitution is
-            # part of the word around it, and the state outside comes back after it.
+            # part of the word around it, and the state outside comes back after it. $(( )) and
+            # (( )) are arithmetic (A): only the command substitutions inside are read.
             function opensub(t) {
-                sd++; st[sd] = t; pc[sd] = 0; sw[sd] = word; sr[sd] = raw
-                scmd[sd] = cmd; swant[sd] = want; sopts[sd] = opts; sredir[sd] = redir
-                word = ""; raw = ""; inword = 0; sep()
+                sd++; st[sd] = t; pc[sd] = 0; bd[sd] = 0; sw[sd] = word; sr[sd] = raw
+                scmd[sd] = cmd; swant[sd] = want; sopts[sd] = opts; sredir[sd] = redir; shst[sd] = hst
+                word = ""; raw = ""; inword = 0; hst = -1; sep()
             }
-            function closesub() {
-                endword()
-                word = sw[sd] "$()"; raw = sr[sd] "$()"; inword = 1
+            function closesub(arith) {
+                if (arith) { word = ""; raw = ""; inword = 0 } else endword()
+                word = sw[sd] "$()"; raw = sr[sd] "$()"; inword = 1; hst = shst[sd]
                 cmd = scmd[sd]; want = swant[sd]; opts = sopts[sd]; redir = sredir[sd]; sd--
             }
+            BEGIN { hst = -1 }
             hmode {
                 l = $0
                 if (hdash[hi]) sub(/^\t+/, "", l)
@@ -1742,7 +1750,7 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             }
             {
                 s = $0; n = length(s)
-                if (q == "" && !cont) { cmd = 1; want = 0; opts = 0; redir = 0; coproc = 0 }
+                if (q == "" && !cont && sd == 0) { cmd = 1; want = 0; opts = 0; redir = 0; coproc = 0 }
                 cont = 0
                 for (i = 1; i <= n; i++) {
                     c = substr(s, i, 1)
@@ -1757,25 +1765,45 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
                         if (i == n) { cont = 1; break }
                         i++; word = word "\\" substr(s, i, 1); raw = raw "\\" substr(s, i, 1); inword = 1; continue
                     }
-                    if (c == "\047" || c == "\"") { q = c; raw = raw c; inword = 1; continue }
-                    if (c == "#" && !inword) break
-                    if (c == "$" && substr(s, i + 1, 1) == "{") {
-                        j = index(substr(s, i), "}")
-                        if (j == 0) j = n - i + 1
-                        word = word substr(s, i, j); raw = raw substr(s, i, j); inword = 1; i += j - 1; continue
+                    if (c == "\047" || c == "\"") { q = c; qline = NR; raw = raw c; inword = 1; continue }
+                    c2 = substr(s, i + 1, 1); c3 = substr(s, i + 2, 1)
+                    # Arithmetic: parentheses are counted, << is a shift.
+                    if (sd > 0 && st[sd] == "A") {
+                        if (c == "$" && c2 == "(") { i++; if (c3 == "(") { i++; opensub("A") } else opensub("("); continue }
+                        if (c == "`") { opensub("`"); continue }
+                        if (c == "(") { pc[sd]++; continue }
+                        if (c == ")") { if (pc[sd] > 0) pc[sd]--; else if (c2 == ")") { i++; closesub(1) } }
+                        continue
                     }
+                    # ${ }: part of the word, up to its closing brace; substitutions inside are read.
+                    if (c == "$" && c2 == "{") { bd[sd]++; word = word "${"; raw = raw "${"; inword = 1; i++; continue }
+                    if (bd[sd] > 0) {
+                        if (c == "}") bd[sd]--
+                        else if (c == "$" && c2 == "(") {
+                            word = word c; raw = raw c; inword = 1; i++
+                            if (c3 == "(") { i++; opensub("A") } else opensub("(")
+                            continue
+                        }
+                        else if (c == "`") { opensub("`"); continue }
+                        word = word c; raw = raw c; continue
+                    }
+                    if (c == "#" && !inword) break
                     if (c == " " || c == "\t") { endword(); continue }
                     # >& <& >| belong to a redirection word; &> and &>> start one.
                     if ((c == "&" || c == "|") && inword && raw ~ /[<>]$/) { word = word c; raw = raw c; continue }
-                    if (c == "&" && substr(s, i + 1, 1) == ">") { endword(); word = c; raw = c; inword = 1; continue }
+                    if (c == "&" && c2 == ">") { endword(); word = c; raw = c; inword = 1; continue }
+                    # << outside quotes starts a here-document, <<< does not.
+                    if (c == "<" && c2 == "<" && c3 != "<" && raw !~ /<$/) { hst = length(word); hrst = length(raw); hdsh = (c3 == "-") }
+                    if (c == "(" && inword && raw ~ /\$$/ && c2 == "(") { i++; opensub("A"); continue }
+                    if (c == "(" && !inword && c2 == "(") { i++; opensub("A"); continue }
                     if (c == "(" && inword && raw ~ /[$<>]$/) { opensub("("); continue }
                     if (c == "`") { if (sd > 0 && st[sd] == "`") closesub(); else opensub("`"); continue }
                     if (c == ")" && pat) { endword(); pat = 0; sep(); continue }
                     if (c == ")" && sd > 0 && st[sd] == "(" && pc[sd] == 0) { closesub(); continue }
                     if (c == ";") {
                         endword()
-                        if (substr(s, i + 1, 1) == ";") { i++; if (substr(s, i + 1, 1) == "&") i++; if (cases > 0) pat = 1 }
-                        else if (substr(s, i + 1, 1) == "&") { i++; if (cases > 0) pat = 1 }
+                        if (c2 == ";") { i++; if (substr(s, i + 1, 1) == "&") i++; if (cases > 0) pat = 1 }
+                        else if (c2 == "&") { i++; if (cases > 0) pat = 1 }
                         sep(); continue
                     }
                     if (c == "|" || c == "(") {
@@ -1788,14 +1816,22 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
                     if (c == "&") { endword(); sep(); continue }
                     word = word c; raw = raw c; inword = 1
                 }
-                if (q == "" && !cont) { endword(); if (hn > 0 && !hdnext) { hmode = 1; hi = 1 } }
+                if (q == "" && !cont && !(sd > 0 && st[sd] == "A") && bd[sd] == 0) {
+                    endword(); if (hn > 0 && !hdnext) { hmode = 1; hi = 1 }
+                }
             }
-            END { if (hmode) print "H\t" NR "\t" hw[hi] "\t" }
+            END {
+                if (hmode) print "H\t" NR "\t" hw[hi] "\t"
+                if (q != "") print "O\t" qline "\t" q "\t"
+            }
         ' "$WORK/structure.src" > "$WORK/structure.sources" || die "cannot read $path (after)."
         while IFS="$TAB" read -r sk ln target line; do
             [ -n "$ln" ] || continue
             if [ "$sk" = H ]; then
                 die "$path has a here-document whose end word $target is not found by the end of the file, so the source check cannot tell its text from commands; judge the plugin versions by hand."
+            fi
+            if [ "$sk" = O ]; then
+                die "$path line $ln opens a quote ($target) that is not closed by the end of the file, so the source check cannot tell text from commands; judge the plugin versions by hand."
             fi
             if [ "$sk" = Q ]; then
                 die "$path line $ln has a command word written with a backslash or with \$'...' or \$\"...\" quoting ($target), which the source check does not read; write it plainly or judge the plugin versions by hand:

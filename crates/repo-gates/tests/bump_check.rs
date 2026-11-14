@@ -3359,6 +3359,17 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
         "cat <<EOF\n\\\\server\\share\nEOF",
         "cat <<A <<\"B\"\n. REVIEW_MARK\nA\n$'.' REVIEW_MARK\nB",
         "cat <<<\"$x\"",
+        "x=$((1 << 2))",
+        "x=$((1<<2))",
+        "(( x = 1 << 2 ))",
+        "(( x <<= 1 ))",
+        "for (( i = 0; i < 3; i++ )); do :; done",
+        "cat<<'EOF'\nsource REVIEW_MARK\nEOF",
+        "cat<<-EOF\n\tsource REVIEW_MARK\n\tEOF",
+        "cmd>f<<EOF\nsource REVIEW_MARK\nEOF",
+        "echo ${#x} ${x%%*/} ${x:-a b}",
+        "echo ${x:-; . REVIEW_MARK}",
+        "x=$(( (1 + (2)) << 3 ))",
     ] {
         let f = ArchiveFixture::new();
         f.edit(
@@ -3381,6 +3392,11 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
         "cat <<EOF\ntext\nEOF\n. scripts/lib/extra.sh",
         "B+=x . scripts/lib/extra.sh",
         "a[0]=1 . scripts/lib/extra.sh",
+        "x=$((1 << 2))\n. scripts/lib/extra.sh",
+        "(( x <<= 1 ))\n. scripts/lib/extra.sh",
+        "y=$(( $(. scripts/lib/extra.sh) ))",
+        "cat<<EOF\nDon't forget\nEOF\n. scripts/lib/extra.sh",
+        "y=${y:-$(. scripts/lib/extra.sh)}",
     ] {
         let f = ArchiveFixture::new();
         f.write("scripts/lib/extra.sh", "export REVIEW_MARK=1\n");
@@ -3403,6 +3419,18 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
     assert_undecidable_with(
         &f.check(&HEAD_RANGE),
         "has a here-document whose end word EOF is not found",
+    );
+
+    // A quote that is still open at the end of the file stops the check too.
+    let f = ArchiveFixture::new();
+    f.write(
+        "scripts/check.sh",
+        &format!("{FIXTURE_CHECK_SH}echo 'REVIEW_MARK\n"),
+    );
+    f.commit("open a quote");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "opens a quote (') that is not closed by the end of the file",
     );
 }
 
