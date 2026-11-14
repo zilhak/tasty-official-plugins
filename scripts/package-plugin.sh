@@ -125,6 +125,11 @@ for line in sys.stdin:
         print(m["target"]["name"] + "\t" + m["executable"])'
   )
 
+  # Read before the loop: a process substitution would hide a failure of
+  # list-bins after it printed part of the list.
+  local bins
+  bins=$(scripts/check.sh list-bins) || die "cannot list the plugin crates"
+
   rm -rf "$STAGE_DIR"
   mkdir -p "$STAGE_DIR"
 
@@ -154,7 +159,7 @@ for line in sys.stdin:
     fi
     echo "staged $id ($crate)" >&2
     count=$((count + 1))
-  done < <(scripts/check.sh list-bins)
+  done <<<"$bins"
 
   [[ $count -gt 0 ]] || die "no plugins staged"
   echo "staged $count plugins in $STAGE_DIR" >&2
@@ -173,13 +178,16 @@ cmd_pack() {
   printf 'id\tversion\tplatform\tfile\tsha256\n' >"$index"
   : >"$sums"
 
-  local dir id version file hash
+  local dir id version file hash list
   for dir in "$STAGE_DIR"/*/; do
     id=$(basename "$dir")
     version=$(manifest_string version "$dir/tasty-plugin.toml")
     file="$id-$version-$PLATFORM.tar.gz"
     tar -czf "$DIST_DIR/$file" -C "$STAGE_DIR" "$id"
-    if tar -tzf "$DIST_DIR/$file" | grep -q '\.sig$'; then
+    # Read first, then grep: with pipefail, grep -q ending early can make the
+    # pipeline fail through SIGPIPE and hide a match.
+    list=$(tar -tzf "$DIST_DIR/$file")
+    if grep -q '\.sig$' <<<"$list"; then
       die "$file contains a .sig file; packages are not signed"
     fi
     hash=$(sha256_of "$DIST_DIR/$file")
