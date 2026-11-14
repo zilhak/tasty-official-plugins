@@ -1972,10 +1972,11 @@ fn a_dev_only_lock_update_needs_no_bump() {
     assert!(text.contains("nothing to judge"), "{text}");
 }
 
-/// Releases the current commit (origin/main points at it); work goes on in branch `work`.
-fn release_here(f: &ExtFixture) {
-    run_git(&f.repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    run_git(&f.repo, &["checkout", "--quiet", "-b", "work"]);
+/// Releases the current commit of `repo` (origin/main points at it); work goes on in branch
+/// `work`.
+fn release_at(repo: &Path) {
+    run_git(repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    run_git(repo, &["checkout", "--quiet", "-b", "work"]);
 }
 
 /// Lock updates that go out in one release need one bump: a plugin already raised above
@@ -1984,7 +1985,7 @@ fn release_here(f: &ExtFixture) {
 #[test]
 fn a_second_lock_update_after_a_bump_since_the_release_passes() {
     let f = ExtFixture::new();
-    release_here(&f);
+    release_at(&f.repo);
     f.update("ext", "1.0.1");
     f.bump("alpha", "0.1.1");
     commit_all(&f.repo, "update ext and bump alpha");
@@ -2017,7 +2018,7 @@ fn the_release_baseline_is_origin_main_not_an_old_local_main() {
     f.bump("alpha", "0.1.1");
     commit_all(&f.repo, "update ext and bump alpha");
     // Release that commit on origin/main; the local main stays at the older release.
-    release_here(&f);
+    release_at(&f.repo);
     run_git(&f.repo, &["branch", "--force", "main", &old]);
     f.update("ext", "1.0.2");
     commit_all(&f.repo, "update ext after the release");
@@ -2041,7 +2042,7 @@ fn a_release_whose_tag_was_not_fetched_is_still_the_baseline() {
     f.bump("alpha", "0.1.1");
     commit_all(&f.repo, "update ext and bump alpha");
     // Released on origin/main, but its tag (say v0.2.0) is missing here.
-    release_here(&f);
+    release_at(&f.repo);
     f.update("ext", "1.0.2");
     commit_all(&f.repo, "update ext after the release");
 
