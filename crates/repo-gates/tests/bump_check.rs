@@ -3586,6 +3586,80 @@ fn unsupported_patch_table_spellings_are_undecidable() {
     );
 }
 
+/// A quoted key of an inline table is the same key as a bare one, so { "path" = .. } and
+/// { 'path' = .. } are path patches too, in the root Cargo.toml and in the cargo config. A
+/// key with a backslash escape is not decoded and stops the check.
+#[test]
+fn quoted_inline_table_keys_read_as_bare_keys() {
+    for key in ["\"path\"", "'path'"] {
+        let (f, _) = git_patched();
+        let path = f.local_ext();
+        f.set_patch(&format!("ext = {{ {key} = \"{path}\" }}\n"), false);
+        f.commit("patch ext from a local copy");
+        assert_path_patch_rejected(&f.check(&HEAD_RANGE), "Cargo.toml");
+    }
+
+    let f = ExtFixture::new();
+    f.write_config(
+        ".cargo/config.toml",
+        "[patch.crates-io]\next = { \"path\" = \"../local-ext\" }\n",
+    );
+    assert_path_patch_rejected(&f.check(&HEAD_RANGE), ".cargo/config.toml");
+    f.write_config(
+        ".cargo/config.toml",
+        "include = [{ \"path\" = \"extra.toml\", 'optional' = true }]\n",
+    );
+    f.write_config(
+        ".cargo/extra.toml",
+        "[patch.crates-io]\next = { 'path' = \"../local-ext\" }\n",
+    );
+    assert_path_patch_rejected(&f.check(&HEAD_RANGE), ".cargo/extra.toml");
+
+    let (f, _) = git_patched();
+    f.set_patch("ext = { \"pa\\u0074h\" = \"../local-ext\" }\n", false);
+    f.commit("spell path with an escape");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "cannot read a [patch] table");
+}
+
+/// TOML escapes in table names and keys are not decoded, so a name that uses one stops the
+/// check with the file and the line, on every run, instead of reading as another name.
+#[test]
+fn backslash_escapes_in_toml_names_are_undecidable() {
+    let f = PinFixture::new();
+    f.edit_root("[profile.release]", "[profile.\"rele\\u0061se\"]");
+    f.commit("spell release with an escape");
+    let r = f.check(&HEAD_RANGE);
+    assert_undecidable_with(&r, "cannot read the root Cargo.toml");
+    assert!(
+        r.1.contains("a backslash escape in a table name: [profile.\"rele\\u0061se\"]"),
+        "{}",
+        r.1
+    );
+    f.edit_root("opt-level = 3", "opt-level = 2");
+    f.commit("change the escaped profile");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "a backslash escape in a table name");
+
+    let (f, _) = git_patched();
+    let body = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &body.replacen("[patch.crates-io]", "[patch.\"crates\\u002dio\"]", 1),
+    );
+    f.commit("spell crates-io with an escape");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "a backslash escape in a table name");
+
+    let f = ExtFixture::new();
+    f.write_config(".cargo/config.toml", "[build]\n\"job\\u0073\" = 2\n");
+    let r = f.check(&HEAD_RANGE);
+    assert_undecidable_with(&r, ".cargo/config.toml");
+    assert!(
+        r.1.contains("a backslash escape in a key: \"job\\u0073\" = 2"),
+        "{}",
+        r.1
+    );
+}
+
 /// [patch] case 53.
 #[test]
 fn staged_mode_rejects_a_path_patch_too() {

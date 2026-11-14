@@ -448,7 +448,7 @@ EOF2
 # 2 when several manifests carry the name.
 package_dir_in() {  # <file> <name>
     local hits
-    hits=$(awk -F '\t' -v n="$2" '$1 == n { print $2 }' "$1")
+    hits=$(N="$2" awk -F '\t' '$1 == ENVIRON["N"] { print $2 }' "$1")
     PKG_DIR="$hits"
     [ -n "$hits" ] || return 1
     [ "$(printf '%s\n' "$hits" | wc -l)" -eq 1 ] || return 2
@@ -457,7 +457,7 @@ package_dir_in() {  # <file> <name>
 # Paths that tasty-extra-inputs.txt lists for <package> with <kind> (use or ignore).
 extra_inputs_of() {  # <package> <kind>
     [ -f "$EXTRA_INPUTS" ] || return 0
-    awk -v p="$1" -v k="$2" '/^[[:space:]]*(#|$)/ { next } $1 == p && $2 == k { print $3 }' "$EXTRA_INPUTS"
+    P="$1" K="$2" awk '/^[[:space:]]*(#|$)/ { next } $1 == ENVIRON["P"] && $2 == ENVIRON["K"] { print $3 }' "$EXTRA_INPUTS"
 }
 
 # Whether <path> is listed for <package> (use or ignore). A listed directory ends with "/".
@@ -663,7 +663,7 @@ judge_pin_moves() {
             plugins_linking "$name"
             [ -n "$LINKED" ] && names="$names $name"
         done <<EOF2
-$(awk -F '\t' -v k="$key" '($1 "\t" $2 "\t" $3) == k' "$WORK/pin.moves")
+$(K="$key" awk -F '\t' '($1 "\t" $2 "\t" $3) == ENVIRON["K"]' "$WORK/pin.moves")
 EOF2
         [ -n "$names" ] || continue
         if [ "$old" = "-" ]; then
@@ -700,8 +700,8 @@ EOF2
                 fi
             fi
             [ -n "$reason" ] || continue
-            vb=$(awk -F '\t' -v n="$name" '$1 == n { print $2; exit }' "$WORK/lock.before")
-            va=$(awk -F '\t' -v n="$name" '$1 == n { print $2; exit }' "$WORK/lock.after")
+            vb=$(N="$name" awk -F '\t' '$1 == ENVIRON["N"] { print $2; exit }' "$WORK/lock.before")
+            va=$(N="$name" awk -F '\t' '$1 == ENVIRON["N"] { print $2; exit }' "$WORK/lock.after")
             plugins_linking "$name"
             plugins="${LINKED# }"
             PIN_SUMMARY="$PIN_SUMMARY
@@ -774,8 +774,8 @@ judge_external_lock() {
         [ -n "$name" ] || continue
         plugins_linking "$name"
         [ -n "$LINKED" ] || continue
-        vb=$(awk -F '\t' -v n="$name" '$1 == n { print $2 }' "$WORK/ext.before" | tr '\n' ' ')
-        va=$(awk -F '\t' -v n="$name" '$1 == n { print $2 }' "$WORK/ext.after" | tr '\n' ' ')
+        vb=$(N="$name" awk -F '\t' '$1 == ENVIRON["N"] { print $2 }' "$WORK/ext.before" | tr '\n' ' ')
+        va=$(N="$name" awk -F '\t' '$1 == ENVIRON["N"] { print $2 }' "$WORK/ext.after" | tr '\n' ' ')
         vb=${vb% }; va=${va% }
         needed=""
         for p in $LINKED; do
@@ -800,9 +800,21 @@ EOF2
 # the first header belong to section "". Multi-line strings (""" or ''') are not read: their
 # brackets would be counted and swallow the sections after them. Such a line, brackets that
 # close more than they open, and brackets still open at the end come out as
-# "<unreadable><TAB>reason" so that the caller stops.
+# "<unreadable><TAB>reason" so that the caller stops. So does a backslash in a table name or
+# a key: escapes are not decoded, so "rele\u0061se" would not read as release.
 toml_lines() {
     git show "$1" | awk '
+        # The key of a key/value line: the text before the first = outside strings.
+        function key_of(s,    i, c, q) {
+            q = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (q != "") { if (c == q) q = ""; continue }
+                if (c == "\"" || c == "\047") { q = c; continue }
+                if (c == "=") return substr(s, 1, i - 1)
+            }
+            return s
+        }
         # Drops a comment and counts the brackets outside strings; the count goes to depth.
         function scan(s,    i, n, c, q, out) {
             out = ""; q = ""; n = length(s)
@@ -836,8 +848,11 @@ toml_lines() {
                 next
             }
             if (line ~ /^\[/ && line ~ /\]$/ && depth == 0) {
-                sec = line; gsub(/^\[+[[:space:]]*|[[:space:]]*\]+$/, "", sec); next
+                sec = line; gsub(/^\[+[[:space:]]*|[[:space:]]*\]+$/, "", sec)
+                if (index(sec, "\\")) { print "<unreadable>\tline " NR ", a backslash escape in a table name: " $0; bad = 1 }
+                next
             }
+            if (index(key_of(line), "\\")) { print "<unreadable>\tline " NR ", a backslash escape in a key: " $0; bad = 1 }
             if (depth > 0) { pending = line; next }
             depth = 0
             print sec "\t" line
@@ -944,6 +959,40 @@ function join_parts(parts, from, to,    i, out) {
     return out
 }
 function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+# An inline table with its keys written bare, so { "path" = "x" } reads as { path = "x" };
+# any other value as it is. <bad> for a key with a backslash (escapes are not decoded) or a
+# table that cannot be read.
+function norm_inline(v,    body, i, c, q, depth, item, items, n, j, e, k, np, kq, out) {
+    v = trim(v)
+    if (substr(v, 1, 1) != "{") return v
+    if (substr(v, length(v), 1) != "}") return "<bad>"
+    body = substr(v, 2, length(v) - 2); n = 0; item = ""; q = ""; depth = 0
+    for (i = 1; i <= length(body); i++) {
+        c = substr(body, i, 1)
+        if (q != "") {
+            item = item c
+            if (q == "\"" && c == "\\" && i < length(body)) { i++; item = item substr(body, i, 1); continue }
+            if (c == q) q = ""
+            continue
+        }
+        if (c == "\"" || c == "\047") q = c
+        else if (c == "[" || c == "{") depth++
+        else if (c == "]" || c == "}") depth--
+        if (c == "," && depth == 0) { items[++n] = item; item = ""; continue }
+        item = item c
+    }
+    if (q != "" || depth != 0) return "<bad>"
+    if (trim(item) != "") items[++n] = item
+    out = ""
+    for (j = 1; j <= n; j++) {
+        e = eq_at(items[j]); if (!e) return "<bad>"
+        k = substr(items[j], 1, e - 1)
+        if (index(k, "\\")) return "<bad>"
+        np = split_key(k, kq)
+        out = out (j > 1 ? ", " : " ") join_parts(kq, 1, np) " = " trim(substr(items[j], e + 1))
+    }
+    return "{" out " }"
+}
 '
 
 # The ref of <path> on <side> (before or after).
@@ -966,6 +1015,8 @@ config_includes() {  # <lines file>
     awk -F '\t' "$TOML_KEY_AWK"'
         function entry(t,    p, o) {
             if (t ~ /^\{/) {
+                t = norm_inline(t)
+                if (t == "<bad>") { print "<bad>\tan include table that is not read"; return }
                 if (!match(t, /path[[:space:]]*=[[:space:]]*("[^"]*"|\047[^\047]*\047)/)) {
                     print "<bad>\tan include table without a path: " t; return
                 }
@@ -1241,7 +1292,8 @@ patch_entries() {  # <lines file>
             if (sp[1] != "patch") next
             if (QUOTED[1] || ns == 1 || ns > 3 || !e) { print "<unparsed>\t\t[" sec "] " line; next }
             src = sp[2]; name = sp[3]
-            nk = split_key(substr(line, 1, e - 1), kp); val = trim(substr(line, e + 1))
+            nk = split_key(substr(line, 1, e - 1), kp); val = norm_inline(substr(line, e + 1))
+            if (val == "<bad>") { print "<unparsed>\t\t[" sec "] " line; next }
             if (ns == 2) add(src, kp[1], join_parts(kp, 2, nk), val)
             else add(src, name, join_parts(kp, 1, nk), val)
         }
@@ -1283,12 +1335,12 @@ $(grep '^<unreadable>' "$WORK/reject.lines" | cut -f2- | sort -u | sed 's/^/    
             die "cannot read a [patch] table of $f, so a path patch cannot be ruled out; only [patch.<source>] tables with name = { ... } entries or dotted keys, and [patch.<source>.<name>] tables, are read:
 $(grep '^<unparsed>' "$WORK/reject.patch" | cut -f3- | sed 's/^/    /')"
         fi
-        what=$(awk -F '\t' -v f="$f" '$3 ~ /(^|[{ ,])path[[:space:]]*=/ { print "    " f ": patch." $1 "." $2 " = " $3 }' "$WORK/reject.patch")
+        what=$(F="$f" awk -F '\t' '$3 ~ /(^|[{ ,])path[[:space:]]*=/ { print "    " ENVIRON["F"] ": patch." $1 "." $2 " = " $3 }' "$WORK/reject.patch")
         [ -z "$what" ] || bad="$bad
 $what"
         if [ "$f" != Cargo.toml ]; then
-            what=$(awk -F '\t' -v f="$f" "$TOML_KEY_AWK"'
-                $1 == "" { e = eq_at($2); if (e && split_key(substr($2, 1, e - 1), kp) == 1 && kp[1] == "paths") print "    " f ": " $2 }' "$WORK/reject.lines.1")
+            what=$(F="$f" awk -F '\t' "$TOML_KEY_AWK"'
+                $1 == "" { e = eq_at($2); if (e && split_key(substr($2, 1, e - 1), kp) == 1 && kp[1] == "paths") print "    " ENVIRON["F"] ": " $2 }' "$WORK/reject.lines.1")
             [ -z "$what" ] || bad="$bad
 $what"
         fi
@@ -1318,8 +1370,8 @@ $(grep -h '^<unparsed>' "$WORK/patch.before" "$WORK/patch.after" | cut -f3- | so
     done
     while IFS="$TAB" read -r src name; do
         [ -n "$name" ] || continue
-        vb=$(awk -F '\t' -v s="$src" -v n="$name" '$1 == s && $2 == n { print $3 }' "$WORK/patch.before")
-        va=$(awk -F '\t' -v s="$src" -v n="$name" '$1 == s && $2 == n { print $3 }' "$WORK/patch.after")
+        vb=$(S="$src" N="$name" awk -F '\t' '$1 == ENVIRON["S"] && $2 == ENVIRON["N"] { print $3 }' "$WORK/patch.before")
+        va=$(S="$src" N="$name" awk -F '\t' '$1 == ENVIRON["S"] && $2 == ENVIRON["N"] { print $3 }' "$WORK/patch.after")
         pkgs=$(printf '%s\n%s\n' "$vb" "$va" | sed -n 's/.*package[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')
         [ -n "$(printf '%s\n%s\n' "$vb" "$va" | grep -v 'package[[:space:]]*=' | sed -n '/./p')" ] \
             && pkgs="$pkgs
@@ -1329,11 +1381,11 @@ $name"
             # The pin rule pairs git packages by name only, so two git sources of one name
             # would be compared with each other.
             for side in before after; do
-                n=$(awk -F '\t' -v p="$pkg" '$1 == p && $3 ~ /^git\+/ { print $3 }' "$WORK/lock.$side" | sort -u | wc -l)
+                n=$(P="$pkg" awk -F '\t' '$1 == ENVIRON["P"] && $3 ~ /^git\+/ { print $3 }' "$WORK/lock.$side" | sort -u | wc -l)
                 [ "$n" -le 1 ] || die "[patch] $src.$name changed, and Cargo.lock ($side) has $pkg from $n git sources, which the lock rules cannot tell apart; judge the plugin versions by hand."
             done
-            rb=$(awk -F '\t' -v p="$pkg" '$1 == p { print $1 "\t" $2 "\t" $3 }' "$WORK/lock.before" | sort)
-            ra=$(awk -F '\t' -v p="$pkg" '$1 == p { print $1 "\t" $2 "\t" $3 }' "$WORK/lock.after" | sort)
+            rb=$(P="$pkg" awk -F '\t' '$1 == ENVIRON["P"] { print $1 "\t" $2 "\t" $3 }' "$WORK/lock.before" | sort)
+            ra=$(P="$pkg" awk -F '\t' '$1 == ENVIRON["P"] { print $1 "\t" $2 "\t" $3 }' "$WORK/lock.after" | sort)
             if [ -z "$rb" ] && [ -z "$ra" ]; then
                 die "[patch] $src.$name changed in the root Cargo.toml, but no package $pkg is in Cargo.lock; judge the plugin versions by hand."
             fi
@@ -1360,8 +1412,9 @@ $(grep -h '^<unreadable>' "$WORK/root.before" "$WORK/root.after" | cut -f2- | so
     fi
     local profiles_changed=0 nsec
     while IFS= read -r sec; do
-        if cmp -s <(awk -F '\t' -v s="$sec" '$1 == s' "$WORK/root.before") \
-                  <(awk -F '\t' -v s="$sec" '$1 == s' "$WORK/root.after"); then
+        # ENVIRON, not -v: awk would read the backslashes of a name as escapes.
+        if cmp -s <(S="$sec" awk -F '\t' '$1 == ENVIRON["S"]' "$WORK/root.before") \
+                  <(S="$sec" awk -F '\t' '$1 == ENVIRON["S"]' "$WORK/root.after"); then
             continue
         fi
         # Quotes and spaces around the dots do not change the table cargo reads.
@@ -1386,8 +1439,8 @@ EOF2
             die "cannot read a changed line of [workspace.dependencies] in the root Cargo.toml:
 $(awk -F '\t' '$1 == "<unparsed>"' "$WORK/deps.before" "$WORK/deps.after" | sort | uniq -u | cut -f2- | sed 's/^/    /')"
         fi
-        val_b=$(awk -F '\t' -v k="$key" '$1 == k { print $2 }' "$WORK/deps.before")
-        val_a=$(awk -F '\t' -v k="$key" '$1 == k { print $2 }' "$WORK/deps.after")
+        val_b=$(K="$key" awk -F '\t' '$1 == ENVIRON["K"] { print $2 }' "$WORK/deps.before")
+        val_a=$(K="$key" awk -F '\t' '$1 == ENVIRON["K"] { print $2 }' "$WORK/deps.after")
         pkg=$(printf '%s\n%s\n' "$val_a" "$val_b" | sed -n 's/.*package[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | sed -n '1p')
         [ -n "$pkg" ] || pkg="$key"
         plugins_linking "$pkg"
@@ -1479,7 +1532,7 @@ region_of() {  # <ref> <path> <out file>
             die "$path at $where: $(cat "$WORK/region.err"). The archive input regions are listed in $ARCHIVE_INPUTS; judge the plugin versions by hand or fix the list."
         fi
     done <<EOF2
-$(awk -F '\t' -v p="$path" '$1 == "region" && $2 == p { print $3 "\t" $4 "\t" $5 }' "$ARCHIVE_INPUTS")
+$(P="$path" awk -F '\t' '$1 == "region" && $2 == ENVIRON["P"] { print $3 "\t" $4 "\t" $5 }' "$ARCHIVE_INPUTS")
 EOF2
     cksum < "$WORK/region.out" > "$out"
 }
@@ -1617,7 +1670,7 @@ fi
 
 # Reasons recorded for a plugin outside its own files, one per line.
 extra_reasons_of() {
-    printf '%s\n' "$EXTRA_DIRTY" | awk -F '\t' -v p="$1" '$1 == p { print "      " $2 }'
+    printf '%s\n' "$EXTRA_DIRTY" | P="$1" awk -F '\t' '$1 == ENVIRON["P"] { print "      " $2 }'
 }
 
 INVOLVED=$(printf '%s\n' "$CHANGED_CRATES" | sed -n '/./p' | sort -u)
