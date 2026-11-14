@@ -1485,87 +1485,10 @@ code_lines() {
     awk 'NR == 1 && /^#!/ { print; next } /^[[:space:]]*#/ { next } /^[[:space:]]*$/ { next } { print }'
 }
 
-# Drops the parts of a script that <excepts> ("how<TAB>pattern" lines) names: a function
-# definition (how function, pattern the name; a one-line definition or the lines up to a
-# closing } in column 0), every line that matches an extended regular expression (how
-# line), or a case branch (how branch: from the head line that matches pattern to the first
-# line that ends with ;;). A trailing comment does not hide a definition, head, or closing
-# line. A definition that cannot be read, a function that is not closed before another
-# definition starts, and a branch that is not closed before another branch head or esac
-# stop the check.
-except_drop() {  # <excepts file> <source file> <out file> <what>
-    if ! X="$1" awk '
-        function bare(s) { sub(/[[:space:]]+#.*$/, "", s); sub(/[[:space:]]+$/, "", s); return s }
-        BEGIN {
-            while ((getline l < ENVIRON["X"]) > 0) {
-                n++; how[n] = l; pat[n] = l; sub(/\t.*/, "", how[n]); sub(/^[^\t]*\t/, "", pat[n])
-            }
-        }
-        inbr {
-            b = bare($0)
-            if (b ~ /;;$/) { inbr = 0; next }
-            if (b ~ /^[[:space:]]*esac$/ || b ~ /^[[:space:]]*[^[:space:]#()][^()]*\)([[:space:]]|$)/) {
-                bad = "the case branch from line " start " is not closed by ;; before line " NR; exit
-            }
-            next
-        }
-        infn {
-            b = bare($0)
-            if (b == "}") { infn = 0; next }
-            if (b ~ /^[}{]/ || b ~ /^[A-Za-z_][A-Za-z0-9_]*(=\(|[[:space:]]*\(\))/) { bad = "the function " fname " is not closed before line " NR; exit }
-            next
-        }
-        {
-            b = bare($0)
-            for (i = 1; i <= n; i++) {
-                if (how[i] == "line" && $0 ~ pat[i]) next
-                if (how[i] == "branch" && b ~ pat[i]) {
-                    if (b ~ /;;$/) next
-                    inbr = 1; start = NR; next
-                }
-                if (how[i] != "function") continue
-                head = "^" pat[i] "[[:space:]]*\\(\\)[[:space:]]*\\{"
-                if (b !~ head) continue
-                rest = b; sub(head, "", rest); gsub(/\$\{[^{}]*\}/, "", rest)
-                if (rest == "") { infn = 1; fname = pat[i]; start = NR; next }
-                if (rest ~ /^[^{}]*;[[:space:]]*\}$/) next
-                bad = "cannot read the definition of " pat[i] " on line " NR ": " $0; exit
-            }
-            print
-        }
-        END {
-            if (bad == "" && infn) bad = "the function " fname " from line " start " is not closed"
-            if (bad == "" && inbr) bad = "the case branch from line " start " is not closed by ;;"
-            if (bad != "") { print bad > "/dev/stderr"; exit 3 }
-        }' "$2" > "$3" 2>"$WORK/except.err"; then
-        die "$4: $(cat "$WORK/except.err"). The parts left out are listed in $ARCHIVE_INPUTS; judge the plugin versions by hand or fix the list."
-    fi
-}
-
-# Drops a case statement that has nothing left between case "$name" in and esac.
-drop_empty_cases() {
-    awk '
-        function bare(s) { sub(/[[:space:]]+#.*$/, "", s); sub(/[[:space:]]+$/, "", s); return s }
-        { line[++n] = $0 }
-        END {
-            for (i = 1; i <= n; i++) {
-                if (i < n && bare(line[i]) ~ /^[[:space:]]*case[[:space:]]+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?[[:space:]]+in$/ \
-                    && bare(line[i + 1]) ~ /^[[:space:]]*esac$/) { i++; continue }
-                print line[i]
-            }
-        }'
-}
-
 # The checksum of a packaging script at <ref> without comment and blank lines, into <out>.
-# With <excepts>, the parts it names are left out first, and then empty case statements.
-script_norm() {  # <ref> <out file> [<excepts file>]
+script_norm() {  # <ref> <out file>
     if ! exists_at "$1"; then printf '<absent>' > "$2"; return 0; fi
     git show "$1" > "$WORK/script.src" || die "cannot read $1."
-    if [ -s "${3:-}" ]; then
-        except_drop "$3" "$WORK/script.src" "$WORK/script.kept" "$1"
-        code_lines < "$WORK/script.kept" | drop_empty_cases | cksum > "$2" || die "cannot read $1."
-        return 0
-    fi
     code_lines < "$WORK/script.src" | cksum > "$2" || die "cannot read $1."
 }
 
@@ -1636,22 +1559,10 @@ regions_in() {  # <list file> <path> <out file>
         || die "cannot read the region lines of $2."
 }
 
-# The except lines of <path> in <list> as "how<TAB>pattern", in list order. A function name
-# must be a plain name.
-excepts_in() {  # <list file> <path> <out file>
-    P="$2" awk -F '\t' '$1 == "except" && $2 == ENVIRON["P"] { print $3 "\t" $4 }' "$1" > "$3" \
-        || die "cannot read the except lines of $2."
-    if awk -F '\t' '($1 != "function" && $1 != "line" && $1 != "branch") || $2 == "" || ($1 == "function" && $2 !~ /^[A-Za-z_][A-Za-z0-9_]*$/)' "$3" | grep -q .; then
-        die "$ARCHIVE_INPUTS: an except line of $2 that is not read (how is function with a plain name, or line or branch with a pattern)."
-    fi
-}
-
 # Checks the after side of the list on every run, like the path patch check, so that
-# something committed earlier keeps blocking: a file compared without excepted parts must not
-# define a function twice (a later definition would replace an excepted one or a compared
-# one); a script or shell region file must source only files the list names, by a path
-# written out; and a job region of a workflow must not use a local action or workflow (./),
-# whose content the list does not judge.
+# something committed earlier keeps blocking: a script or shell region file must source only
+# files the list names, by a path written out; and a job region of a workflow must not use a
+# local action or workflow, whose content the list does not judge.
 check_archive_structure() {
     local kind path how ref names ln target line
     names=$(awk -F '\t' '$1 == "blob" || $1 == "script" || $1 == "region" { print $2 }' "$WORK/list.after" | sort -u)
@@ -1674,25 +1585,6 @@ EOF2
         exists_at "$ref" || continue
         git show "$ref" > "$WORK/structure.src" || die "cannot read $path (after)."
         case "$kind" in
-            except)
-                awk '
-                    /^[[:space:]]*#/ { next }
-                    {
-                        n = ""
-                        if (match($0, /^[[:space:]]*function[[:space:]]+[A-Za-z_][A-Za-z0-9_:.-]*/)) {
-                            n = substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*function[[:space:]]+/, "", n)
-                        } else if (match($0, /^[[:space:]]*[A-Za-z_][A-Za-z0-9_:.-]*[[:space:]]*\(\)/)) {
-                            n = substr($0, RSTART, RLENGTH); gsub(/[[:space:]]|\(\)/, "", n)
-                        }
-                        if (n == "") next
-                        if (n in at) print n " on lines " at[n] " and " NR
-                        else at[n] = NR
-                    }' "$WORK/structure.src" > "$WORK/structure.dup" || die "cannot read $path (after)."
-                if [ -s "$WORK/structure.dup" ]; then
-                    die "$path defines a function twice, so a later definition replaces an earlier one; judge the plugin versions by hand:
-$(sed 's/^/    /' "$WORK/structure.dup")"
-                fi
-                continue ;;
             region) case "$how" in job) ;; block|line) ;; *) continue ;; esac ;;
         esac
         if [ "$kind" = region ] && [ "$how" = job ]; then
@@ -1728,7 +1620,7 @@ $(grep 'uses:[[:space:]]*["'"'"']\{0,1\}\./' "$WORK/region.out" | sed 's/^/    /
     $line"
         done < "$WORK/structure.sources"
     done <<EOF2
-$(awk -F '\t' '$1 == "script" || $1 == "except" || $1 == "region" { print $1 "\t" $2 "\t" $3 }' "$WORK/list.after" | awk '!seen[$0]++')
+$(awk -F '\t' '$1 == "script" || $1 == "region" { print $1 "\t" $2 "\t" $3 }' "$WORK/list.after" | awk '!seen[$0]++')
 EOF2
 }
 
@@ -1746,6 +1638,10 @@ judge_archive_inputs() {
 $CHANGED
 EOF2
     archive_list_at before "$WORK/list.before" || has_b=0
+    # An earlier format of the list left parts of a script out with except lines. Dropped on the
+    # before side, they only widen the comparison; on the after side they are an unknown kind.
+    awk -F '\t' '$1 != "except"' "$WORK/list.before" > "$WORK/list.before.kept" \
+        && mv "$WORK/list.before.kept" "$WORK/list.before" || die "cannot read $ARCHIVE_INPUTS (before)."
     archive_list_at after "$WORK/list.after" || has_a=0
     if [ "$has_b" = 0 ] && [ "$has_a" = 1 ]; then cp "$WORK/list.after" "$WORK/list.before"; fi
     if [ "$has_a" = 0 ] && [ "$has_b" = 1 ]; then cp "$WORK/list.before" "$WORK/list.after"; fi
@@ -1760,21 +1656,10 @@ EOF2
                 outside_touches "$path" || continue
                 a=$(archive_blob_id before "$path"); b=$(archive_blob_id after "$path") ;;
             script)
-                excepts_in "$WORK/list.before" "$path" "$WORK/excepts.before"
-                excepts_in "$WORK/list.after" "$path" "$WORK/excepts.after"
-                if ! cmp -s "$WORK/excepts.before" "$WORK/excepts.after"; then
-                    a=list-before; b=list-after
-                else
-                    outside_touches "$path" || continue
-                    script_norm "$BEFORE_REV:$path" "$WORK/archive.before" "$WORK/excepts.after"
-                    script_norm "$(after_ref "$path")" "$WORK/archive.after" "$WORK/excepts.after"
-                    a=$(cat "$WORK/archive.before"); b=$(cat "$WORK/archive.after")
-                fi ;;
-            except)
-                P="$path" awk -F '\t' '$1 == "script" && $2 == ENVIRON["P"] { f = 1 } END { exit !f }' \
-                    "$WORK/list.before" "$WORK/list.after" \
-                    || die "$ARCHIVE_INPUTS: except lines for $path without a script line."
-                continue ;;
+                outside_touches "$path" || continue
+                script_norm "$BEFORE_REV:$path" "$WORK/archive.before"
+                script_norm "$(after_ref "$path")" "$WORK/archive.after"
+                a=$(cat "$WORK/archive.before"); b=$(cat "$WORK/archive.after") ;;
             region)
                 regions_in "$WORK/list.before" "$path" "$WORK/regions.before"
                 regions_in "$WORK/list.after" "$path" "$WORK/regions.after"

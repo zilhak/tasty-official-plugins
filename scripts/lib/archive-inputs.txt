@@ -8,15 +8,6 @@
 #                                   stops the check
 #   script  path                    compared without whole-line comments and blank lines;
 #                                   the first line stays when it starts with #!
-#   except  path  how  pattern      a part of a script path that does not build or pack the
-#                                   archives, left out before the comparison:
-#                                     function  the definition of the function named pattern
-#                                     line      every line that matches pattern
-#                                     branch    a case branch, from the head line that
-#                                               matches pattern to the first line that
-#                                               ends with ;; (exit 2 when another branch
-#                                               head or esac comes first)
-#                                   then a case statement left with no branch goes too
 #   region  path  how  open  close  only the parts that packaging runs, compared like a
 #                                   script; every region line of a path is one comparison
 #
@@ -28,11 +19,10 @@
 #   job    a job of a workflow: from open to the next job or top-level key
 # A file that exists without one of its regions cannot be judged (exit 2).
 #
-# blob and script lines count from either side's list. When the except or region lines of a
-# path differ between the two lists, that path counts as changed. On every run the gate also
-# stops when a script or a shell region file sources a file this list does not name, when a
-# script with except lines defines a function twice, and when a job region uses a local
-# action or workflow (./).
+# blob and script lines count from either side's list. When the region lines of a path differ
+# between the two lists, that path counts as changed. On every run the gate also stops when a
+# script or a shell region file sources a file this list does not name, and when a job region
+# uses a local action or workflow (./).
 
 blob	LICENSE
 blob	THIRD_PARTY_LICENSES.md
@@ -42,19 +32,6 @@ script	scripts/package-plugin.sh
 script	scripts/lib/notice-set.sh
 script	scripts/lib/plugin-build.sh
 script	scripts/check.sh
-except	scripts/check.sh	function	cmd_fmt
-except	scripts/check.sh	function	cmd_lint
-except	scripts/check.sh	function	cmd_test
-except	scripts/check.sh	function	cmd_audit
-except	scripts/check.sh	function	cmd_licenses
-except	scripts/check.sh	function	warn_hooks
-except	scripts/check.sh	line	^[[:space:]]*fmt\)[[:space:]]*cmd_fmt[[:space:]]*;;[[:space:]]*(#.*)?$
-except	scripts/check.sh	line	^[[:space:]]*lint\)[[:space:]]*cmd_lint[[:space:]]*;;[[:space:]]*(#.*)?$
-except	scripts/check.sh	line	^[[:space:]]*test\)[[:space:]]*cmd_test([[:space:]]+"\$@")?[[:space:]]*;;[[:space:]]*(#.*)?$
-except	scripts/check.sh	line	^[[:space:]]*audit\)[[:space:]]*cmd_audit[[:space:]]*;;[[:space:]]*(#.*)?$
-except	scripts/check.sh	line	^[[:space:]]*licenses\)[[:space:]]*cmd_licenses[[:space:]]*;;[[:space:]]*(#.*)?$
-except	scripts/check.sh	line	^[[:space:]]*[a-z]+([[:space:]]*\|[[:space:]]*[a-z]+)*\)[[:space:]]*\([[:space:]]*warn_hooks[[:space:]]*\)[[:space:]]*\|\|[[:space:]]*true[[:space:]]*;;[[:space:]]*(#.*)?$
-except	scripts/check.sh	branch	^[[:space:]]*-h[[:space:]]*\|[[:space:]]*--help[[:space:]]*\|[[:space:]]*help\)
 region	.github/workflows/release.yml	top	^env:[[:space:]]*$
 region	.github/workflows/release.yml	top	^defaults:[[:space:]]*$
 region	.github/workflows/release.yml	job	^  package:[[:space:]]*$
