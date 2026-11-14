@@ -137,7 +137,7 @@ repository, including the `tiny_http` and `epaint` copies, is built from that lo
 checkout instead, so changes to the plugin SDK or protocol there reach the plugins. The
 build then runs in a copy of this repository under `target/dev-bundle/` with
 `cargo --config 'patch...'` options, so `Cargo.lock` here does not change, and it fails
-if any of those packages still comes from git.
+unless every one of those packages is built from that checkout.
 
 Nothing is signed and no `.sig` file is written. A tasty debug build does not check plugin
 signatures. A tasty release or dist build loads these plugins only after tasty signs their

@@ -183,8 +183,8 @@ if [[ -n "$TASTY" ]]; then
   # Build in a copy, so the Cargo.lock that the patches change stays out of this
   # repository. Each run has a copy of its own, removed when it ends, so runs at the
   # same time do not delete each other's sources. They share the build target, which
-  # cargo locks. The copy's path changes every run, so cargo rebuilds the plugin
-  # crates each time; the dependencies stay built.
+  # cargo locks. tar keeps the modification times, so although the copy's path changes
+  # every run, cargo does not rebuild crates that did not change.
   work="${CARGO_TARGET_DIR:-$repo/target}/dev-bundle"
   mkdir -p "$work"
   build_copy=$(mktemp -d "$work/src.XXXXXX")
