@@ -57,7 +57,49 @@ jobs:
             target: aarch64-unknown-linux-gnu
             runner: [self-hosted, Linux, ARM64]
     steps:
+      # Git for Windows may be installed without its bash on PATH, and the WSL
+      # bash in System32 may come first on PATH. Find bash.exe next to git and put
+      # its folder first on PATH, so the later shell: bash steps use Git Bash.
+      - name: Find Git for Windows bash (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $git) {
+            Write-Output "::error::git is not on PATH; see docs/ci.md#what-the-runners-need"
+            exit 1
+          }
+          # git.exe is in <Git>\cmd, <Git>\bin, or <Git>\mingw64\bin, and bash.exe is
+          # in <Git>\bin. If git is a shim elsewhere, `git --exec-path` (for example
+          # <Git>/mingw64/libexec/git-core) still leads to <Git>.
+          $starts = @((Split-Path -Parent $git.Source))
+          $exec = (& git --exec-path 2>$null)
+          if ($exec) { $starts += [System.IO.Path]::GetFullPath($exec.Trim()) }
+          $bash = $null
+          foreach ($start in $starts) {
+            $root = $start
+            for ($i = 0; $i -lt 3 -and $root -and -not $bash; $i++) {
+              $root = Split-Path -Parent $root
+              if (-not $root) { break }
+              $candidate = Join-Path $root 'bin\bash.exe'
+              if (Test-Path -LiteralPath $candidate) { $bash = $candidate }
+            }
+            if ($bash) { break }
+          }
+          if (-not $bash) {
+            Write-Output "::error::Git for Windows bash.exe not found near $($git.Source); see docs/ci.md#what-the-runners-need"
+            exit 1
+          }
+          Write-Output "Git for Windows bash: $bash"
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path -Parent $bash)
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Show bash (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          command -v bash
+          bash --version | head -n 1
 
       # The runner service may start without the rustup proxies on PATH, as on
       # tasty's Linux runners.
