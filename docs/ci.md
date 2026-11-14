@@ -160,7 +160,7 @@ the `check` job with `scripts/check.sh test` on Linux, and in the `test` job on 
 macOS in a step of their own, because the `--lib --bins` run leaves them out. Run them
 with `cargo test --locked -p plugin-guards`. They read the sources as text and use the
 source readers of `tasty-doc-guards` from the pinned tasty commit, a dev-dependency of
-this crate only.
+this crate and of `plugin-pin-check` only, so it never enters a plugin build.
 
 - `notify_mod_language_lists`: the language lists in the Claude mod's TypeScript (the
   notify heading, the gate reason, and the heading test) match
