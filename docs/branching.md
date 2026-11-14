@@ -75,8 +75,9 @@ table is kept by the merge procedure.
 
 ## What differs from tasty
 
-- This repository has no version of its own. Plugin versions come from the manifests at
-  the pinned tasty commit, and tasty bumps them. There is no version commit on `release`.
+- This repository has no version of its own. Plugin versions are the `version` values in
+  each crate's `Cargo.toml` and `tasty-plugin.toml` in this repository. There is no version
+  commit on `release`.
 - The release workflow is manual only and has no tag trigger or publish job yet. The
   tag-triggered release waits for the stage 2 release decisions in [ci.md](ci.md).
 - There are no git hooks.

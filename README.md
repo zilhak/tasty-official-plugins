@@ -2,9 +2,11 @@
 
 Build and release repository for the official plugins of [Tasty](https://github.com/zilhak/tasty).
 
-The plugin sources still live in the tasty repository. Until they move here, this
-repository builds the tasty plugin crates as git dependencies pinned to a single tasty
-commit. It holds no copy of their sources.
+The plugin sources live in this repository under `crates/`, and their documents under
+`docs/plugins/`. They were copied from tasty commit
+`e277fce41d9a2db8bf3c14fda8f56dd6415bfcbc`. The tasty crates they use (the plugin SDK,
+protocol, manifest, and shared libraries) come in as git dependencies pinned to a single
+tasty commit.
 
 ## Branches
 
@@ -14,7 +16,7 @@ and pull requests target `develop`. See [docs/branching.md](docs/branching.md).
 
 ## Pinned tasty commit
 
-`fb0beba602e58862541cdc96a06f9f5c7fbfdf86`
+`e277fce41d9a2db8bf3c14fda8f56dd6415bfcbc`
 
 All tasty crates come from this one commit. The pin is set in the root `Cargo.toml`:
 every entry under `[workspace.dependencies]` and `[patch.crates-io]` that points at
@@ -37,7 +39,9 @@ patched copy in this README and in `docs/migration-plan.md`. The atlas statement
 "Advisory decisions" depends on the patch, so decide again what holds without it.
 
 The `pin` tests (`crates/plugin-pin-check/tests/pin.rs`) fail if the tasty entries use
-different revs or if a tasty crate in `Cargo.lock` comes from another source.
+different revs, if a tasty crate in `Cargo.lock` comes from another source, if a plugin
+crate is not a local workspace crate, or if a plugin manifest version differs from its
+crate version.
 
 ## What is built
 
@@ -53,8 +57,8 @@ different revs or if a tasty crate in `Cargo.lock` comes from another source.
 | `tasty-plugin-image` | binary |
 | `tasty-plugin-markdown` | binary |
 
-`tasty-plugin-protocol`, `tasty-plugin-manifest`, and `tasty-plugin-sdk` stay in tasty and
-come in as dependencies of these crates.
+Each crate is in `crates/<crate>/`. `tasty-plugin-protocol`, `tasty-plugin-manifest`, and
+`tasty-plugin-sdk` stay in tasty and come in as dependencies of these crates.
 `tasty-plugin-mesh-demo` stays in tasty as an SDK example and is not built here.
 
 The build matches tasty's own plugin build:
@@ -78,44 +82,42 @@ The build matches tasty's own plugin build:
 scripts/check.sh                 # fmt, lint, test, then a debug build of all plugins
 scripts/check.sh fmt             # cargo fmt --all --check
 scripts/check.sh lint            # cargo clippy --workspace --all-targets --locked -- -D warnings
-scripts/check.sh test            # cargo test --workspace --locked
+scripts/check.sh test [ARGS]     # cargo test --workspace --locked [ARGS]
 scripts/check.sh build [ARGS]    # cargo build --locked -p <each plugin> [ARGS]
 scripts/check.sh audit           # cargo audit --file Cargo.lock (needs cargo-audit, not part of all)
 scripts/check.sh list-plugins    # plugin crates to build, one per line
 scripts/check.sh list-bins       # plugin crates that produce an executable, one per line
 ```
 
-`build` passes its arguments to `cargo build` unchanged, for example
+`build` and `test` pass their arguments to cargo unchanged, for example
 `scripts/check.sh build --profile dist --target aarch64-pc-windows-msvc`. With `all`
 (the default), extra arguments go to the build step. Build and check commands use
 `--locked` and `audit` only reads `Cargo.lock`, so a check never changes it. The script
 is bash and runs under Git Bash on Windows.
 
 The plugin list lives only in `scripts/check.sh`. A test checks that it matches the
-dependencies of `crates/plugin-pin-check`.
+`tasty-plugin-*` workspace members and that `LIBS` lists the members without a binary.
 
 ## Notes
 
-- Cargo prints `ignoring invalid dependency ... which is missing a lib target` for each
-  binary-only plugin crate. Depending on a binary crate needs artifact dependencies,
-  which are nightly-only, so the warning cannot be avoided on stable. The crates are
-  still locked and build with `-p`.
-- Cargo cannot run the tests of a git dependency that is not a workspace member. The
-  plugin crates' own tests keep running in tasty CI until the sources move here. The
-  tests in this repository check the pin instead.
-- `fmt` and `lint` cover only this repository's own crate. Cargo does not lint git
-  dependencies.
+- `fmt`, `lint`, and `test` cover the plugin crates and `plugin-pin-check`. Cargo does
+  not lint or test the tasty git dependencies.
+- On Linux, `lint` and `test` need the WebKitGTK 4.1 development files for the
+  `tasty-plugin-markdown` dev-dependencies (`libwebkit2gtk-4.1-dev` on Debian and
+  Ubuntu). `build` does not.
+- Two `tasty-plugin-markdown` tests open a real WebKitGTK view and are `#[ignore]`. CI runs
+  them under `xvfb-run`; see [docs/ci.md](docs/ci.md).
 
 ## Advisory decisions
 
 The `audit` CI job runs `cargo audit` on `Cargo.lock`. It reads the lock file directly, so
-it also checks the crates.io dependencies that only the bin-only plugin crates use, which
-`cargo metadata` leaves out. It matches advisories only against crates.io packages, so the
+it also checks the crates.io dependencies that only the plugin crates use. It matches advisories only against crates.io packages, so the
 tasty crates and the `tiny_http` and `epaint` copies, which come from the tasty repository,
 are not matched.
 
-A vulnerability fails the job. Vulnerabilities are not ignored here: the fix goes into
-tasty and arrives with a pin move. Unsound and unmaintained advisories appear as warnings
+A vulnerability fails the job. Vulnerabilities are not ignored. A crates.io crate is
+updated here with `cargo update -p <crate>`; a fix in a tasty crate or in the tasty copies
+arrives with a pin move. Unsound and unmaintained advisories appear as warnings
 in the job log and do not fail the job.
 
 This repository has no `deny.toml` and runs no `cargo deny` check. tasty keeps its
