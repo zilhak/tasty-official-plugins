@@ -1395,3 +1395,314 @@ fn a_pin_move_with_a_lower_version_is_undecidable() {
         "{text}"
     );
 }
+
+// ── root build inputs ────────────────────────────────────────────────────────
+
+/// Case 9: Only an entry of [workspace.dependencies] changed (no rev change).
+#[test]
+fn a_workspace_dependency_entry_change_flags_the_plugins_that_link_it() {
+    let f = PinFixture::new();
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    let line = toml
+        .lines()
+        .find(|l| l.starts_with("tasty-b = "))
+        .expect("tasty-b entry")
+        .to_string();
+    let changed = line.replacen(" }", ", default-features = false }", 1);
+    write(&f.repo, "Cargo.toml", &toml.replacen(&line, &changed, 1));
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("turn off the default features of tasty-b");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-beta: shipped content changed"),
+        "{text}"
+    );
+    assert!(!text.contains("crates/tasty-plugin-alpha:"), "{text}");
+    assert!(
+        text.contains("Cargo.toml [workspace.dependencies] tasty-b:"),
+        "{text}"
+    );
+    assert!(text.contains("default-features = false"), "{text}");
+}
+
+/// Case 11: Only a profile changed: pass with a note.
+#[test]
+fn a_profile_change_passes_with_a_note() {
+    let f = PinFixture::new();
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &toml.replace("opt-level = 3", "opt-level = 2"),
+    );
+    f.commit("change the release profile");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("note: [profile.release] changed"), "{text}");
+    assert!(text.contains("nothing to judge"), "{text}");
+}
+
+/// Case 12: The resolver changed; that can change feature resolution, so judge by hand.
+#[test]
+fn a_workspace_resolver_change_is_undecidable() {
+    let f = PinFixture::new();
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &toml.replace("resolver = \"2\"", "resolver = \"3\""),
+    );
+    f.commit("move to resolver 3");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("[workspace] changed in the root Cargo.toml"),
+        "{text}"
+    );
+}
+
+/// Case 13: .cargo/config.toml and rust-toolchain.toml pass with a note each.
+#[test]
+fn cargo_config_and_toolchain_changes_pass_with_a_note() {
+    let f = PinFixture::new();
+    write(
+        &f.repo,
+        ".cargo/config.toml",
+        "[build]\nincremental = false\n",
+    );
+    write(
+        &f.repo,
+        "rust-toolchain.toml",
+        "[toolchain]\nchannel = \"stable\"\n",
+    );
+    f.commit("add a cargo config and a toolchain file");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("note: .cargo/config.toml changed"), "{text}");
+    assert!(text.contains("note: rust-toolchain.toml changed"), "{text}");
+}
+
+// ── Cargo.lock: external crates ──────────────────────────────────────────────
+// A directory source stands in for crates.io, so the lock keeps the crates.io source without
+// any network access. alpha and beta use `ext`; alpha also has `devx` as a dev-dependency;
+// gamma uses neither.
+
+struct ExtFixture {
+    _tmp: tempfile::TempDir,
+    repo: std::path::PathBuf,
+    vendor: std::path::PathBuf,
+    cargo_home: std::path::PathBuf,
+}
+
+impl ExtFixture {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let repo = tmp.path().join("plugins");
+        let vendor = tmp.path().join("vendor");
+        let cargo_home = tmp.path().join("cargo-home");
+        write(
+            &cargo_home,
+            "config.toml",
+            &format!(
+                "[source.crates-io]\nreplace-with = \"vendored\"\n[source.vendored]\ndirectory = \"{}\"\n",
+                vendor.display()
+            ),
+        );
+        fs::create_dir_all(&repo).expect("plugins dir");
+        init_repo(&repo);
+        run_git(&repo, &["checkout", "--quiet", "-b", "main"]);
+        write(&repo, ".gitignore", "target\n");
+        write(
+            &repo,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n\n\
+             [workspace.dependencies]\next = \"1\"\ndevx = \"1\"\n",
+        );
+        for (p, deps) in [
+            (
+                "alpha",
+                "[dependencies]\next.workspace = true\n\n[dev-dependencies]\ndevx.workspace = true\n",
+            ),
+            ("beta", "[dependencies]\next.workspace = true\n"),
+            ("gamma", ""),
+        ] {
+            write(
+                &repo,
+                &format!("crates/tasty-plugin-{p}/Cargo.toml"),
+                &format!(
+                    "[package]\nname = \"tasty-plugin-{p}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n{deps}"
+                ),
+            );
+            write(
+                &repo,
+                &format!("crates/tasty-plugin-{p}/tasty-plugin.toml"),
+                &format!("id = \"com.tasty.{p}\"\nversion = \"0.1.0\"\n"),
+            );
+            write(
+                &repo,
+                &format!("crates/tasty-plugin-{p}/src/main.rs"),
+                "fn main() {}\n",
+            );
+        }
+        let f = Self {
+            _tmp: tmp,
+            repo,
+            vendor,
+            cargo_home,
+        };
+        f.stock("ext", "1.0.0");
+        f.stock("devx", "1.0.0");
+        f.cargo(&["generate-lockfile", "--offline"]);
+        commit_all(&f.repo, "seed");
+        f
+    }
+
+    /// Makes one more version of a crate available, as a new crates.io release would.
+    fn stock(&self, name: &str, v: &str) {
+        let dir = self.vendor.join(format!("{name}-{v}"));
+        write(
+            &dir,
+            "Cargo.toml",
+            &format!("[package]\nname = \"{name}\"\nversion = \"{v}\"\nedition = \"2021\"\n"),
+        );
+        write(&dir, "src/lib.rs", "pub fn f() {}\n");
+        write(
+            &dir,
+            ".cargo-checksum.json",
+            "{\"files\":{},\"package\":null}\n",
+        );
+    }
+
+    fn cargo(&self, args: &[&str]) {
+        let out = git_env::command(real_cargo())
+            .args(args)
+            .current_dir(&self.repo)
+            .env("CARGO_HOME", &self.cargo_home)
+            .output()
+            .expect("run cargo");
+        assert!(
+            out.status.success(),
+            "cargo {args:?} failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `cargo update -p <name>` after `v` becomes available. (--precise is not used: with
+    /// --offline it picks the newest available version anyway.)
+    fn update(&self, name: &str, v: &str) {
+        self.stock(name, v);
+        self.cargo(&["update", "--offline", "-p", name]);
+        let lock = fs::read_to_string(self.repo.join("Cargo.lock")).expect("read lock");
+        assert!(
+            lock.contains(&format!("name = \"{name}\"\nversion = \"{v}\"\n")),
+            "{name} is not at {v}:\n{lock}"
+        );
+    }
+
+    fn bump(&self, plugin: &str, v: &str) {
+        for rel in [
+            format!("crates/tasty-plugin-{plugin}/Cargo.toml"),
+            format!("crates/tasty-plugin-{plugin}/tasty-plugin.toml"),
+        ] {
+            let body = fs::read_to_string(self.repo.join(&rel)).expect("read");
+            write(
+                &self.repo,
+                &rel,
+                &body.replacen("version = \"0.1.0\"", &format!("version = \"{v}\""), 1),
+            );
+        }
+        self.cargo(&["metadata", "--offline", "--format-version", "1"]);
+    }
+
+    fn check(&self, args: &[&str]) -> (i32, String) {
+        let mut cmd = gate_command(&script(), &self.repo);
+        cmd.env("CARGO_HOME", &self.cargo_home);
+        run(cmd, args)
+    }
+}
+
+/// Case 10: An external crate update in Cargo.lock flags the plugins whose normal/build
+/// closure holds it, and names the crate, both versions and the plugins.
+#[test]
+fn an_external_lock_update_flags_the_plugins_that_link_the_crate() {
+    let f = ExtFixture::new();
+    f.update("ext", "1.0.1");
+    commit_all(&f.repo, "update ext");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    for p in ["alpha", "beta"] {
+        assert!(
+            text.contains(&format!("crates/tasty-plugin-{p}: shipped content changed")),
+            "{text}"
+        );
+    }
+    assert!(!text.contains("crates/tasty-plugin-gamma:"), "{text}");
+    assert!(text.contains("ext 1.0.0 → 1.0.1 (Cargo.lock)"), "{text}");
+    assert!(
+        text.contains("plugins: crates/tasty-plugin-alpha crates/tasty-plugin-beta"),
+        "{text}"
+    );
+}
+
+/// A dev-only crate is not in the normal/build closure, so its update needs no bump.
+#[test]
+fn a_dev_only_lock_update_needs_no_bump() {
+    let f = ExtFixture::new();
+    f.update("devx", "1.0.1");
+    commit_all(&f.repo, "update devx");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("nothing to judge"), "{text}");
+}
+
+/// Lock updates that go out in one release need one bump: after the latest release tag on
+/// main, a plugin already raised above its tagged version passes a second update, and a
+/// plugin still at its tagged version does not.
+#[test]
+fn a_second_lock_update_after_a_bump_since_the_release_tag_passes() {
+    let f = ExtFixture::new();
+    run_git(&f.repo, &["tag", "v0.1.0"]);
+    f.update("ext", "1.0.1");
+    f.bump("alpha", "0.1.1");
+    commit_all(&f.repo, "update ext and bump alpha");
+    f.update("ext", "1.0.2");
+    commit_all(&f.repo, "update ext again");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "beta was not bumped since the tag:\n{text}");
+    assert!(!text.contains("crates/tasty-plugin-alpha:"), "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-beta: shipped content changed"),
+        "{text}"
+    );
+    assert!(text.contains("ext 1.0.1 → 1.0.2 (Cargo.lock)"), "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-alpha is already at 0.1.1, above 0.1.0 at v0.1.0"),
+        "{text}"
+    );
+}
+
+/// Without a release tag the second update still asks every linked plugin for a bump.
+#[test]
+fn without_a_release_tag_every_lock_update_needs_a_bump() {
+    let f = ExtFixture::new();
+    f.update("ext", "1.0.1");
+    f.bump("alpha", "0.1.1");
+    commit_all(&f.repo, "update ext and bump alpha");
+    f.update("ext", "1.0.2");
+    commit_all(&f.repo, "update ext again");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-alpha: shipped content changed"),
+        "{text}"
+    );
+}

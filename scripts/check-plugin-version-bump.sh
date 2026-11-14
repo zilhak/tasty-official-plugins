@@ -303,15 +303,16 @@ xgit() {
 
 outside_has() { printf '%s\n' "$OUTSIDE" | grep -qxF "$1"; }
 
-# name, version, source of every package in the Cargo.lock at <ref>, tab separated.
+# name, version, source, checksum of every package in the Cargo.lock at <ref>, tab separated.
 lock_rows() {
     git show "$1" | awk '
-        function flush() { if (name != "") print name "\t" ver "\t" src; name = ver = src = "" }
+        function flush() { if (name != "") print name "\t" ver "\t" src "\t" sum; name = ver = src = sum = "" }
         /^\[\[package\]\]/ { flush(); next }
         /^\[/ { flush(); next }
         /^name = /    { name = $3; gsub(/"/, "", name); next }
         /^version = / { ver = $3; gsub(/"/, "", ver); next }
         /^source = /  { src = $3; gsub(/"/, "", src); next }
+        /^checksum = / { sum = $3; gsub(/"/, "", sum); next }
         END { flush() }'
 }
 
@@ -647,12 +648,161 @@ $(cut -f1-3 "$WORK/pin.moves" | sort -u)
 EOF2
 }
 
+# ── Root build inputs ────────────────────────────────────────────────────────
+# The plugins declare their dependencies in the root [workspace.dependencies], and their
+# external crates are locked in the root Cargo.lock, so these files can change a plugin's
+# build output without touching its directory.
+
+NOTES=""
+note() { NOTES="$NOTES
+[plugin-version] note: $*"; }
+
+# The latest release tag reachable from main (or origin/main), or nothing.
+release_tag() {
+    local ref t
+    for ref in main origin/main; do
+        git rev-parse --verify --quiet "$ref^{commit}" >/dev/null || continue
+        t=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$ref" 2>/dev/null) || continue
+        [ -n "$t" ] && { printf '%s' "$t"; return 0; }
+    done
+    return 1
+}
+
+# Whether an external crate update (Cargo.lock only) needs a version bump of <plugin dir>.
+# Several lock updates that go out in one release need only one bump: a plugin whose version
+# at the end of the range is already above its version at the latest release tag passes.
+# Without a readable tag or plugin version there, the bump is required.
+# This is the only place that decides it; RELEASED_NOTE explains a pass.
+RELEASED_NOTE=""
+external_update_needs_bump() {  # <plugin dir>
+    local tag vt va
+    RELEASED_NOTE=""
+    tag=$(release_tag) || return 0
+    vt=$(version_at "$tag:$1/tasty-plugin.toml")
+    va=$(version_at "$(after_ref "$1/tasty-plugin.toml")")
+    [ -n "$vt" ] && [ -n "$va" ] || return 0
+    if ver_gt "$va" "$vt"; then
+        RELEASED_NOTE="$1 is already at $va, above $vt at $tag"
+        return 1
+    fi
+    return 0
+}
+
+# (ii) crates.io packages whose locked versions or checksums changed.
+judge_external_lock() {
+    local name vb va plugins p needed
+    awk -F '\t' '$3 ~ /^(registry|sparse)\+/ { print $1 "\t" $2 "\t" $4 }' "$WORK/lock.before" | sort > "$WORK/ext.before"
+    awk -F '\t' '$3 ~ /^(registry|sparse)\+/ { print $1 "\t" $2 "\t" $4 }' "$WORK/lock.after" | sort > "$WORK/ext.after"
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        plugins_linking "$name"
+        [ -n "$LINKED" ] || continue
+        vb=$(awk -F '\t' -v n="$name" '$1 == n { print $2 }' "$WORK/ext.before" | tr '\n' ' ')
+        va=$(awk -F '\t' -v n="$name" '$1 == n { print $2 }' "$WORK/ext.after" | tr '\n' ' ')
+        vb=${vb% }; va=${va% }
+        needed=""
+        for p in $LINKED; do
+            if external_update_needs_bump "$p"; then
+                add_dirty "$p" "$name ${vb:-<none>} → ${va:-<none>} (Cargo.lock)"
+                needed="$needed $p"
+            else
+                note "$name ${vb:-<none>} → ${va:-<none>} (Cargo.lock): $RELEASED_NOTE; no further bump needed."
+            fi
+        done
+        plugins="${LINKED# }"
+        PIN_SUMMARY="$PIN_SUMMARY
+    $name ${vb:-<none>} → ${va:-<none>} (Cargo.lock); plugins: $plugins"
+    done <<EOF2
+$(comm -3 "$WORK/ext.before" "$WORK/ext.after" | sed 's/^\t//' | cut -f1 | sort -u)
+EOF2
+}
+
+# Sections of a root Cargo.toml as "section<TAB>line", without comments, trailing spaces
+# and blank lines. Lines before the first header belong to section "".
+toml_lines() {
+    git show "$1" | awk '
+        { sub(/[[:space:]]+$/, "") }
+        /^[[:space:]]*#/ || /^$/ { next }
+        /^\[/ { sec = $0; gsub(/^\[+|\]+$/, "", sec); next }
+        { print sec "\t" $0 }'
+}
+
+# The entries of [workspace.dependencies] as "key<TAB>value" with any rev removed, plus
+# [workspace.dependencies.<key>] tables folded into one value.
+dep_entries() {  # <toml_lines file>
+    awk -F '\t' '
+        $1 == "workspace.dependencies" {
+            line = $2; key = line; sub(/[[:space:]]*=.*/, "", key); val = line; sub(/^[^=]*=[[:space:]]*/, "", val)
+            gsub(/,?[[:space:]]*rev[[:space:]]*=[[:space:]]*"[^"]*"/, "", val)
+            print key "\t" val; next
+        }
+        index($1, "workspace.dependencies.") == 1 {
+            key = substr($1, length("workspace.dependencies.") + 1)
+            if ($2 ~ /^rev[[:space:]]*=/) next
+            tab[key] = tab[key] " " $2; next
+        }
+        END { for (k in tab) print k "\t{" tab[k] " }" }' "$1" | sort
+}
+
+judge_root_manifest() {
+    local before="$BEFORE_REV:Cargo.toml" after sec key pkg val_b val_a p
+    after=$(after_ref Cargo.toml)
+    if ! exists_at "$before" || ! exists_at "$after"; then
+        die "the root Cargo.toml is missing on one side of the range."
+    fi
+    toml_lines "$before" > "$WORK/root.before"
+    toml_lines "$after" > "$WORK/root.after"
+    while IFS= read -r sec; do
+        if cmp -s <(awk -F '\t' -v s="$sec" '$1 == s' "$WORK/root.before") \
+                  <(awk -F '\t' -v s="$sec" '$1 == s' "$WORK/root.after"); then
+            continue
+        fi
+        case "$sec" in
+            workspace.dependencies|workspace.dependencies.*) ;;  # by entry, below
+            profile|profile.*)
+                note "[$sec] changed in Cargo.toml; plugin versions are not bumped for it, see docs/ci.md." ;;
+            patch|patch.*) ;;  # the lock shows what it moves
+            workspace.lints|workspace.lints.*) ;;
+            *) die "[${sec:-top level}] changed in the root Cargo.toml; judge the plugin versions by hand." ;;
+        esac
+    done <<EOF2
+$(cut -f1 "$WORK/root.before" "$WORK/root.after" | sort -u)
+EOF2
+    dep_entries "$WORK/root.before" > "$WORK/deps.before"
+    dep_entries "$WORK/root.after" > "$WORK/deps.after"
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        val_b=$(awk -F '\t' -v k="$key" '$1 == k { print $2 }' "$WORK/deps.before")
+        val_a=$(awk -F '\t' -v k="$key" '$1 == k { print $2 }' "$WORK/deps.after")
+        pkg=$(printf '%s\n%s\n' "$val_a" "$val_b" | sed -n 's/.*package[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | sed -n '1p')
+        [ -n "$pkg" ] || pkg="$key"
+        plugins_linking "$pkg"
+        [ -n "$LINKED" ] || continue
+        for p in $LINKED; do
+            add_dirty "$p" "Cargo.toml [workspace.dependencies] $key: ${val_b:-<none>} → ${val_a:-<none>}"
+        done
+        PIN_SUMMARY="$PIN_SUMMARY
+    $key ${val_b:-<none>} → ${val_a:-<none>} (Cargo.toml [workspace.dependencies]); plugins: ${LINKED# }"
+    done <<EOF2
+$(comm -3 "$WORK/deps.before" "$WORK/deps.after" | sed 's/^\t//' | cut -f1 | sort -u)
+EOF2
+}
+
 if outside_has Cargo.lock; then
     judge_pin_moves
+    judge_external_lock
 fi
+if outside_has Cargo.toml; then
+    judge_root_manifest
+fi
+for f in .cargo/config.toml rust-toolchain.toml rust-toolchain; do
+    outside_has "$f" && note "$f changed; plugin versions are not bumped for it, see docs/ci.md."
+done
 if [ -n "$PIN_SUMMARY" ]; then
     printf '[plugin-version] crates that changed in a plugin dependency closure:%s\n' "$PIN_SUMMARY" >&2
 fi
+[ -z "$NOTES" ] || printf '%s\n' "${NOTES#
+}" >&2
 
 crate_dir_of() {
     local r
