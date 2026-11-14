@@ -9,7 +9,7 @@ workflow.
 
 | File | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: unit tests on Windows x64 and macOS arm64. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
+| `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: unit tests on Windows x64 and macOS arm64. `lint` job: shellcheck on every shell script and actionlint on every workflow. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
 | `.github/workflows/release.yml` | push of a `v*` tag; manual (`workflow_dispatch`) | On a tag, releases the plugins on a GitHub Release of this repository (see [Releases](#releases)). A manual run builds the same release files as workflow artifacts and creates no Release |
 | `.github/workflows/plugin-version-check.yml` | push to `develop`, `release`, or `main`, pull request to one of them, for changes outside Markdown and `docs/`; manual | Checks that each plugin whose build output changed raised its version (see [Plugin version check](#plugin-version-check)), then runs the `repo-gates` tests |
 
@@ -40,7 +40,7 @@ they are not shared with tasty.
 | `linux-x64` | `x86_64-unknown-linux-gnu` | `[self-hosted, Linux, X64]` |
 | `linux-arm64` | `aarch64-unknown-linux-gnu` | `[self-hosted, Linux, ARM64]` |
 
-The `check` and `audit` jobs run on `[self-hosted, Linux, X64]`, and the `test` job on
+The `check`, `lint`, and `audit` jobs run on `[self-hosted, Linux, X64]`, and the `test` job on
 the Windows x64 and macOS runners.
 
 These are the same five platforms that tasty releases. Linux ARM64 is included because
@@ -75,7 +75,7 @@ Each runner needs:
 | All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, `tar`, `awk`, and `sha256sum` or `shasum` (`scripts/package-plugin.sh`; Git for Windows provides them on Windows). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
 | Windows (both) | Git for Windows, whose bash runs `scripts/check.sh` (bash need not be on `PATH`: the jobs find `bin\bash.exe` from the location of `git` and put that folder first on `PATH`, ahead of the WSL bash in System32), PowerShell 7 (`pwsh`), and Visual Studio Build Tools with the MSVC x64 tools, `vswhere.exe`, and `dumpbin.exe` |
 | `[win-arm64]` | In addition, the MSVC ARM64 build tools (C dependencies are compiled for ARM64) and the `aarch64-pc-windows-msvc` Rust target installed for the toolchain above |
-| `[self-hosted, Linux, X64]` | For `plugin-version-check.yml`, `rustfmt` from the toolchain and access to GitHub to install `strip-cfg-test` and to fetch tasty commits that the Cargo git cache does not have. `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum` |
+| `[self-hosted, Linux, X64]` | For `plugin-version-check.yml`, `rustfmt` from the toolchain and access to GitHub to install `strip-cfg-test` and to fetch tasty commits that the Cargo git cache does not have. `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `lint` job needs no installed tools: it downloads shellcheck and actionlint into the runner tool cache, which needs access to GitHub, `curl`, and `tar` with `xz`. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum` |
 | `[self-hosted, Linux, ARM64]` | A C compiler |
 | `[self-hosted, macOS, ARM64]` | The Xcode command line tools |
 
@@ -110,6 +110,24 @@ because it builds no dev-dependencies.
   every job builds from scratch. Downloaded crates stay in the runner user's Cargo
   home. `Swatinem/rust-cache` is not used because its save step cleans up the registry
   in that Cargo home, which tasty's runners on the same machine may share.
+
+## Static checks
+
+The `lint` job in `ci.yml` runs `scripts/install-lint-tools.sh`, which downloads shellcheck
+and actionlint from their GitHub release pages into the runner tool cache
+(`$RUNNER_TOOL_CACHE/lint-tools/shellcheck-<version>-actionlint-<version>-<arch>`), and
+then `scripts/lint-scripts.sh`. The versions and the SHA-256 sums of the release archives
+are pinned in `install-lint-tools.sh`: an archive with another sum fails the job, and an
+install that is already there and reports the pinned versions is reused. To update a
+tool, change its version and sums together. actionlint publishes its sums in the release's
+`checksums.txt`; shellcheck publishes none, so take the sum of the downloaded archive.
+
+`lint-scripts.sh` finds the scripts instead of listing them: tracked files that end in
+`.sh`, the hooks in `.githooks`, and tracked files whose first line is a bash or sh
+shebang. It prints each file, runs `shellcheck -x` on them, and runs actionlint on
+`.github/workflows/*.yml`, which also runs shellcheck on the `run` blocks. Run it locally
+with `PATH="$(bash scripts/install-lint-tools.sh):$PATH" bash scripts/lint-scripts.sh`;
+outside CI the tools go to `~/.cache/tasty-official-plugins/lint-tools`.
 
 ## Advisory check
 

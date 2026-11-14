@@ -165,6 +165,29 @@ jobs:
       - name: test (lib, bins)
         run: scripts/check.sh test --lib --bins --no-fail-fast
 
+  # shellcheck on every shell script and actionlint on every workflow. Both tools are
+  # downloaded from their release pages, checked against pinned SHA-256 sums, and kept
+  # in the runner tool cache, so the runner needs nothing but network access.
+  lint:
+    name: shellcheck, actionlint
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install shellcheck and actionlint (runner tool cache)
+        run: |
+          dir=$(bash scripts/install-lint-tools.sh)
+          if [ -z "$dir" ] || [ ! -x "$dir/shellcheck" ] || [ ! -x "$dir/actionlint" ]; then
+            echo "::error::install-lint-tools.sh gave no runnable tools: '$dir'"
+            exit 1
+          fi
+          echo "$dir" >> "$GITHUB_PATH"
+
+      # actionlint also runs the shellcheck above on the workflows' run blocks.
+      - name: shellcheck, actionlint
+        run: bash scripts/lint-scripts.sh
+
   # Separate job: a new advisory fails this job without touching check and build.
   audit:
     name: cargo audit
