@@ -1,6 +1,7 @@
 //! Checks that the plugin crates are the workspace members the build list
-//! names, that every tasty crate comes from one pinned tasty commit, and that
-//! each plugin manifest version matches its crate version.
+//! names, that every tasty crate comes from one pinned tasty commit, that
+//! each plugin manifest version matches its crate version, and that each
+//! plugin's PLUGIN_ID constant matches its manifest id.
 //!
 //! The source checks read Cargo.lock, which is what the build uses.
 
@@ -321,4 +322,244 @@ fn egui_family_matches_the_tasty_lock_at_the_pin() {
             show_versions(&tasty_versions)
         );
     }
+}
+
+/// Rust files under crates/*/src: 147 measured on 2026-11-14 at 25f4750. The floor
+/// leaves room for files being merged or split and fails when the walk loses a large
+/// plugin.
+const MIN_CRATE_SOURCES: usize = 110;
+
+/// A crate source as (path relative to the workspace root with `/`, text).
+type Source = (String, String);
+
+/// The Rust files under crates/<crate>/src, skipping build output.
+fn crate_sources() -> Vec<Source> {
+    let root = workspace_root();
+    let mut out = Vec::new();
+    let mut stack = vec![root.join("crates")];
+    while let Some(dir) = stack.pop() {
+        let entries =
+            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+        for entry in entries {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                // A build directory, named target or marked by CACHEDIR.TAG.
+                if path.file_name().is_some_and(|n| n == "target")
+                    || path.join("CACHEDIR.TAG").is_file()
+                {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            let rel = path
+                .strip_prefix(&root)
+                .expect("under the workspace root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel.ends_with(".rs") && rel.contains("/src/") {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                out.push((rel, text));
+            }
+        }
+    }
+    out
+}
+
+/// The value of a `const PLUGIN_ID: ... = "..."` declaration. The colon after the name
+/// keeps other constants with a longer name out.
+fn plugin_id_in_line(line: &str) -> Option<&str> {
+    let (_, rest) = line.trim_start().split_once("const PLUGIN_ID:")?;
+    rest.split('"').nth(1)
+}
+
+/// Plugins without any constant, and constants whose value differs from the manifest.
+/// Counted per plugin, so an extra constant in one plugin does not hide a missing one in
+/// another.
+struct IdScan {
+    blind: Vec<String>,
+    mismatches: Vec<String>,
+}
+
+/// Takes the sources and the (crate, manifest id) pairs, so synthetic inputs go through
+/// the same check.
+fn id_scan(sources: &[Source], plugins: &[(String, String)]) -> IdScan {
+    let mut blind = Vec::new();
+    let mut mismatches = Vec::new();
+    for (name, manifest_id) in plugins {
+        let mut found_here = 0usize;
+        let prefix = format!("crates/{name}/src/");
+        for (rel, text) in sources.iter().filter(|(rel, _)| rel.starts_with(&prefix)) {
+            for line in text.lines() {
+                let Some(value) = plugin_id_in_line(line) else {
+                    continue;
+                };
+                found_here += 1;
+                if value != manifest_id {
+                    mismatches.push(format!(
+                        "  {rel}: manifest id={manifest_id} vs const PLUGIN_ID={value}"
+                    ));
+                }
+            }
+        }
+        if found_here == 0 {
+            blind.push(format!("  {name}"));
+        }
+    }
+    IdScan { blind, mismatches }
+}
+
+#[test]
+fn manifest_id_matches_the_plugin_id_constant() {
+    let sources = crate_sources();
+    assert!(
+        sources.len() >= MIN_CRATE_SOURCES,
+        "collected only {} Rust files under crates/*/src (floor {MIN_CRATE_SOURCES}). Check the walk.",
+        sources.len()
+    );
+    let crates = workspace_root().join("crates");
+    let plugins: Vec<(String, String)> = script_plugins()
+        .into_iter()
+        .filter(|plugin| crates.join(plugin).join("tasty-plugin.toml").exists())
+        .map(|plugin| {
+            let manifest =
+                Manifest::read(&crates.join(&plugin)).unwrap_or_else(|e| panic!("{plugin}: {e:#}"));
+            (plugin, manifest.id)
+        })
+        .collect();
+    assert_eq!(plugins.len(), 8, "expected eight plugin manifests");
+    let IdScan { blind, mismatches } = id_scan(&sources, &plugins);
+    assert!(
+        blind.is_empty(),
+        "no PLUGIN_ID constant found for these plugins. Check the constant name and the walk:\n{}",
+        blind.join("\n")
+    );
+    assert!(
+        mismatches.is_empty(),
+        "the manifest id and the PLUGIN_ID constant differ. Keep the id a plugin sends equal to the one it registers:\n{}",
+        mismatches.join("\n")
+    );
+}
+
+/// Synthetic file names stay inside strings so that they are not taken for real paths.
+fn corpus(pairs: &[(&str, &str)]) -> Vec<Source> {
+    pairs
+        .iter()
+        .map(|(rel, src)| ((*rel).to_string(), (*src).to_string()))
+        .collect()
+}
+
+fn roster(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(name, id)| ((*name).to_string(), (*id).to_string()))
+        .collect()
+}
+
+#[test]
+fn the_constant_needle_needs_the_colon_and_the_quotes() {
+    assert_eq!(
+        plugin_id_in_line("    pub const PLUGIN_ID: &str = \"zone.alpha\";"),
+        Some("zone.alpha")
+    );
+    assert_eq!(
+        plugin_id_in_line("const PLUGIN_IDENT: &str = \"zone.alpha\";"),
+        None,
+        "counted another constant as this one"
+    );
+    assert_eq!(
+        plugin_id_in_line("    let sent = PLUGIN_ID;"),
+        None,
+        "counted a use as the declaration"
+    );
+    assert_eq!(
+        plugin_id_in_line("const PLUGIN_ID: &str = OTHER;"),
+        None,
+        "made up a value without quotes"
+    );
+}
+
+#[test]
+fn a_plugin_with_no_constant_is_blind_not_matching() {
+    let sources = corpus(&[(
+        "crates/tasty-plugin-zonealpha/src/lib.rs",
+        "pub const PLUGIN_ID: &str = \"zone.alpha\";",
+    )]);
+    let plugins = roster(&[
+        ("tasty-plugin-zonealpha", "zone.alpha"),
+        ("tasty-plugin-zonebeta", "zone.beta"),
+    ]);
+
+    let scan = id_scan(&sources, &plugins);
+    assert_eq!(scan.blind, vec!["  tasty-plugin-zonebeta".to_string()]);
+    assert_eq!(
+        scan.mismatches,
+        Vec::<String>::new(),
+        "counted a missing constant as a mismatch too"
+    );
+}
+
+/// Two constants in one plugin cannot stand in for one missing from another.
+#[test]
+fn the_blind_check_is_per_plugin_not_a_sum() {
+    let sources = corpus(&[
+        (
+            "crates/tasty-plugin-zonealpha/src/lib.rs",
+            "pub const PLUGIN_ID: &str = \"zone.alpha\";",
+        ),
+        (
+            "crates/tasty-plugin-zonealpha/src/main.rs",
+            "const PLUGIN_ID: &str = \"zone.alpha\";",
+        ),
+    ]);
+    let plugins = roster(&[
+        ("tasty-plugin-zonealpha", "zone.alpha"),
+        ("tasty-plugin-zonebeta", "zone.beta"),
+    ]);
+
+    assert_eq!(
+        id_scan(&sources, &plugins).blind,
+        vec!["  tasty-plugin-zonebeta".to_string()]
+    );
+}
+
+/// Another crate with a longer name that starts the same is not this plugin.
+#[test]
+fn a_constant_under_another_prefix_does_not_cover_this_plugin() {
+    let sources = corpus(&[(
+        "crates/tasty-plugin-zonealphax/src/lib.rs",
+        "pub const PLUGIN_ID: &str = \"zone.alpha\";",
+    )]);
+    let plugins = roster(&[("tasty-plugin-zonealpha", "zone.alpha")]);
+
+    assert_eq!(
+        id_scan(&sources, &plugins).blind,
+        vec!["  tasty-plugin-zonealpha".to_string()],
+        "counted the constant of a crate with an overlapping prefix for this plugin"
+    );
+}
+
+#[test]
+fn a_drifted_constant_is_named_with_the_file_that_holds_it() {
+    let sources = corpus(&[
+        (
+            "crates/tasty-plugin-zonealpha/src/lib.rs",
+            "pub const PLUGIN_ID: &str = \"zone.alpha\";",
+        ),
+        (
+            "crates/tasty-plugin-zonealpha/src/main.rs",
+            "const PLUGIN_ID: &str = \"zone.alpha.old\";",
+        ),
+    ]);
+    let plugins = roster(&[("tasty-plugin-zonealpha", "zone.alpha")]);
+
+    let scan = id_scan(&sources, &plugins);
+    assert_eq!(scan.blind, Vec::<String>::new());
+    assert_eq!(
+        scan.mismatches,
+        vec![
+            "  crates/tasty-plugin-zonealpha/src/main.rs: manifest id=zone.alpha vs const PLUGIN_ID=zone.alpha.old"
+                .to_string()
+        ]
+    );
 }
