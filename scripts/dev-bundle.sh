@@ -122,9 +122,20 @@ build_copy=""
 files_list=""
 staging=""
 old=""
+cur=""
+lock=""
 cleanup() {
   if [[ -n "$staging" ]]; then rm -rf "$staging"; fi
-  if [[ -n "$old" ]]; then rm -rf "$old"; fi
+  # Stopped after the previous <id> was moved aside and before the new one took its
+  # place: put the previous one back, or say where it is.
+  if [[ -n "$old" ]]; then
+    if [[ ! -e "$cur" && ! -L "$cur" ]] && mv "$old" "$cur"; then
+      echo "put the previous $(basename "$cur") back" >&2
+    else
+      echo "the previous $(basename "$cur") is in $old" >&2
+    fi
+  fi
+  if [[ -n "$lock" ]]; then rm -rf "$lock"; fi
   cd "$repo"
   if [[ -n "$build_copy" ]]; then rm -rf "$build_copy"; fi
   if [[ -n "$files_list" ]]; then rm -f "$files_list"; fi
@@ -215,6 +226,12 @@ $wrong
 A version in $tasty that the requirements here do not accept leaves its patch unused."
 fi
 
+# One run at a time replaces the plugins in DIR. A run that finds the lock fails at
+# once; a lock left by a killed run is removed by hand.
+mkdir "$out/.dev-bundle.lock" 2>/dev/null \
+  || die "another dev-bundle.sh is writing $out, or a killed run left $out/.dev-bundle.lock; remove it if none runs"
+lock="$out/.dev-bundle.lock"
+
 count=0
 while IFS= read -r crate; do
   [[ -n "$crate" ]] || continue
@@ -238,16 +255,26 @@ while IFS= read -r crate; do
   if [[ -d "$src/lang" ]]; then
     cp -R "$src/lang" "$staging/lang"
   fi
-  if [[ -e "$out/$id" ]]; then
+  cur="$out/$id"
+  if [[ -e "$cur" || -L "$cur" ]]; then
+    mv "$out/$id" "$out/.$id.old.$$" || die "cannot move $cur aside"
     old="$out/.$id.old.$$"
-    mv "$out/$id" "$old"
   fi
-  mv "$staging" "$out/$id"
+  # mv into an existing folder would put the new one inside it.
+  [[ ! -e "$cur" && ! -L "$cur" ]] || die "$cur appeared while it was being replaced"
+  if ! mv "$staging" "$cur"; then
+    [[ -n "$old" ]] || die "cannot move the new $id into $cur"
+    if mv "$old" "$cur"; then
+      old=""
+      die "cannot move the new $id into $cur; kept the previous one"
+    fi
+    die "cannot move the new $id into $cur; the previous one is in $old"
+  fi
   staging=""
-  if [[ -n "$old" ]]; then
-    rm -rf "$old"
-    old=""
-  fi
+  # The previous folder is removed only once the new one is in place.
+  prev=$old
+  old=""
+  if [[ -n "$prev" ]]; then rm -rf "$prev"; fi
   echo "bundled $id ($crate) into $out/$id" >&2
   count=$((count + 1))
 done <<<"$bins"
