@@ -1972,13 +1972,19 @@ fn a_dev_only_lock_update_needs_no_bump() {
     assert!(text.contains("nothing to judge"), "{text}");
 }
 
-/// Lock updates that go out in one release need one bump: after the latest release tag on
-/// main, a plugin already raised above its tagged version passes a second update, and a
-/// plugin still at its tagged version does not.
+/// Releases the current commit (origin/main points at it); work goes on in branch `work`.
+fn release_here(f: &ExtFixture) {
+    run_git(&f.repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    run_git(&f.repo, &["checkout", "--quiet", "-b", "work"]);
+}
+
+/// Lock updates that go out in one release need one bump: a plugin already raised above
+/// its version at the tip of origin/main passes a second update, and a plugin still at its
+/// released version does not.
 #[test]
-fn a_second_lock_update_after_a_bump_since_the_release_tag_passes() {
+fn a_second_lock_update_after_a_bump_since_the_release_passes() {
     let f = ExtFixture::new();
-    run_git(&f.repo, &["tag", "v0.1.0"]);
+    release_here(&f);
     f.update("ext", "1.0.1");
     f.bump("alpha", "0.1.1");
     commit_all(&f.repo, "update ext and bump alpha");
@@ -1986,7 +1992,7 @@ fn a_second_lock_update_after_a_bump_since_the_release_tag_passes() {
     commit_all(&f.repo, "update ext again");
 
     let (code, text) = f.check(&HEAD_RANGE);
-    assert_eq!(code, 1, "beta was not bumped since the tag:\n{text}");
+    assert_eq!(code, 1, "beta was not bumped since the release:\n{text}");
     assert!(!text.contains("crates/tasty-plugin-alpha:"), "{text}");
     assert!(
         text.contains("crates/tasty-plugin-beta: shipped content changed"),
@@ -1994,25 +2000,25 @@ fn a_second_lock_update_after_a_bump_since_the_release_tag_passes() {
     );
     assert!(text.contains("ext 1.0.1 → 1.0.2 (Cargo.lock)"), "{text}");
     assert!(
-        text.contains("crates/tasty-plugin-alpha is already at 0.1.1, above 0.1.0 at v0.1.0"),
+        text.contains(
+            "crates/tasty-plugin-alpha is already at 0.1.1, above 0.1.0 at origin/main ("
+        ),
         "{text}"
     );
 }
 
-/// The baseline is the latest tag on origin/main. A local main left at an older release
-/// would let a version that is already published pass as a new bump.
+/// The baseline is the tip of origin/main. A local main left at an older release would let
+/// a version that is already published pass as a new bump.
 #[test]
-fn the_release_tag_comes_from_origin_main_not_an_old_local_main() {
+fn the_release_baseline_is_origin_main_not_an_old_local_main() {
     let f = ExtFixture::new();
-    run_git(&f.repo, &["tag", "v0.1.0"]);
+    let old = git_out(&f.repo, &["rev-parse", "HEAD"]);
     f.update("ext", "1.0.1");
     f.bump("alpha", "0.1.1");
     commit_all(&f.repo, "update ext and bump alpha");
-    // Release that commit as v0.2.0 on origin/main; the local main stays at v0.1.0.
-    run_git(&f.repo, &["tag", "v0.2.0"]);
-    run_git(&f.repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    run_git(&f.repo, &["checkout", "--quiet", "-b", "work"]);
-    run_git(&f.repo, &["branch", "--force", "main", "v0.1.0"]);
+    // Release that commit on origin/main; the local main stays at the older release.
+    release_here(&f);
+    run_git(&f.repo, &["branch", "--force", "main", &old]);
     f.update("ext", "1.0.2");
     commit_all(&f.repo, "update ext after the release");
 
@@ -2020,15 +2026,40 @@ fn the_release_tag_comes_from_origin_main_not_an_old_local_main() {
     assert_eq!(code, 1, "{text}");
     assert!(
         text.contains("crates/tasty-plugin-alpha: shipped content changed"),
-        "0.1.1 is already published at v0.2.0:\n{text}"
+        "0.1.1 is already published on origin/main:\n{text}"
     );
-    assert!(!text.contains("above 0.1.0 at v0.1.0"), "{text}");
+    assert!(!text.contains("above 0.1.0"), "{text}");
 }
 
-/// Without a release tag the second update still asks every linked plugin for a bump.
+/// Tags do not matter: with origin/main at a new release whose tag the clone never fetched,
+/// and only an older tag present, the published version is still the baseline.
 #[test]
-fn without_a_release_tag_every_lock_update_needs_a_bump() {
+fn a_release_whose_tag_was_not_fetched_is_still_the_baseline() {
     let f = ExtFixture::new();
+    run_git(&f.repo, &["tag", "v0.1.0"]);
+    f.update("ext", "1.0.1");
+    f.bump("alpha", "0.1.1");
+    commit_all(&f.repo, "update ext and bump alpha");
+    // Released on origin/main, but its tag (say v0.2.0) is missing here.
+    release_here(&f);
+    f.update("ext", "1.0.2");
+    commit_all(&f.repo, "update ext after the release");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-alpha: shipped content changed"),
+        "0.1.1 is already published on origin/main:\n{text}"
+    );
+    assert!(!text.contains("at v0.1.0"), "{text}");
+}
+
+/// Without origin/main or main the second update still asks every linked plugin for a bump.
+#[test]
+fn without_a_release_branch_every_lock_update_needs_a_bump() {
+    let f = ExtFixture::new();
+    run_git(&f.repo, &["checkout", "--quiet", "-b", "work"]);
+    run_git(&f.repo, &["branch", "--delete", "--force", "main"]);
     f.update("ext", "1.0.1");
     f.bump("alpha", "0.1.1");
     commit_all(&f.repo, "update ext and bump alpha");

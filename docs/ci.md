@@ -154,8 +154,11 @@ before..after range and a cancelled run would leave that range unchecked.
   build inputs. A tasty pin move or a changed `[workspace.dependencies]` entry needs a bump
   of each plugin whose dependency closure holds a changed crate. An update of a crates.io
   crate in `Cargo.lock` needs one too, unless the plugin is already above its version at
-  the latest release tag on `origin/main` (the local `main` only when there is no
-  `origin/main`). `[profile.*]`, `.cargo/config.toml`, and `rust-toolchain.toml` pass with
+  the tip of `origin/main` (the local `main` only when there is no `origin/main`). `main`
+  moves only for releases and hotfixes, so its tip is the published state, and tags are
+  not read. A local check uses the `origin/main` the clone last fetched: if it was not
+  fetched after a release, the baseline is older and a second update can pass locally; the
+  CI checkout fetches it on every run. `[profile.*]`, `.cargo/config.toml`, and `rust-toolchain.toml` pass with
   a note; `[workspace]` and unknown sections are undecidable, and so is a changed
   `[workspace.dependencies]` line that cannot be read or that no package in `Cargo.lock`
   answers to.

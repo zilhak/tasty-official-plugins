@@ -676,35 +676,38 @@ NOTES=""
 note() { NOTES="$NOTES
 [plugin-version] note: $*"; }
 
-# The latest release tag reachable from origin/main, or nothing. A local main is used only
-# when origin/main does not exist: it is rarely updated, so an old local main would take an
-# older release as the baseline and pass versions that were already published.
-release_tag() {
-    local ref=origin/main t
-    if ! git rev-parse --verify --quiet "$ref^{commit}" >/dev/null; then
+# The released state: the tip of origin/main, written "<ref> (<sha8>)". main moves only for
+# releases and hotfixes, so its tip is what was published, and reading versions there does
+# not depend on which tags a clone fetched. A local main is used only when origin/main does
+# not exist: it is rarely updated, so an old local main would pass versions that were
+# already published.
+release_base() {
+    local ref=origin/main sha
+    if ! sha=$(git rev-parse --verify --quiet "$ref^{commit}"); then
         ref=main
-        git rev-parse --verify --quiet "$ref^{commit}" >/dev/null || return 1
+        sha=$(git rev-parse --verify --quiet "$ref^{commit}") || return 1
     fi
-    t=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$ref" 2>/dev/null) || return 1
-    [ -n "$t" ] || return 1
-    printf '%s' "$t"
+    RELEASE_COMMIT="$sha"
+    printf '%s (%s)' "$ref" "${sha:0:8}"
 }
 
 # Whether an external crate update (Cargo.lock only) needs a version bump of <plugin dir>.
 # Several lock updates that go out in one release need only one bump: a plugin whose version
-# at the end of the range is already above its version at the latest release tag passes.
-# Without a readable tag or plugin version there, the bump is required.
-# This is the only place that decides it; RELEASED_NOTE explains a pass.
+# at the end of the range is already above its version at the tip of origin/main passes.
+# Without origin/main or main, or without a readable plugin version there, the bump is
+# required. This is the only place that decides it; RELEASED_NOTE explains a pass.
 RELEASED_NOTE=""
+RELEASE_COMMIT=""
 external_update_needs_bump() {  # <plugin dir>
-    local tag vt va
+    local base vt va
     RELEASED_NOTE=""
-    tag=$(release_tag) || return 0
-    vt=$(version_at "$tag:$1/tasty-plugin.toml")
+    release_base > "$WORK/release.base" || return 0
+    base=$(cat "$WORK/release.base")
+    vt=$(version_at "$RELEASE_COMMIT:$1/tasty-plugin.toml")
     va=$(version_at "$(after_ref "$1/tasty-plugin.toml")")
     [ -n "$vt" ] && [ -n "$va" ] || return 0
     if ver_gt "$va" "$vt"; then
-        RELEASED_NOTE="$1 is already at $va, above $vt at $tag"
+        RELEASED_NOTE="$1 is already at $va, above $vt at $base"
         return 1
     fi
     return 0

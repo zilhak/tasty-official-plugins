@@ -88,7 +88,8 @@ The `pre-merge-commit` and `pre-commit` hooks enforce this table (install with
   `tasty-plugin.toml`, and a release does not change it.
 - Each plugin's patch version goes up in the commit that changes its build output,
   including a pin move that changes a tasty crate in its dependency closure and an update
-  of a crates.io crate in that closure (one bump per release covers several such updates);
+  of a crates.io crate in that closure (one bump per release covers several such updates:
+  a plugin already above its version at the tip of `origin/main` needs no other bump);
   the `pre-commit` hook and the Plugin version check workflow check this. Lane worktrees
   may defer it with `git config --worktree tasty.pluginBump deferred`; the merge step runs
   `scripts/plugin-bump-fixup.sh` per commit and checks each commit again. The loop stops
