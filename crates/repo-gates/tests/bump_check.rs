@@ -2905,7 +2905,7 @@ fn check_sh_changes_like_the_license_and_hook_lanes_need_no_bump() {
          hp=$(git config --path --get core.hooksPath 2>/dev/null) || hp=\"\"\n  \
          if [[ -z \"$hp\" ]]; then\n    echo \"warning: no hooks\" >&2\n  fi\n  return 0\n}\n\n\
          sub=\"${1:-all}\"\n\ncase \"$sub\" in\n  # Never stops the run.\n  \
-         all | fmt | test | build) warn_hooks || true ;;\nesac\n",
+         all | fmt | test | build) ( warn_hooks ) || true ;;\nesac\n",
     );
     f.commit("warn when the hooks do not run");
     assert_nothing_to_judge(&f.check(&HEAD_RANGE));
@@ -2956,7 +2956,7 @@ fn check_sh_changes_like_the_real_license_and_hook_commits_need_no_bump() {
         "sub=\"${1:-all}\"\n",
         "warn_hooks() {\n  echo \"warning: no hooks\" >&2\n  return 0\n}\n\n\
          sub=\"${1:-all}\"\n\ncase \"$sub\" in\n  \
-         all | fmt | test | build) warn_hooks || true ;;\nesac\n",
+         all | fmt | test | build) ( warn_hooks ) || true ;;\nesac\n",
     );
     f.commit("warn when the hooks do not run");
     assert_nothing_to_judge(&f.check(&HEAD_RANGE));
@@ -2989,6 +2989,36 @@ fn check_sh_changes_like_the_real_license_and_hook_commits_need_no_bump() {
     );
     f.commit("drop the ;; of the help branch");
     assert_undecidable_with(&f.check(&HEAD_RANGE), "is not closed by ;; before line");
+}
+
+/// The hook warning runs for build too, so it is left out only when it runs in a subshell,
+/// which cannot change the shell that builds. A call outside a subshell is compared.
+#[test]
+fn the_hook_warning_is_left_out_only_in_a_subshell() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/check.sh",
+        "sub=\"${1:-all}\"\n",
+        "warn_hooks() {\n  echo \"warning: no hooks\" >&2\n}\n\nsub=\"${1:-all}\"\n\n\
+         case \"$sub\" in\n  all | fmt | test | build) ( warn_hooks ) || true ;;\nesac\n",
+    );
+    f.commit("warn in a subshell");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+    f.edit(
+        "scripts/check.sh",
+        "  echo \"warning: no hooks\" >&2\n",
+        "  export RUSTFLAGS=\"-C opt-level=0\"\n  echo \"warning: no hooks\" >&2\n",
+    );
+    f.commit("change the warning");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+
+    f.edit(
+        "scripts/check.sh",
+        "( warn_hooks ) || true ;;",
+        "warn_hooks || true ;;",
+    );
+    f.commit("warn in the build shell");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
 }
 
 /// What runs for check.sh build outside the named functions counts: top-level statements and

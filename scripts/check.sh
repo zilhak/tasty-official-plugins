@@ -133,7 +133,8 @@ sub="${1:-all}"
 
 case "$sub" in
   # In an || list errexit is off inside the function, so a failed write cannot stop the run.
-  all | fmt | lint | test | build) warn_hooks || true ;;
+  # The subshell keeps the warning from changing the shell that builds.
+  all | fmt | lint | test | build) ( warn_hooks ) || true ;;
 esac
 
 case "$sub" in

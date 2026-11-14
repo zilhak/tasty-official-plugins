@@ -53,7 +53,7 @@ except	scripts/check.sh	line	^[[:space:]]*lint\)[[:space:]]*cmd_lint[[:space:]]*
 except	scripts/check.sh	line	^[[:space:]]*test\)[[:space:]]*cmd_test([[:space:]]+"\$@")?[[:space:]]*;;[[:space:]]*(#.*)?$
 except	scripts/check.sh	line	^[[:space:]]*audit\)[[:space:]]*cmd_audit[[:space:]]*;;[[:space:]]*(#.*)?$
 except	scripts/check.sh	line	^[[:space:]]*licenses\)[[:space:]]*cmd_licenses[[:space:]]*;;[[:space:]]*(#.*)?$
-except	scripts/check.sh	line	^[[:space:]]*[a-z]+([[:space:]]*\|[[:space:]]*[a-z]+)*\)[[:space:]]*warn_hooks([[:space:]]*\|\|[[:space:]]*true)?[[:space:]]*;;[[:space:]]*(#.*)?$
+except	scripts/check.sh	line	^[[:space:]]*[a-z]+([[:space:]]*\|[[:space:]]*[a-z]+)*\)[[:space:]]*\([[:space:]]*warn_hooks[[:space:]]*\)[[:space:]]*\|\|[[:space:]]*true[[:space:]]*;;[[:space:]]*(#.*)?$
 except	scripts/check.sh	branch	^[[:space:]]*-h[[:space:]]*\|[[:space:]]*--help[[:space:]]*\|[[:space:]]*help\)
 region	.github/workflows/release.yml	top	^env:[[:space:]]*$
 region	.github/workflows/release.yml	top	^defaults:[[:space:]]*$
