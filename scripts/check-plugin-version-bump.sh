@@ -1587,22 +1587,46 @@ EOF2
             # A uses: key passes only with owner/repo@ref or owner/repo/path@ref on its own
             # line, quoted or not, maybe with a trailing comment. Anything else (a local action
             # or workflow, a Docker image, a value on the next line or in a block scalar, a
-            # flow mapping) could run content the list does not judge.
+            # flow mapping) could run content the list does not judge (U). YAML forms that could
+            # spell a uses: key or value another way stop the check too (Y): an explicit key
+            # (?), a double-quoted key with a backslash escape, an anchor, an alias, and a merge
+            # key. The body of a block scalar (run: |) is data and is skipped, by indentation.
             awk '
+                function lead(t) { match(t, /^ */); return RLENGTH }
                 /^@ / { next }
-                $0 ~ /^[[:space:]]*(-[[:space:]]+)?["\047]?uses["\047]?[[:space:]]*:/ {
-                    v = $0
-                    sub(/^[[:space:]]*(-[[:space:]]+)?["\047]?uses["\047]?[[:space:]]*:/, "", v)
-                    sub(/[[:space:]]+#.*$/, "", v); sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
-                    if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
-                    if (v ~ /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+(\/[^@[:space:]]+)?@[A-Za-z0-9_.\/-]+$/) next
-                    print "    " $0; next
+                blk >= 0 { if ($0 ~ /^[[:space:]]*$/ || lead($0) > blk) next; blk = -1 }
+                /^[[:space:]]*#/ { next }
+                {
+                    l = $0; sub(/[[:space:]]+#.*$/, "", l)
+                    if (l ~ /^[[:space:]]*(-[[:space:]]+)*\?([[:space:]]|$)/ \
+                        || l ~ /"[^"]*\\[^"]*"[[:space:]]*:/ \
+                        || l ~ /^[[:space:]]*(-[[:space:]]+)*["\047]?<<["\047]?[[:space:]]*:/ \
+                        || l ~ /(^[[:space:]]*(-[[:space:]]+)*|:[[:space:]]+|[{,[][[:space:]]*)[&*][^[:space:]]/) {
+                        print "Y\t    " $0; next
+                    }
                 }
-                /[{,][[:space:]]*["\047]?uses["\047]?[[:space:]]*:/ { print "    " $0 }
-            ' "$WORK/region.out" > "$WORK/structure.uses" || die "cannot read $path (after)."
-            if [ -s "$WORK/structure.uses" ]; then
+                l ~ /^[[:space:]]*(-[[:space:]]+)?["\047]?uses["\047]?[[:space:]]*:/ {
+                    v = l
+                    sub(/^[[:space:]]*(-[[:space:]]+)?["\047]?uses["\047]?[[:space:]]*:/, "", v)
+                    sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+                    if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
+                    if (v !~ /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+(\/[^@[:space:]]+)?@[A-Za-z0-9_.\/-]+$/) {
+                        print "U\t    " $0; next
+                    }
+                }
+                l ~ /[{,][[:space:]]*["\047]?uses["\047]?[[:space:]]*:/ { print "U\t    " $0; next }
+                # A block scalar starts: its body is the lines indented deeper than its key.
+                l ~ /:[[:space:]]+[|>][-+0-9]*[[:space:]]*$/ {
+                    k = l; sub(/^[[:space:]]*(-[[:space:]]+)*/, "", k); blk = length(l) - length(k)
+                }
+            ' blk=-1 "$WORK/region.out" > "$WORK/structure.uses" || die "cannot read $path (after)."
+            if grep -q '^U' "$WORK/structure.uses"; then
                 die "a job that builds the archives in $path has a uses: value that is not owner/repo@ref or owner/repo/path@ref on its line (a local action or workflow, a Docker image, or a form the gate does not read), whose content is not judged; judge the plugin versions by hand:
-$(cat "$WORK/structure.uses")"
+$(sed -n "s/^U$TAB//p" "$WORK/structure.uses")"
+            fi
+            if [ -s "$WORK/structure.uses" ]; then
+                die "a job that builds the archives in $path uses a YAML form the gate does not read (an explicit ? key, a double-quoted key with a backslash escape, an anchor, an alias, or a merge key), which could spell a uses: key another way; judge the plugin versions by hand:
+$(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             fi
             continue
         fi

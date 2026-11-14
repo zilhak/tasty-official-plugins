@@ -3320,6 +3320,61 @@ fn a_package_job_action_not_written_as_owner_repo_at_ref_is_undecidable() {
     assert_nothing_to_judge(&f.check(&HEAD_RANGE));
 }
 
+/// YAML forms that could spell a uses: key another way stop the check in the package job:
+/// an explicit key, a double-quoted key with an escape, an anchor, an alias, and a merge key.
+/// The body of a block scalar is data: a uses: line, & or * there is not read.
+#[test]
+fn yaml_forms_that_hide_a_uses_key_in_the_package_job_are_undecidable() {
+    let step = "      - run: bash scripts/package-plugin.sh stage --all --profile dist\n";
+    for added in [
+        "      - ? uses\n        : ./.github/actions/x\n",
+        "      - \"u\\x73es\": ./.github/actions/x\n",
+        "      - &localstep\n        uses: actions/cache@v4\n",
+        "      - *localstep\n",
+        "      - <<: *base\n        name: x\n",
+        "      - <<: { name: x }\n        run: echo x\n",
+        "      - name: x\n        uses: &u actions/cache@v4\n",
+    ] {
+        let f = ArchiveFixture::new();
+        f.edit(
+            ".github/workflows/release.yml",
+            step,
+            &format!("{step}{added}"),
+        );
+        f.commit("add a step");
+        assert_undecidable_with(
+            &f.check(&HEAD_RANGE),
+            "uses a YAML form the gate does not read",
+        );
+    }
+
+    let f = ArchiveFixture::new();
+    f.edit(
+        ".github/workflows/release.yml",
+        step,
+        &format!(
+            "{step}      - run: |\n          uses: ./.github/actions/x\n          \
+             a && b & c\n          echo *\n\n          ? q\n        shell: bash\n      \
+             - name: y\n        run: >-\n          \"u\\x73es\": x\n"
+        ),
+    );
+    f.commit("add run blocks");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
+
+    // After a block scalar the next key is read again.
+    let f = ArchiveFixture::new();
+    f.edit(
+        ".github/workflows/release.yml",
+        step,
+        &format!("{step}      - run: |\n          echo a\n        uses: ./.github/actions/x\n"),
+    );
+    f.commit("add a run block and a local action");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "has a uses: value that is not owner/repo@ref",
+    );
+}
+
 /// The list is read from both judged trees: a commit that drops an input from the list and
 /// changes it at once is still judged, in either mode, and the work tree list does not count.
 #[test]
