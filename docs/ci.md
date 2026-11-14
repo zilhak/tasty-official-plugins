@@ -195,7 +195,8 @@ this crate and of `plugin-pin-check` only, so it never enters a plugin build.
   Pane and Window, and each Korean word for window that names a popup is registered with
   its phrase, count, and evidence.
 - `notice_set`: `LICENSES/` holds at least one license text, and `THIRD_PARTY_LICENSES.md`
-  links every file in `LICENSES/` and no file that is missing there.
+  links every file in `LICENSES/` and no file that is missing there. `LICENSES/` holds
+  files only; a subfolder or link there fails this check and `stage`.
 
 The checks that walk the sources fail when they find fewer files or plugins than a floor
 measured in this repository, so an empty walk does not pass.

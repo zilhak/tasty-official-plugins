@@ -8,14 +8,19 @@
 # shellcheck disable=SC2034
 NOTICE_ASSET="assets/NOTICE.md"
 
-# Prints the notice set, one repository path per line. An empty LICENSES/ means a
-# checkout without the license texts, so it fails.
+# Prints the notice set, one repository path per line. LICENSES/ holds regular files
+# only: a folder, link, or other entry in it fails instead of being left out. An empty
+# LICENSES/ means a checkout without the license texts, so it fails too.
 notice_set_files() {
   local f found=0
   echo "LICENSE"
   echo "THIRD_PARTY_LICENSES.md"
   for f in LICENSES/*; do
-    [[ -f "$f" ]] || continue
+    [[ -e "$f" || -L "$f" ]] || continue
+    if [[ -L "$f" || ! -f "$f" ]]; then
+      echo "error: $f is not a regular file; LICENSES/ holds files only" >&2
+      return 1
+    fi
     echo "$f"
     found=1
   done
