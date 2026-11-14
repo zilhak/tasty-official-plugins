@@ -2601,6 +2601,23 @@ fn staged_mode_judges_archive_inputs_too() {
     f.git(&["update-index", "--chmod=+x", "LICENSES/a.txt"]);
     f.git(&["reset", "--quiet", "THIRD_PARTY_LICENSES.md"]);
     assert_every_archive_flagged(&f.check(&["--staged"]), "LICENSES/");
+
+    // Modes come from ls-files -s in the index: a mode alone is a change, and an unchanged
+    // mode is not one.
+    f.git(&["reset", "--quiet", "--hard"]);
+    f.git(&["update-index", "--chmod=+x", "LICENSE"]);
+    assert_every_archive_flagged(&f.check(&["--staged"]), "LICENSE");
+    f.git(&["reset", "--quiet", "--hard"]);
+    f.git(&[
+        "update-index",
+        "--chmod=+x",
+        "crates/tasty-plugin-alpha/tasty-plugin.toml",
+    ]);
+    assert_only_alpha(&f.check(&["--staged"]));
+    f.git(&["reset", "--quiet", "--hard"]);
+    f.bump("alpha", "0.1.1");
+    f.git(&["add", "-A"]);
+    assert_nothing_to_judge(&f.check(&["--staged"]));
 }
 
 /// Archive case 15: a move out of LICENSES/ removes a license text, so both paths count.
@@ -2763,6 +2780,28 @@ fn a_missing_closing_marker_is_undecidable() {
         "{text}"
     );
     assert!(text.contains("scripts/check.sh"), "{text}");
+
+    // The same rule for a block region: the next function has several lines and its own
+    // closing brace.
+    let f = ArchiveFixture::new();
+    f.write(
+        "scripts/extra.sh",
+        "a() {\n  echo a\n}\n\nb() {\n  echo b\n}\n",
+    );
+    let list = archive_list();
+    f.write(
+        ARCHIVE_LIST,
+        &format!("{list}region\tscripts/extra.sh\tblock\t^a\\(\\) \\{{$\t^\\}}$\n"),
+    );
+    f.commit("judge a block of extra.sh");
+    f.edit("scripts/extra.sh", "  echo a\n}\n", "  echo a\n");
+    f.commit("drop the closing brace of a");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("is not closed by ^\\}$ before line"),
+        "{text}"
+    );
 }
 
 /// A trailing comment on a marker or on the key line of another job does not move a region:
@@ -3319,9 +3358,19 @@ fn the_release_profile_is_the_same_in_the_gate_the_workflow_and_the_packaging_sc
         .split_once("\n  publish:\n")
         .expect("the job after package")
         .0;
+    // The profile of every call, without comments, so an old value in a comment does not
+    // stand in for the call.
+    let profiles: Vec<&str> = package_job
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .map(|l| l.split(" #").next().unwrap_or(l))
+        .flat_map(|l| l.split("--profile").skip(1))
+        .map(|rest| rest.split_whitespace().next().unwrap_or(""))
+        .collect();
+    assert!(!profiles.is_empty(), "release.yml names no --profile");
     assert!(
-        package_job.contains("--profile dist\n"),
-        "release.yml builds the archives with another profile"
+        profiles.iter().all(|p| *p == "dist"),
+        "release.yml builds the archives with another profile: {profiles:?}"
     );
     let package = read("scripts/package-plugin.sh");
     assert_eq!(
@@ -3542,6 +3591,61 @@ fn an_unreadable_root_manifest_side_is_undecidable() {
         &f.check(&HEAD_RANGE),
         "the root Cargo.toml is missing on one side of the range",
     );
+
+    // The manifest exists on both sides, but git show fails on one of them: a git wrapper
+    // fails `git show <side>:Cargo.toml` from its <n>th call on (the after side is read once
+    // before, by the path patch check).
+    let real_git = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .map(|d| Path::new(d).join("git"))
+        .find(|g| g.is_file())
+        .expect("git on PATH");
+    let stub = tempfile::tempdir().expect("stub dir");
+    write(
+        stub.path(),
+        "git",
+        &format!(
+            "#!/usr/bin/env bash
+             if [ \"$1\" = show ] && [ \"$2\" = \"$FAIL_SHOW\" ]; then
+               n=$(( $(cat \"$FAIL_COUNT\" 2>/dev/null || echo 0) + 1 )); echo \"$n\" > \"$FAIL_COUNT\"
+               if [ \"$n\" -ge \"$FAIL_FROM\" ]; then echo 'fatal: injected' >&2; exit 128; fi
+             fi
+             exec '{}' \"$@\"
+",
+            real_git.display()
+        ),
+    );
+    fs::set_permissions(
+        stub.path().join("git"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("chmod");
+    let f = PinFixture::new();
+    f.edit_root("opt-level = 3", "opt-level = 2");
+    f.git(&["commit", "--quiet", "-am", "change the release profile"]);
+    for (side, from, what) in [
+        (
+            "HEAD^:Cargo.toml",
+            "1",
+            "cannot read the root Cargo.toml at HEAD^.",
+        ),
+        (
+            "HEAD:Cargo.toml",
+            "2",
+            "cannot read the root Cargo.toml at HEAD.",
+        ),
+    ] {
+        let count = stub.path().join(format!("count.{from}"));
+        let mut cmd = f.command(false);
+        cmd.env("PATH", path_with(stub.path()))
+            .env("FAIL_SHOW", side)
+            .env("FAIL_FROM", from)
+            .env("FAIL_COUNT", &count);
+        let r = run(cmd, &HEAD_RANGE);
+        assert_undecidable_with(&r, what);
+        assert!(count.exists(), "the wrapper did not run:\n{}", r.1);
+    }
 }
 
 // ── [patch] ──────────────────────────────────────────────────────────────────
