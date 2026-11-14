@@ -3461,6 +3461,14 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
             "y=$(\n  echo REVIEW_MARK\n",
             "opens ( that is not closed by the end of the file",
         ),
+        (
+            "y=${REVIEW_MARK\n",
+            "opens ${ that is not closed by the end of the file",
+        ),
+        (
+            "y=`echo REVIEW_MARK\n",
+            "opens ` that is not closed by the end of the file",
+        ),
     ] {
         let f = ArchiveFixture::new();
         f.write("scripts/check.sh", &format!("{FIXTURE_CHECK_SH}{tail}"));
@@ -3469,6 +3477,24 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
         assert_undecidable_with(&r, what);
         assert!(r.1.contains("scripts/check.sh line "), "{}", r.1);
     }
+
+    // A ${ } with a substitution inside, in a file with no substitution before it, is
+    // counted at the top level like any other: the line after it is read as commands.
+    let f = ArchiveFixture::new();
+    f.write("scripts/lib/extra.sh", "export REVIEW_MARK=1\n");
+    f.write(
+        "scripts/check.sh",
+        &format!("{FIXTURE_CHECK_SH}y=${{y:-$(pwd)}}\n. scripts/lib/extra.sh\n"),
+    );
+    f.commit("source after a ${ } with a substitution");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "sources scripts/lib/extra.sh");
+    let f = ArchiveFixture::new();
+    f.write(
+        "scripts/check.sh",
+        &format!("{FIXTURE_CHECK_SH}y=${{y:-$(pwd)}}\necho REVIEW_MARK\n"),
+    );
+    f.commit("a ${ } with a substitution");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
 
     // A source on a later line of a substitution over several lines is found, and a change
     // of the sourced file alone stays undecidable.

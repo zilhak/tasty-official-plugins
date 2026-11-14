@@ -1753,7 +1753,7 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
                 word = sw[sd] "$()"; raw = sr[sd] "$()"; inword = 1; hst = shst[sd]
                 cmd = scmd[sd]; want = swant[sd]; opts = sopts[sd]; redir = sredir[sd]; sd--
             }
-            BEGIN { hst = -1 }
+            BEGIN { hst = -1; sd = 0 }
             # A line of a here-document body outside the substitutions in it: its end word,
             # data (a quoted end word), or text whose substitutions are read (below).
             hmode && sd == hbase && bd[sd] == 0 {
