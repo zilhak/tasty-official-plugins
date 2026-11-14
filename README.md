@@ -162,6 +162,11 @@ scripts/dev-bundle.sh --out DIR  # plugins for a tasty checkout (below)
 target offline. The version check exits 0 on pass, 1 when a plugin needs a bump, and 2
 when it cannot decide; see [docs/ci.md](docs/ci.md#plugin-version-check).
 
+`scripts/check.sh` warns when the hooks are not set: `fmt`, `lint`, `test`, `build`, and
+`all` print a warning on stderr when `core.hooksPath` of the clone is unset, points to a
+missing folder, or points to another tree. The warning does not change the exit code, and
+CI runs stay quiet.
+
 `build` and `test` pass their arguments to cargo unchanged, for example
 `scripts/check.sh build --profile dist --target aarch64-pc-windows-msvc`. With `all`
 (the default), extra arguments go to the build step. Build and check commands use

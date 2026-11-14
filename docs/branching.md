@@ -80,7 +80,13 @@ Merge commits are made only in these cases:
 
 The `pre-merge-commit` and `pre-commit` hooks enforce this table. Install them with
 `bash scripts/dev-setup.sh`, which sets `core.hooksPath` to `.githooks` and then runs
-`cargo fetch --locked` for the plugin version check.
+`cargo fetch --locked` for the plugin version check. The setting is shared by every
+worktree of the clone, and each worktree runs the hooks of its own branch.
+
+The merge commit rule is enforced only by the local hooks; CI does not check merge
+commits. A clone without the hooks can push a merge commit outside this table, so
+`scripts/check.sh` warns when `core.hooksPath` is not set (see the
+[README](../README.md#local-commands)).
 
 ## What differs from tasty
 
