@@ -125,31 +125,51 @@ fn policy_problems(text: &str) -> Vec<String> {
     problems
 }
 
+/// Extra arguments given after `licenses` in the runs. CI calls it without any; the others
+/// are samples of what a local caller might pass, so an argument-dependent branch for one of
+/// them is caught. Other arguments are not proven.
+const EXTRA_SAMPLES: [&[&str]; 9] = [
+    &[],
+    &["extra", "args"],
+    &["--exclude", "cssparser"],
+    &["--exclude-dev"],
+    &["--config", "x.toml"],
+    &["--all-features"],
+    &["--workspace"],
+    &["check", "licenses"],
+    &["advisories"],
+];
+
 /// A cargo that appends its arguments to `$CARGO_RECORD`, one per line, and a line `--end--`
-/// after each call, then succeeds.
+/// after each call, then exits with `$STUB_RC` (0 by default).
 fn recording_cargo(dir: &Path) {
     support::write_executable(
         &dir.join("cargo"),
         "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> \"$CARGO_RECORD\"; done\n\
-         echo --end-- >> \"$CARGO_RECORD\"\n",
+         echo --end-- >> \"$CARGO_RECORD\"\nexit \"${STUB_RC:-0}\"\n",
     )
     .expect("recording cargo");
 }
 
-/// Runs `bash <script> licenses <extra>` with the recording cargo first on PATH and returns
-/// whether it succeeded and the recorded cargo calls, each as its arguments. check.sh
-/// changes to its repository root.
-fn cargo_calls_of_licenses(script: &Path, extra: &[&str]) -> (bool, Vec<Vec<String>>) {
+/// One run of `bash <script> licenses <extra>`: its exit code and the recorded cargo calls.
+struct Run {
+    code: Option<i32>,
+    calls: Vec<Vec<String>>,
+}
+
+/// Runs `bash <script> licenses <extra>` with the recording cargo first on PATH, in CI
+/// (`GITHUB_ACTIONS=true`) or outside it, with the cargo exiting `stub_rc`. check.sh changes
+/// to its repository root.
+fn run_licenses(script: &Path, extra: &[&str], in_ci: bool, stub_rc: i32) -> Run {
     let stub = tempfile::tempdir().expect("stub dir");
     recording_cargo(stub.path());
     let record = stub.path().join("record");
-    let out = support::git_env::command("bash")
-        .arg(script)
+    let mut cmd = support::git_env::command("bash");
+    cmd.arg(script)
         .arg("licenses")
         .args(extra)
-        // Quiet warn_hooks; licenses does not call it either way.
-        .env("GITHUB_ACTIONS", "true")
         .env("CARGO_RECORD", &record)
+        .env("STUB_RC", stub_rc.to_string())
         .env(
             "PATH",
             format!(
@@ -157,9 +177,13 @@ fn cargo_calls_of_licenses(script: &Path, extra: &[&str]) -> (bool, Vec<Vec<Stri
                 stub.path().display(),
                 std::env::var("PATH").unwrap_or_default()
             ),
-        )
-        .output()
-        .expect("run check.sh");
+        );
+    if in_ci {
+        cmd.env("GITHUB_ACTIONS", "true");
+    } else {
+        cmd.env_remove("GITHUB_ACTIONS");
+    }
+    let out = cmd.output().expect("run check.sh");
     let text = std::fs::read_to_string(&record).unwrap_or_default();
     let mut calls = Vec::new();
     let mut call = Vec::new();
@@ -170,12 +194,39 @@ fn cargo_calls_of_licenses(script: &Path, extra: &[&str]) -> (bool, Vec<Vec<Stri
             call.push(line.to_owned());
         }
     }
-    (out.status.success(), calls)
+    Run {
+        code: out.status.code(),
+        calls,
+    }
 }
 
-/// Whether the run succeeded with exactly the one pinned license check.
-fn only_the_license_check((ok, calls): &(bool, Vec<Vec<String>>)) -> bool {
-    *ok && calls.len() == 1 && calls[0] == LICENSES_ARGV
+/// Runs `<script> licenses` in both environments with every extra-argument sample, once with
+/// a cargo that succeeds and once with one that fails with 3. Each run must call cargo
+/// exactly once with LICENSES_ARGV and exit 0 when cargo succeeds and non-zero when it fails.
+/// Returns what differed.
+fn license_command_problems(script: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    for in_ci in [false, true] {
+        for extra in EXTRA_SAMPLES {
+            for stub_rc in [0, 3] {
+                let run = run_licenses(script, extra, in_ci, stub_rc);
+                let argv_ok = run.calls.len() == 1 && run.calls[0] == LICENSES_ARGV;
+                let code_ok = if stub_rc == 0 {
+                    run.code == Some(0)
+                } else {
+                    run.code.is_some_and(|c| c != 0)
+                };
+                if !argv_ok || !code_ok {
+                    problems.push(format!(
+                        "in CI: {in_ci}, extra {extra:?}, cargo exit {stub_rc}: exit {:?}, \
+                         cargo calls {:?}",
+                        run.code, run.calls
+                    ));
+                }
+            }
+        }
+    }
+    problems
 }
 
 #[test]
@@ -186,15 +237,8 @@ fn deny_toml_is_exactly_the_license_policy() {
 
 #[test]
 fn check_sh_licenses_runs_only_the_license_check() {
-    let script = support::repo_root().join("scripts/check.sh");
-    for extra in [&[][..], &["extra", "args"][..]] {
-        let run = cargo_calls_of_licenses(&script, extra);
-        assert!(
-            only_the_license_check(&run),
-            "check.sh licenses {extra:?} gave (success, cargo calls) {run:?}, expected one \
-             call with {LICENSES_ARGV:?}"
-        );
-    }
+    let problems = license_command_problems(&support::repo_root().join("scripts/check.sh"));
+    assert!(problems.is_empty(), "{problems:#?}");
 }
 
 /// deny.toml with one edit: `from` replaced by `to`, or `to` appended when `from` is empty.
@@ -391,14 +435,43 @@ fn a_widened_command_is_rejected() {
                     .to_owned(),
             ),
         ),
+        (
+            "a wider check outside CI only",
+            after_def(&format!(
+                "if [[ \"${{GITHUB_ACTIONS:-}}\" != true ]]; then\n  \
+                 cmd_licenses() {{ {widened}; }}\nfi"
+            )),
+        ),
+        (
+            // After the shift, so $1 is the first argument after `licenses`.
+            "a wider check when --exclude is passed",
+            before_case(&format!(
+                "if [[ \"${{1:-}}\" == --exclude ]]; then\n  cmd_licenses() {{ {widened}; }}\nfi"
+            )),
+        ),
+        (
+            "a swallowed cargo failure",
+            (
+                DEF,
+                "cmd_licenses() { run cargo deny --locked --workspace check licenses || true; }\n"
+                    .to_owned(),
+            ),
+        ),
+        (
+            // `cmd_licenses; exit 0` alone still stops at the failure under set -e.
+            "a branch that exits 0",
+            (
+                "  licenses) cmd_licenses ;;",
+                "  licenses) cmd_licenses || :; exit 0 ;;".to_owned(),
+            ),
+        ),
     ];
     for (what, (from, to)) in cases {
         let dir = tempfile::tempdir().expect("copy dir");
         let script = edited_script(dir.path(), from, &to);
-        let mut rejected = false;
-        for extra in [&[][..], &["extra"][..]] {
-            rejected |= !only_the_license_check(&cargo_calls_of_licenses(&script, extra));
-        }
-        assert!(rejected, "{what} was not rejected");
+        assert!(
+            !license_command_problems(&script).is_empty(),
+            "{what} was not rejected"
+        );
     }
 }
