@@ -246,9 +246,14 @@ workspace member as a root.
 - Only the license check runs. Advisories stay with the `audit` job, so cargo-deny does
   not download an advisory database, and bans and sources are not checked. A plain
   `cargo deny check` would run those checks with their defaults and is not the check of
-  this repository. A `repo-gates` test (`deny_policy`) fails if `deny.toml` gains an
-  `[advisories]`, `[bans]`, or `[sources]` setting or an exception, or if
-  `scripts/check.sh licenses` runs another check.
+  this repository. A `repo-gates` test (`deny_policy`) parses `deny.toml` and accepts
+  only the pinned keys and values: `[graph]` with `all-features = true`, and `[licenses]`
+  with `version`, `confidence-threshold`, `unused-allowed-license`, and `allow`, whose
+  set must equal tasty's list. Any other table or key, such as advisories, bans, sources,
+  exceptions, clarifications, private-crate skips, or graph exclusions, fails it. It also
+  requires `scripts/check.sh licenses` to run exactly
+  `cargo deny --locked --workspace check licenses`, defined once and with no other
+  argument.
 - No exceptions: `deny.toml` has no `[[licenses.exceptions]]` and no allow entry for one
   crate. When a crate fails the check, update it or replace the dependency that brings it
   in. When neither is possible, the maintainers decide; the check is not widened to pass.
@@ -259,7 +264,7 @@ workspace member as a root.
 `$RUNNER_TOOL_CACHE/cargo-deny/cargo-deny-<version>-<triple>`, with the SHA-256 sums of
 the Linux x86_64 and aarch64 musl archives pinned in the script, and never into
 `~/.cargo/bin`. Outside CI it uses `$CARGO_DENY_CACHE`, else
-`~/.cache/tasty-official-plugins/cargo-deny`. To update the tool, change the version and
+`${XDG_CACHE_HOME:-~/.cache}/tasty-official-plugins/cargo-deny`. To update the tool, change the version and
 both sums together; the release publishes a `.sha256` file next to each archive. Run the
 check locally with `PATH="$(bash scripts/install-cargo-deny.sh):$PATH" scripts/check.sh
 licenses`.
