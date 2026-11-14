@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 license = "MIT"
 publish = false
-description = "Checks the plugin build list, the tasty pin, and the plugin manifest versions"
+description = "Checks the plugin build list, the tasty pin and Cargo.lock sources, the egui family versions, and the plugin manifest versions and ids"
 
 [dev-dependencies]
 serde_json.workspace = true
