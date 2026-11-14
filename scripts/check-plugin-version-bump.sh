@@ -309,7 +309,9 @@ xgit() {
     )
 }
 
-outside_has() { printf '%s\n' "$OUTSIDE" | grep -qxF "$1"; }
+# A here-string, not a pipe: grep -q may stop reading early, and with pipefail the
+# producer's SIGPIPE would turn a match into a failure.
+outside_has() { grep -qxF "$1" <<<"$OUTSIDE"; }
 
 # name, version, source, checksum of every package in the Cargo.lock at <ref>, tab separated.
 lock_rows() {
@@ -449,7 +451,7 @@ pin_check_outside_inputs() {  # <src> <commit> <dir> <name>
         content=${rest#*:}
         content=${content#*:}
         case "$content" in *[![:space:]]*) ;; *) continue ;; esac
-        if printf '%s\n' "$content" | grep -qE '^[[:space:]]*//'; then continue; fi
+        if grep -qE '^[[:space:]]*//' <<<"$content"; then continue; fi
         lit=$(printf '%s\n' "$content" | grep -oE '"[^"]*\.\./[^"]*"' | sed -n '1p')
         lit=${lit#\"}; lit=${lit%\"}
         case "$lit" in *rerun-if-changed=*) lit=${lit#*rerun-if-changed=}; base="$dir" ;;
@@ -818,12 +820,18 @@ dep_entries() {  # <toml_lines file>
         }' "$1" | sort
 }
 
-# Whether a package named <name> is in Cargo.lock on either side of the range.
+# Whether a package named <name> is in Cargo.lock on either side of the range. The lock is
+# read from a file: grep -q on a pipe can stop early and the SIGPIPE of git show would make
+# pipefail report a match as a failure.
 in_either_lock() {  # <name>
-    local side
+    local side n=0
     for side in "$BEFORE_REV:Cargo.lock" "$(after_ref Cargo.lock)"; do
+        n=$((n + 1))
         exists_at "$side" || continue
-        git show "$side" | grep -qxF "name = \"$1\"" && return 0
+        if [ ! -f "$WORK/either-lock.$n" ]; then
+            git show "$side" > "$WORK/either-lock.$n" || die "cannot read $side."
+        fi
+        grep -qxF "name = \"$1\"" "$WORK/either-lock.$n" && return 0
     done
     return 1
 }

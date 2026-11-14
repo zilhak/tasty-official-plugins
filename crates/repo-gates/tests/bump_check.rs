@@ -1998,3 +1998,62 @@ fn without_a_release_tag_every_lock_update_needs_a_bump() {
         "{text}"
     );
 }
+
+/// A workspace dependency that only a crate outside every plugin uses passes, even when its
+/// package sits near the start of a Cargo.lock bigger than a pipe buffer.
+#[test]
+fn an_entry_used_only_outside_the_plugins_passes_in_a_large_lock() {
+    let f = ExtFixture::new();
+    f.stock("aaa-early", "1.0.0");
+    let mut deps = String::from("[dependencies]\naaa-early.workspace = true\n");
+    for i in 0..700 {
+        let name = format!("pad-{i:03}");
+        f.stock(&name, "1.0.0");
+        deps.push_str(&format!("{name} = \"1\"\n"));
+    }
+    write(
+        &f.repo,
+        "crates/helper/Cargo.toml",
+        &format!("[package]\nname = \"helper\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n{deps}"),
+    );
+    write(&f.repo, "crates/helper/src/lib.rs", "");
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &toml.replacen(
+            "[workspace.dependencies]\n",
+            "[workspace.dependencies]\naaa-early = \"1\"\n",
+            1,
+        ),
+    );
+    f.cargo(&["metadata", "--offline", "--format-version", "1"]);
+    commit_all(&f.repo, "add a helper crate");
+    let lock = fs::read_to_string(f.repo.join("Cargo.lock")).expect("read lock");
+    assert!(
+        lock.len() > 64 * 1024,
+        "the lock is only {} bytes",
+        lock.len()
+    );
+    let first = lock
+        .find("name = \"aaa-early\"")
+        .expect("aaa-early is locked");
+    assert!(first < 4096, "aaa-early is at byte {first}");
+
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &toml.replacen(
+            "aaa-early = \"1\"",
+            "aaa-early = { version = \"1\", default-features = false }",
+            1,
+        ),
+    );
+    f.cargo(&["metadata", "--offline", "--format-version", "1"]);
+    commit_all(&f.repo, "turn off the default features of aaa-early");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("nothing to judge"), "{text}");
+}
