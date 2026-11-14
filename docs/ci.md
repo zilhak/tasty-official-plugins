@@ -9,7 +9,7 @@ workflow.
 
 | File | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: unit tests on Windows x64 and macOS arm64. `lint` job: shellcheck on every shell script and actionlint on every workflow. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
+| `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: unit tests on Windows x64 and macOS arm64, and on macOS also the `repo-gates` integration tests. `lint` job: shellcheck on every shell script and actionlint on every workflow. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
 | `.github/workflows/release.yml` | push of a `v*` tag; manual (`workflow_dispatch`) | On a tag, releases the plugins on a GitHub Release of this repository (see [Releases](#releases)). A manual run builds the same release files as workflow artifacts and creates no Release |
 | `.github/workflows/plugin-version-check.yml` | push to `develop`, `release`, or `main`, pull request to one of them, for changes outside Markdown and `docs/`; manual | Checks that each plugin whose build output changed raised its version (see [Plugin version check](#plugin-version-check)), then runs the `repo-gates` tests |
 
@@ -77,7 +77,7 @@ Each runner needs:
 | `[win-arm64]` | In addition, the MSVC ARM64 build tools (C dependencies are compiled for ARM64) and the `aarch64-pc-windows-msvc` Rust target installed for the toolchain above |
 | `[self-hosted, Linux, X64]` | For `plugin-version-check.yml`, `rustfmt` from the toolchain and access to GitHub to install `strip-cfg-test` and to fetch tasty commits that the Cargo git cache does not have. `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `lint` job needs no installed tools: it downloads shellcheck and actionlint into the runner tool cache, which needs access to GitHub, `curl`, and `tar` with `xz`. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum` |
 | `[self-hosted, Linux, ARM64]` | A C compiler |
-| `[self-hosted, macOS, ARM64]` | The Xcode command line tools |
+| `[self-hosted, macOS, ARM64]` | The Xcode command line tools, and access to GitHub to install `strip-cfg-test` into the runner tool cache for the `repo-gates` tests |
 
 ## Tests by platform
 
@@ -86,10 +86,17 @@ Each runner needs:
 | `linux-x64` | `check` on `[self-hosted, Linux, X64]` | `scripts/check.sh test`: every test of every workspace crate that is not `#[ignore]` (the eight `#[ignore]` tests of `tasty-plugin-codex` and the two WebKitGTK tests do not run here) |
 | `linux-x64` | `check`, step "test (linux, webview layout)" | The two `#[ignore]` WebKitGTK tests of `tasty-plugin-markdown` under `xvfb-run`, with the same commands as tasty's `crossplatform-check.yml`. As in tasty, a failure is reported but does not fail the job yet |
 | `windows-x64` | `test` on `[self-hosted, Windows, X64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |
-| `macos-arm64` | `test` on `[self-hosted, macOS, ARM64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |
+| `macos-arm64` | `test` on `[self-hosted, macOS, ARM64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast`, then `cargo test --locked -p repo-gates` with `strip-cfg-test` from `scripts/install-judge.sh` |
 | `windows-arm64`, `linux-arm64` | `build` | Build only. The plugin code branches on the operating system, not the CPU, so the x64 test runs cover the same code paths |
 
 The `--lib --bins` scope is the one tasty uses for its Windows and macOS unit tests.
+
+The `repo-gates` integration tests run the plugin version check, its fixup, and the git
+hooks on fixture repositories. On macOS they run those shell scripts with the BSD tools
+(`sed`, `awk`, `comm`, `mktemp`) and the bash on `PATH`, which Linux does not
+cover. Before them the job runs `cargo fetch --locked`, because the fixtures resolve with
+`cargo --offline`, and installs `strip-cfg-test` as `plugin-version-check.yml` does. They do
+not run on Windows.
 
 Clippy (`scripts/check.sh lint`) runs natively on `linux-x64` (`check` job),
 `windows-x64`, and `macos-arm64` (`test` job). It does not run for `windows-arm64` or
