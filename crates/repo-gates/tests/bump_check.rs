@@ -3450,6 +3450,26 @@ fn heredocs_substitutions_and_case_patterns_are_read_like_bash() {
         "opens a quote (') that is not closed by the end of the file",
     );
 
+    // So does a substitution or arithmetic that is still open there, which would hide the
+    // commands after it.
+    for (tail, what) in [
+        (
+            "x=$((cd a; . REVIEW_MARK) 2>&1)\n. REVIEW_MARK\n",
+            "opens (( that is not closed by the end of the file",
+        ),
+        (
+            "y=$(\n  echo REVIEW_MARK\n",
+            "opens ( that is not closed by the end of the file",
+        ),
+    ] {
+        let f = ArchiveFixture::new();
+        f.write("scripts/check.sh", &format!("{FIXTURE_CHECK_SH}{tail}"));
+        f.commit("open a substitution");
+        let r = f.check(&HEAD_RANGE);
+        assert_undecidable_with(&r, what);
+        assert!(r.1.contains("scripts/check.sh line "), "{}", r.1);
+    }
+
     // A source on a later line of a substitution over several lines is found, and a change
     // of the sourced file alone stays undecidable.
     let f = ArchiveFixture::new();

@@ -1685,8 +1685,9 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
         # commands, except the substitutions in a body whose end word has no quote or
         # backslash; the word after source or . is its target, without its quotes. A command
         # word written with a backslash or with $'...' or $"..." quoting is not read: it stops
-        # the check (Q), and so do a here-document without its end word (H) and a quote that
-        # is still open at the end of the file (O). A here-document starts at << or <<- outside
+        # the check (Q), and so do a here-document without its end word (H), a quote that
+        # is still open at the end of the file (O), and a substitution, arithmetic, or ${ }
+        # still open there (P). A here-document starts at << or <<- outside
         # quotes, also inside a word (cat<<EOF), but not at <<< or in arithmetic ($(( )),
         # (( )), for (( ))), where << is a shift. ${ } is part of its word up to its closing
         # brace, and the substitutions inside it and inside arithmetic are read as commands.
@@ -1743,7 +1744,7 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             # inside it starts a command, as at the top level. $(( )) and (( )) are arithmetic
             # (A): only the command substitutions inside are read, and a new line starts nothing.
             function opensub(t) {
-                sd++; st[sd] = t; pc[sd] = 0; bd[sd] = 0; sw[sd] = word; sr[sd] = raw
+                sd++; st[sd] = t; sl[sd] = NR; pc[sd] = 0; bd[sd] = 0; sw[sd] = word; sr[sd] = raw
                 scmd[sd] = cmd; swant[sd] = want; sopts[sd] = opts; sredir[sd] = redir; shst[sd] = hst
                 word = ""; raw = ""; inword = 0; hst = -1; sep()
             }
@@ -1776,7 +1777,7 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
                     # are read as outside quotes. The body goes on where they close.
                     if (hmode && sd == hbase) {
                         if (c == "\\") { i++; continue }
-                        if (c == "$" && c2 == "{") { bd[sd]++; i++; continue }
+                        if (c == "$" && c2 == "{") { if (!bd[sd]) bl[sd] = NR; bd[sd]++; i++; continue }
                         if (c == "$" && c2 == "(") { i++; if (c3 == "(") { i++; opensub("A") } else opensub("("); continue }
                         if (c == "`") { opensub("`"); continue }
                         if (bd[sd] > 0 && c == "}") bd[sd]--
@@ -1803,7 +1804,7 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
                         continue
                     }
                     # ${ }: part of the word, up to its closing brace; substitutions inside are read.
-                    if (c == "$" && c2 == "{") { bd[sd]++; word = word "${"; raw = raw "${"; inword = 1; i++; continue }
+                    if (c == "$" && c2 == "{") { if (!bd[sd]) bl[sd] = NR; bd[sd]++; word = word "${"; raw = raw "${"; inword = 1; i++; continue }
                     if (bd[sd] > 0) {
                         if (c == "}") bd[sd]--
                         else if (c == "$" && c2 == "(") {
@@ -1850,6 +1851,9 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             END {
                 if (hmode) print "H\t" NR "\t" hw[hi] "\t"
                 if (q != "") print "O\t" qline "\t" q "\t"
+                # A substitution, arithmetic, or ${ } still open at the end of the file.
+                if (sd > 0) print "P\t" sl[1] "\t" (st[1] == "A" ? "((" : st[1] == "`" ? "`" : "(") "\t"
+                else if (bd[0] > 0) print "P\t" bl[0] "\t${\t"
             }
         ' "$WORK/structure.src" > "$WORK/structure.sources" || die "cannot read $path (after)."
         while IFS="$TAB" read -r sk ln target line; do
@@ -1859,6 +1863,9 @@ $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             fi
             if [ "$sk" = O ]; then
                 die "$path line $ln opens a quote ($target) that is not closed by the end of the file, so the source check cannot tell text from commands; judge the plugin versions by hand."
+            fi
+            if [ "$sk" = P ]; then
+                die "$path line $ln opens $target that is not closed by the end of the file, so the source check cannot tell where its commands end; judge the plugin versions by hand."
             fi
             if [ "$sk" = Q ]; then
                 die "$path line $ln has a command word written with a backslash or with \$'...' or \$\"...\" quoting ($target), which the source check does not read; write it plainly or judge the plugin versions by hand:
