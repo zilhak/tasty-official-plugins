@@ -162,7 +162,8 @@ before..after range and a cancelled or replaced run would leave that range unche
   CI checkout fetches it on every run. `[profile.*]`, `.cargo/config.toml`, and `rust-toolchain.toml` pass with
   a note; `[workspace]` and unknown sections are undecidable, and so is a changed
   `[workspace.dependencies]` line that cannot be read or that no package in `Cargo.lock`
-  answers to.
+  answers to. A root `Cargo.toml` with a multi-line string (`"""` or `'''`) or with
+  unbalanced brackets is undecidable as a whole.
 - A plugin's dependency closure is its normal and build dependencies for all targets
   (`cargo tree --target all`), so a crate that only Windows or macOS links counts on the
   Linux runner too.
