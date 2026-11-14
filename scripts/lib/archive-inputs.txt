@@ -1,0 +1,35 @@
+# The files outside the plugin crates that decide what goes into every plugin archive. Read
+# by scripts/check-plugin-version-bump.sh: when one of them changes, every plugin with a
+# tasty-plugin.toml needs a version bump, once per release (see docs/ci.md). Fields are
+# separated by tabs. A path that ends with "/" stands for every file under it.
+#
+#   blob    path                    compared by path, file mode, and blob id
+#   script  path                    compared without whole-line comments and blank lines;
+#                                   the first line stays when it starts with #!
+#   region  path  how  open  close  only the parts that packaging runs, compared like a
+#                                   script; every region line of a path is one comparison
+#
+# A region is found by extended regular expressions on whole lines:
+#   block  from the line that matches open to the next line that matches close
+#   line   every line that matches open
+#   top    a top-level YAML key: from open to the next line that starts in column 0
+#   job    a job of a workflow: from open to the next job or top-level key
+# A file that exists without one of its regions cannot be judged (exit 2).
+
+blob	LICENSE
+blob	THIRD_PARTY_LICENSES.md
+blob	LICENSES/
+blob	.gitattributes
+script	scripts/package-plugin.sh
+script	scripts/lib/notice-set.sh
+script	scripts/lib/plugin-build.sh
+region	scripts/check.sh	block	^PLUGINS=\($	^\)$
+region	scripts/check.sh	block	^LIBS=\($	^\)$
+region	scripts/check.sh	block	^run\(\)[[:space:]]*\{[[:space:]]*$	^\}[[:space:]]*$
+region	scripts/check.sh	block	^cmd_build\(\)[[:space:]]*\{[[:space:]]*$	^\}[[:space:]]*$
+region	scripts/check.sh	block	^cmd_list_bins\(\)[[:space:]]*\{[[:space:]]*$	^\}[[:space:]]*$
+region	scripts/check.sh	line	^[[:space:]]*build\)
+region	scripts/check.sh	line	^[[:space:]]*list-bins\)
+region	.github/workflows/release.yml	top	^env:[[:space:]]*$
+region	.github/workflows/release.yml	top	^defaults:[[:space:]]*$
+region	.github/workflows/release.yml	job	^  package:[[:space:]]*$

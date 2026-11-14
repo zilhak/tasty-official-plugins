@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Decides whether a plugin version must go up by comparing the content of each plugin and of
 # the path dependencies in this repository that it links. Rust is compared without test-only
-# code and after rustfmt, so comment changes can still count as content.
+# code and after rustfmt, so comment changes can still count as content. Files that are
+# copied into the archive as they are (lang/, assets/NOTICE.md, .gitattributes) are compared
+# by file mode and blob id. The inputs outside the crates that decide every archive (the
+# notice set, .gitattributes, and the packaging code, listed in scripts/lib/archive-inputs.txt)
+# ask every plugin with an archive for a bump, once per release.
 # --staged [--base rev] compares the index with base (default HEAD); --range before after
 # compares two commits. --violations-out <file> writes the plugin directories whose version
 # must go up, one per line. This does not build and compare binaries.
@@ -160,10 +164,33 @@ materialize() {
 VERSION_LINE_RE='^version[[:space:]]*=[[:space:]]*"'
 version_line_no() { awk -v re="$VERSION_LINE_RE" '$0 ~ re { print NR; exit }'; }
 
+# The files that <path> names on <side> (before or after) as "path mode blob" lines, or
+# <absent>. <path> may be a folder. A tree is listed (ls-tree), not a rev:path blob, so a
+# folder lists its files; the index is listed with ls-files. A listing that fails prints a
+# value of its own side, so it never equals the other side.
+archive_blob_id() {  # <side> <path>
+    local out
+    if [ "$1" = before ]; then
+        out=$(git ls-tree -r "$BEFORE_REV" -- "$2") || { printf '<unreadable %s>' "$1"; return; }
+        out=$(printf '%s\n' "$out" | awk -F '\t' 'NF { split($1, m, " "); print $2 " " m[1] " " m[3] }')
+    elif [ "$MODE" = staged ]; then
+        out=$(git ls-files -s -- "$2") || { printf '<unreadable %s>' "$1"; return; }
+        out=$(printf '%s\n' "$out" | awk -F '\t' 'NF { split($1, m, " "); print $2 " " m[1] " " m[2] }')
+    else
+        out=$(git ls-tree -r "$AFTER" -- "$2") || { printf '<unreadable %s>' "$1"; return; }
+        out=$(printf '%s\n' "$out" | awk -F '\t' 'NF { split($1, m, " "); print $2 " " m[1] " " m[3] }')
+    fi
+    [ -n "$out" ] || out="<absent>"
+    printf '%s' "$out"
+}
+
 # Rust is compared after the judge and rustfmt, without blank lines. Without a result from a
-# step the previous content is used.
+# step the previous content is used. Files that the archive carries as they are, lang/ and
+# assets/NOTICE.md, and .gitattributes files are compared by mode and blob, so a mode or a
+# final newline counts; tasty-plugin.toml is compared without its version line and with its
+# mode.
 shipped_sum() {
-    local label="$1" ref="$2" path="$3" out fmt cooked vline
+    local label="$1" ref="$2" path="$3" out fmt cooked vline mode
     case "$path" in
         *.rs)
             # A missing Rust file and a copy emptied as test-only count as the same.
@@ -175,12 +202,23 @@ shipped_sum() {
             out=$(printf '%s' "$out" | sed '/^[[:space:]]*$/d')
             if [ -z "$out" ]; then printf '<no-ship>'; return; fi
             ;;
+        */lang/*|*/assets/NOTICE.md|*/.gitattributes)
+            archive_blob_id "$label" "$path"
+            return
+            ;;
         */Cargo.toml|*/tasty-plugin.toml)
             # Leave the version line out so that a bump does not ask for another bump.
             if ! exists_at "$ref"; then printf '<absent>'; return; fi
             out=$(git show "$ref")
             vline=$(printf '%s' "$out" | version_line_no)
             [ -n "$vline" ] && out=$(printf '%s' "$out" | sed "${vline}d")
+            case "$path" in
+                */tasty-plugin.toml)
+                    mode=$(archive_blob_id "$label" "$path" | awk '{ print $2 }')
+                    out="$out
+<mode $mode>"
+                    ;;
+            esac
             ;;
         *)
             # Assets tell a missing file from an empty one.
@@ -222,20 +260,23 @@ ver_gt() {
 # The directory of changed paths and of the plugin roster.
 SCAN_ROOT=crates
 
+# --no-renames lists both paths of a move, and T lists a file that became a symbolic link
+# or the other way round; both can change an archive.
 if [ "$MODE" = staged ]; then
     # The whole difference between the base and the index, not only what is staged on HEAD.
-    CHANGED=$(git diff --cached --name-only --diff-filter=ACMRD "$BASE" -- "$SCAN_ROOT/")
-    OUTSIDE=$(git diff --cached --name-only --diff-filter=ACMRD "$BASE" -- . ":(exclude)$SCAN_ROOT/")
+    CHANGED=$(git diff --cached --name-only --no-renames --diff-filter=ACMRDT "$BASE" -- "$SCAN_ROOT/")
+    OUTSIDE=$(git diff --cached --name-only --no-renames --diff-filter=ACMRDT "$BASE" -- . ":(exclude)$SCAN_ROOT/")
 else
-    CHANGED=$(git diff --name-only --diff-filter=ACMRD "$BEFORE" "$AFTER" -- "$SCAN_ROOT/")
-    OUTSIDE=$(git diff --name-only --diff-filter=ACMRD "$BEFORE" "$AFTER" -- . ":(exclude)$SCAN_ROOT/")
+    CHANGED=$(git diff --name-only --no-renames --diff-filter=ACMRDT "$BEFORE" "$AFTER" -- "$SCAN_ROOT/")
+    OUTSIDE=$(git diff --name-only --no-renames --diff-filter=ACMRDT "$BEFORE" "$AFTER" -- . ":(exclude)$SCAN_ROOT/")
 fi
 
-# src/lang/assets are compared whatever the extension. When this scope changes, compare it with
-# the CI path filter as well.
+# src/lang/assets are compared whatever the extension, and a .gitattributes in a crate
+# decides how the files it ships are checked out. When this scope or the archive input list
+# changes, compare it with the CI path filter (plugin-version-check.yml) as well.
 build_affecting() {
     case "$1" in
-        */src/*|*/lang/*|*/assets/*|*/Cargo.toml|*/tasty-plugin.toml|*/build.rs) return 0 ;;
+        */src/*|*/lang/*|*/assets/*|*/Cargo.toml|*/tasty-plugin.toml|*/build.rs|*/.gitattributes) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -918,6 +959,120 @@ $(comm -3 "$WORK/deps.before" "$WORK/deps.after" | first_field | sort -u)
 EOF2
 }
 
+# ── Archive inputs outside the crates ────────────────────────────────────────
+# The notice set, .gitattributes, and the packaging code go into or decide every plugin
+# archive. scripts/lib/archive-inputs.txt lists them and how each is compared. The archive
+# bytes are not reproducible (tar keeps mtimes), so the git content decides. These helpers
+# write to a file and are called without command substitution, so that die ends the check.
+
+ARCHIVE_INPUTS="$LIB_DIR/archive-inputs.txt"
+ARCHIVE_SUMMARY=""
+TAB=$(printf '\t')
+
+# Whether OUTSIDE has <path>, or a path under it when <path> ends with "/".
+outside_touches() {  # <path>
+    case "$1" in
+        */) P="$1" awk 'index($0, ENVIRON["P"]) == 1 { f = 1 } END { exit !f }' <<<"$OUTSIDE" ;;
+        *) outside_has "$1" ;;
+    esac
+}
+
+# Keeps the lines that run: whole-line comments and blank lines go, the first line stays
+# when it starts with #!. A comment after code and a # inside a string stay.
+code_lines() {
+    awk 'NR == 1 && /^#!/ { print; next } /^[[:space:]]*#/ { next } /^[[:space:]]*$/ { next } { print }'
+}
+
+# The checksum of a packaging script at <ref> without comment and blank lines, into <out>.
+script_norm() {  # <ref> <out file>
+    if ! exists_at "$1"; then printf '<absent>' > "$2"; return 0; fi
+    git show "$1" > "$WORK/script.src" || die "cannot read $1."
+    code_lines < "$WORK/script.src" | cksum > "$2" || die "cannot read $1."
+}
+
+# The checksum of the regions of <path> at <ref> that the list names, into <out>. Stops when
+# the file exists but a region cannot be found or is not closed.
+region_of() {  # <ref> <path> <out file>
+    local ref="$1" path="$2" out="$3" how open close where
+    if ! exists_at "$ref"; then printf '<absent>' > "$out"; return 0; fi
+    where="${ref%%:*}"; where="${where:-the index}"
+    git show "$ref" > "$WORK/region.src" || die "cannot read $path at $where."
+    : > "$WORK/region.out"
+    while IFS="$TAB" read -r how open close; do
+        [ -n "$how" ] || continue
+        case "$how" in
+            block) [ -n "$close" ] || die "$ARCHIVE_INPUTS: the block region $open of $path has no closing pattern." ;;
+            line|top|job) ;;
+            *) die "$ARCHIVE_INPUTS: unknown region kind '$how' for $path." ;;
+        esac
+        # ENVIRON, not -v: awk would read the backslashes of the patterns as escapes.
+        if ! R_HOW="$how" R_OPEN="$open" R_CLOSE="$close" awk '
+            function keep(s) { if (s !~ /^[[:space:]]*(#|$)/) print s }
+            BEGIN { how = ENVIRON["R_HOW"]; opn = ENVIRON["R_OPEN"]; cls = ENVIRON["R_CLOSE"]
+                    print "@ " opn }
+            how == "line" { if ($0 ~ opn) { found = 1; keep($0) } next }
+            state == 0 { if ($0 ~ opn) { state = 1; found = 1; keep($0) } next }
+            state != 1 { next }
+            how == "block" {
+                if ($0 ~ cls) { keep($0); state = 2; next }
+                # A new function or array starts: this block was not closed.
+                if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*(=\(|[[:space:]]*\(\))/) { bad = NR; exit }
+                keep($0); next
+            }
+            how == "top" && /^[^[:space:]#]/ { state = 2; next }
+            how == "job" && (/^  [A-Za-z0-9_-]+:[[:space:]]*$/ || /^[^[:space:]#]/) { state = 2; next }
+            { keep($0) }
+            END {
+                if (!found) { print "cannot find the line " opn > "/dev/stderr"; exit 3 }
+                if (how == "block" && state == 1) {
+                    print "the block from " opn " is not closed by " cls (bad ? " before line " bad : "") > "/dev/stderr"
+                    exit 3
+                }
+            }' "$WORK/region.src" >> "$WORK/region.out" 2>"$WORK/region.err"; then
+            die "$path at $where: $(cat "$WORK/region.err"). The archive input regions are listed in $ARCHIVE_INPUTS; judge the plugin versions by hand or fix the list."
+        fi
+    done <<EOF2
+$(awk -F '\t' -v p="$path" '$1 == "region" && $2 == p { print $3 "\t" $4 "\t" $5 }' "$ARCHIVE_INPUTS")
+EOF2
+    cksum < "$WORK/region.out" > "$out"
+}
+
+judge_archive_inputs() {
+    local kind path changed="" seen=" " a b p
+    [ -f "$ARCHIVE_INPUTS" ] || die "cannot read the archive input list $ARCHIVE_INPUTS."
+    while IFS="$TAB" read -r kind path _; do
+        case "$kind" in ''|'#'*) continue ;; esac
+        [ -n "$path" ] || die "$ARCHIVE_INPUTS: a $kind line without a path."
+        case "$seen" in *" $path "*) continue ;; esac
+        seen="$seen$path "
+        outside_touches "$path" || continue
+        case "$kind" in
+            blob)
+                a=$(archive_blob_id before "$path"); b=$(archive_blob_id after "$path") ;;
+            script)
+                script_norm "$BEFORE_REV:$path" "$WORK/archive.before"
+                script_norm "$(after_ref "$path")" "$WORK/archive.after"
+                a=$(cat "$WORK/archive.before"); b=$(cat "$WORK/archive.after") ;;
+            region)
+                region_of "$BEFORE_REV:$path" "$path" "$WORK/archive.before"
+                region_of "$(after_ref "$path")" "$path" "$WORK/archive.after"
+                a=$(cat "$WORK/archive.before"); b=$(cat "$WORK/archive.after") ;;
+            *) die "$ARCHIVE_INPUTS: unknown kind '$kind' for $path." ;;
+        esac
+        [ "$a" = "$b" ] || changed="$changed $path"
+    done < "$ARCHIVE_INPUTS"
+    [ -n "$changed" ] || return 0
+    changed=${changed# }
+    for p in $(plugin_dirs); do
+        if external_update_needs_bump "$p"; then
+            for path in $changed; do add_dirty "$p" "$path (archive input)"; done
+        else
+            note "archive inputs changed ($changed): $RELEASED_NOTE; no further bump needed."
+        fi
+    done
+    ARCHIVE_SUMMARY="$changed"
+}
+
 if outside_has Cargo.lock; then
     judge_pin_moves
     judge_external_lock
@@ -928,6 +1083,11 @@ fi
 for f in .cargo/config.toml rust-toolchain.toml rust-toolchain; do
     outside_has "$f" && note "$f changed; plugin versions are not bumped for it, see docs/ci.md."
 done
+judge_archive_inputs
+if [ -n "$ARCHIVE_SUMMARY" ]; then
+    printf '[plugin-version] archive inputs that changed, which go into every plugin archive: %s\n' \
+        "$ARCHIVE_SUMMARY" >&2
+fi
 if [ -n "$PIN_SUMMARY" ]; then
     printf '[plugin-version] crates that changed in a plugin dependency closure:%s\n' "$PIN_SUMMARY" >&2
 fi

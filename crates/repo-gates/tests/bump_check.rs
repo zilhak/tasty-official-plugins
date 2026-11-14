@@ -82,7 +82,7 @@ fn widened_script(d: &Path, root: &str) -> String {
     // The helpers that the script reads by relative path are copied too.
     let gate_dir = d.join(".gate");
     fs::create_dir_all(gate_dir.join("lib")).expect("create the copy directory");
-    for lib in ["judge-bin.sh", "judge-cache.sh"] {
+    for lib in ["judge-bin.sh", "judge-cache.sh", "archive-inputs.txt"] {
         fs::copy(
             support::repo_file(&format!("scripts/lib/{lib}")),
             gate_dir.join("lib").join(lib),
@@ -2160,4 +2160,565 @@ fn a_lock_update_of_a_platform_only_crate_flags_its_plugin() {
     );
     assert!(text.contains("winx 1.0.0 → 1.0.1 (Cargo.lock)"), "{text}");
     assert!(!text.contains("crates/tasty-plugin-alpha:"), "{text}");
+}
+
+// ── Archive inputs outside the crates ────────────────────────────────────────
+// alpha and beta have archives (tasty-plugin.toml); lib has none. The repository has the
+// notice set, .gitattributes, and small packaging files with the markers that
+// scripts/lib/archive-inputs.txt looks for.
+
+const FIXTURE_CHECK_SH: &str = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+PLUGINS=(
+  tasty-plugin-alpha
+  tasty-plugin-beta
+  tasty-plugin-lib
+)
+LIBS=(
+  tasty-plugin-lib
+)
+
+run() {
+  echo "+ $*" >&2
+  "$@"
+}
+
+cmd_list_bins() {
+  echo tasty-plugin-alpha
+  echo tasty-plugin-beta
+}
+
+cmd_build() {
+  run cargo build --locked "$@"
+}
+
+cmd_audit() { run cargo audit; }
+
+sub="${1:-all}"
+case "$sub" in
+  build) cmd_build "$@" ;;
+  list-bins) cmd_list_bins ;;
+  audit) cmd_audit ;;
+esac
+"#;
+
+const FIXTURE_PACKAGE_SH: &str = r#"#!/usr/bin/env bash
+# Packs the plugins.
+
+# Copies the files.
+stage() {
+  cp "$exe" "$dest/"
+  grep -v '^#' "$list" > "$dest/list"
+}
+"#;
+
+const FIXTURE_RELEASE_YML: &str = r#"name: Release
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  create-release:
+    runs-on: x
+    steps:
+      - run: echo create
+  package:
+    runs-on: x
+    steps:
+      - run: bash scripts/package-plugin.sh stage --all --profile dist
+  publish:
+    runs-on: x
+    steps:
+      - run: echo publish
+"#;
+
+struct ArchiveFixture {
+    _tmp: tempfile::TempDir,
+    repo: std::path::PathBuf,
+}
+
+impl ArchiveFixture {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let repo = tmp.path().to_path_buf();
+        init_repo(&repo);
+        run_git(&repo, &["checkout", "--quiet", "-b", "main"]);
+        let files: Vec<(String, String)> =
+            vec![
+            (
+                "Cargo.toml".into(),
+                "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n".into(),
+            ),
+            ("LICENSE".into(), "MIT License\n".into()),
+            (
+                "THIRD_PARTY_LICENSES.md".into(),
+                "# Third-party licenses\n".into(),
+            ),
+            ("LICENSES/a.txt".into(), "license a\n".into()),
+            (".gitattributes".into(), "* text=auto eol=lf\n".into()),
+            ("scripts/check.sh".into(), FIXTURE_CHECK_SH.into()),
+            ("scripts/package-plugin.sh".into(), FIXTURE_PACKAGE_SH.into()),
+            (
+                "scripts/lib/notice-set.sh".into(),
+                "# The notice set.\nNOTICE_ASSET=\"assets/NOTICE.md\"\n".into(),
+            ),
+            (
+                "scripts/lib/plugin-build.sh".into(),
+                "# Build helpers.\nto_unix_path() { printf '%s\\n' \"$1\"; }\n".into(),
+            ),
+            (
+                ".github/workflows/release.yml".into(),
+                FIXTURE_RELEASE_YML.into(),
+            ),
+            (
+                "crates/tasty-plugin-lib/Cargo.toml".into(),
+                "[package]\nname = \"tasty-plugin-lib\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+                    .into(),
+            ),
+            (
+                "crates/tasty-plugin-lib/src/lib.rs".into(),
+                "pub fn f() {}\n".into(),
+            ),
+            (
+                "crates/tasty-plugin-alpha/assets/NOTICE.md".into(),
+                "# Notice\n".into(),
+            ),
+        ];
+        for (rel, body) in &files {
+            write(&repo, rel, body);
+        }
+        for p in ["alpha", "beta"] {
+            let dir = format!("crates/tasty-plugin-{p}");
+            write(
+                &repo,
+                &format!("{dir}/Cargo.toml"),
+                &format!(
+                    "[package]\nname = \"tasty-plugin-{p}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+                ),
+            );
+            write(
+                &repo,
+                &format!("{dir}/tasty-plugin.toml"),
+                &format!("id = \"com.tasty.{p}\"\nversion = \"0.1.0\"\n"),
+            );
+            write(&repo, &format!("{dir}/src/main.rs"), "fn main() {}\n");
+            write(&repo, &format!("{dir}/lang/en.toml"), "hello = \"Hello\"\n");
+        }
+        commit_all(&repo, "seed");
+        Self { _tmp: tmp, repo }
+    }
+
+    fn write(&self, rel: &str, body: &str) {
+        write(&self.repo, rel, body);
+    }
+
+    /// Replaces the one occurrence of `from` in `rel` with `to`.
+    fn edit(&self, rel: &str, from: &str, to: &str) {
+        let body = fs::read_to_string(self.repo.join(rel)).expect("read");
+        assert_eq!(body.matches(from).count(), 1, "{from:?} in {rel}");
+        self.write(rel, &body.replacen(from, to, 1));
+    }
+
+    fn commit(&self, msg: &str) {
+        commit_all(&self.repo, msg);
+    }
+
+    fn git(&self, args: &[&str]) {
+        run_git(&self.repo, args);
+    }
+
+    fn bump(&self, plugin: &str, v: &str) {
+        for rel in [
+            format!("crates/tasty-plugin-{plugin}/Cargo.toml"),
+            format!("crates/tasty-plugin-{plugin}/tasty-plugin.toml"),
+        ] {
+            self.edit(&rel, "version = \"0.1.0\"", &format!("version = \"{v}\""));
+        }
+    }
+
+    fn check(&self, args: &[&str]) -> (i32, String) {
+        check(&self.repo, args)
+    }
+}
+
+/// Exit 1 with both archived plugins flagged for `path`, and the library left out.
+fn assert_every_archive_flagged((code, text): &(i32, String), path: &str) {
+    assert_eq!(*code, 1, "{text}");
+    for p in ["alpha", "beta"] {
+        assert!(
+            text.contains(&format!("crates/tasty-plugin-{p}: shipped content changed")),
+            "{text}"
+        );
+    }
+    assert!(!text.contains("tasty-plugin-lib"), "{text}");
+    assert!(text.contains(&format!("{path} (archive input)")), "{text}");
+}
+
+fn assert_nothing_to_judge((code, text): &(i32, String)) {
+    assert_eq!(*code, 0, "{text}");
+    assert!(text.contains("nothing to judge"), "{text}");
+}
+
+/// Exit 1 with only alpha flagged.
+fn assert_only_alpha((code, text): &(i32, String)) {
+    assert_eq!(*code, 1, "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-alpha: shipped content changed"),
+        "{text}"
+    );
+    assert!(!text.contains("crates/tasty-plugin-beta:"), "{text}");
+}
+
+/// Archive case 1.
+#[test]
+fn a_notice_change_flags_every_archived_plugin() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "THIRD_PARTY_LICENSES.md",
+        "licenses\n",
+        "licenses\n\nOne more crate.\n",
+    );
+    f.commit("add a notice");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "THIRD_PARTY_LICENSES.md");
+}
+
+/// Archive case 2.
+#[test]
+fn a_new_license_text_flags_every_archived_plugin() {
+    let f = ArchiveFixture::new();
+    f.write("LICENSES/b.txt", "license b\n");
+    f.commit("add a license text");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSES/");
+}
+
+/// Archive case 3: the archive keeps the file mode, so a mode change is content.
+#[test]
+fn a_license_text_mode_change_is_content() {
+    let f = ArchiveFixture::new();
+    f.git(&["update-index", "--chmod=+x", "LICENSES/a.txt"]);
+    f.git(&["commit", "--quiet", "-m", "make a license text executable"]);
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSES/");
+}
+
+/// Archive case 4.
+#[test]
+fn a_gitattributes_change_flags_every_archived_plugin() {
+    let f = ArchiveFixture::new();
+    f.edit(".gitattributes", "eol=lf", "eol=crlf");
+    f.commit("check out with CRLF");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".gitattributes");
+}
+
+/// Archive case 5.
+#[test]
+fn a_comment_only_change_in_a_packaging_script_needs_no_bump() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/package-plugin.sh",
+        "# Copies the files.\n",
+        "\n  # Copies the files into the stage folder.\n\n",
+    );
+    f.commit("reword a comment");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+}
+
+/// Archive case 6: a code line counts, also when it holds a # inside a string, so the
+/// comment rule must not cut a line at its first #.
+#[test]
+fn a_code_change_in_a_packaging_script_flags_every_archived_plugin() {
+    let f = ArchiveFixture::new();
+    f.edit("scripts/package-plugin.sh", "\"$dest/\"", "\"$dest/bin/\"");
+    f.commit("copy into bin");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/package-plugin.sh");
+
+    f.edit("scripts/package-plugin.sh", "'^#'", "'^#x'");
+    f.commit("change the pattern after a #");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/package-plugin.sh");
+}
+
+/// Archive case 7.
+#[test]
+fn a_check_sh_change_outside_the_build_blocks_needs_no_bump() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/check.sh",
+        "cmd_audit() { run cargo audit; }\n",
+        "cmd_audit() { run cargo audit; }\ncmd_licenses() { run cargo deny check licenses; }\n",
+    );
+    f.edit(
+        "scripts/check.sh",
+        "  audit) cmd_audit ;;\n",
+        "  audit) cmd_audit ;;\n  licenses) cmd_licenses ;;\n",
+    );
+    f.commit("add a licenses subcommand");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+}
+
+/// Archive case 8.
+#[test]
+fn a_check_sh_build_block_change_flags_every_archived_plugin() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/check.sh",
+        "build --locked",
+        "build --locked --verbose",
+    );
+    f.commit("build verbosely");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
+
+    f.edit(
+        "scripts/check.sh",
+        "  tasty-plugin-beta\n  tasty-plugin-lib\n)",
+        "  tasty-plugin-lib\n)",
+    );
+    f.commit("stop building beta");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
+}
+
+/// Archive case 9: another job of the release workflow does not decide the archives.
+#[test]
+fn a_release_workflow_change_outside_the_package_job_needs_no_bump() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        ".github/workflows/release.yml",
+        "echo publish",
+        "echo publish twice",
+    );
+    f.commit("change the publish job");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+}
+
+/// Archive case 9, second part.
+#[test]
+fn a_release_workflow_package_job_change_flags_every_archived_plugin() {
+    let f = ArchiveFixture::new();
+    f.edit(".github/workflows/release.yml", "stage --all", "stage");
+    f.commit("stage only the bundled plugins");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
+}
+
+/// Archive case 10.
+#[test]
+fn a_missing_region_marker_is_undecidable() {
+    let f = ArchiveFixture::new();
+    f.edit("scripts/check.sh", "cmd_build() {\n", "build_all() {\n");
+    f.commit("rename cmd_build");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("scripts/check.sh"), "{text}");
+    assert!(text.contains("cannot find the line ^cmd_build"), "{text}");
+}
+
+/// Archive case 11: like a lock update, one bump per release covers the archive inputs.
+#[test]
+fn a_second_notice_change_after_a_bump_since_the_release_passes() {
+    let f = ArchiveFixture::new();
+    release_at(&f.repo);
+    f.bump("alpha", "0.1.1");
+    f.commit("bump alpha");
+    f.write("LICENSE", "MIT License\n\nCopyright\n");
+    f.commit("change the license");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "beta was not bumped since the release:\n{text}");
+    assert!(!text.contains("crates/tasty-plugin-alpha:"), "{text}");
+    assert!(
+        text.contains("crates/tasty-plugin-beta: shipped content changed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("crates/tasty-plugin-alpha is already at 0.1.1, above 0.1.0 at origin/main"),
+        "{text}"
+    );
+}
+
+/// Archive case 12.
+#[test]
+fn without_a_release_branch_a_notice_change_needs_a_bump() {
+    let f = ArchiveFixture::new();
+    f.git(&["checkout", "--quiet", "-b", "work"]);
+    f.git(&["branch", "--delete", "--force", "main"]);
+    f.bump("alpha", "0.1.1");
+    f.commit("bump alpha");
+    f.write("LICENSE", "MIT License\n\nCopyright\n");
+    f.commit("change the license");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSE");
+}
+
+/// Archive case 13.
+#[test]
+fn a_lang_mode_change_is_content() {
+    let f = ArchiveFixture::new();
+    f.git(&[
+        "update-index",
+        "--chmod=+x",
+        "crates/tasty-plugin-alpha/lang/en.toml",
+    ]);
+    f.git(&["commit", "--quiet", "-m", "make a lang file executable"]);
+    assert_only_alpha(&f.check(&HEAD_RANGE));
+}
+
+/// Archive case 14: the index is listed with ls-files.
+#[test]
+fn staged_mode_judges_archive_inputs_too() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "THIRD_PARTY_LICENSES.md",
+        "licenses\n",
+        "licenses\n\nMore.\n",
+    );
+    f.git(&["add", "-A"]);
+    assert_every_archive_flagged(&f.check(&["--staged"]), "THIRD_PARTY_LICENSES.md");
+    f.git(&["update-index", "--chmod=+x", "LICENSES/a.txt"]);
+    f.git(&["reset", "--quiet", "THIRD_PARTY_LICENSES.md"]);
+    assert_every_archive_flagged(&f.check(&["--staged"]), "LICENSES/");
+}
+
+/// Archive case 15: a move out of LICENSES/ removes a license text, so both paths count.
+#[test]
+fn moving_a_license_text_out_of_licenses_is_a_notice_change() {
+    let f = ArchiveFixture::new();
+    fs::create_dir_all(f.repo.join("docs")).expect("docs dir");
+    f.git(&["mv", "LICENSES/a.txt", "docs/a.txt"]);
+    assert_every_archive_flagged(&f.check(&["--staged"]), "LICENSES/");
+    f.git(&["commit", "--quiet", "-m", "move a license text"]);
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSES/");
+}
+
+/// Archive case 16: a file that turns into a symbolic link is a type change.
+#[test]
+fn a_license_text_that_becomes_a_symlink_is_a_notice_change() {
+    let f = ArchiveFixture::new();
+    f.write("docs/a.txt", "license a\n");
+    f.commit("keep a copy in docs");
+    fs::remove_file(f.repo.join("LICENSES/a.txt")).expect("remove");
+    std::os::unix::fs::symlink("../docs/a.txt", f.repo.join("LICENSES/a.txt")).expect("link");
+    f.commit("link the license text");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSES/");
+}
+
+/// Archive case 17: every file in LICENSES/ ships, Markdown too.
+#[test]
+fn a_markdown_license_text_is_a_notice_change() {
+    let f = ArchiveFixture::new();
+    f.write("LICENSES/example.md", "# Example\n");
+    f.commit("add a Markdown license text");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSES/");
+    f.write("LICENSES/example.md", "# Example\n\nMore.\n");
+    f.commit("change it");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSES/");
+}
+
+/// Archive case 18: the archive copies these files as they are, final newline included.
+#[test]
+fn a_trailing_newline_change_in_lang_is_content() {
+    let f = ArchiveFixture::new();
+    f.write(
+        "crates/tasty-plugin-alpha/lang/en.toml",
+        "hello = \"Hello\"",
+    );
+    f.commit("drop the final newline of a lang file");
+    assert_only_alpha(&f.check(&HEAD_RANGE));
+
+    f.write("crates/tasty-plugin-alpha/assets/NOTICE.md", "# Notice");
+    f.commit("drop the final newline of the notice");
+    assert_only_alpha(&f.check(&HEAD_RANGE));
+}
+
+/// Archive case 19: line 1 of a sourced library is a comment, not a #! line.
+#[test]
+fn a_first_line_comment_change_in_a_sourced_lib_needs_no_bump() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/lib/notice-set.sh",
+        "# The notice set.",
+        "# The notice set of every archive.",
+    );
+    f.commit("reword the first line");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+
+    f.edit(
+        "scripts/lib/notice-set.sh",
+        "# The notice set of every archive.",
+        "#!/usr/bin/env bash",
+    );
+    f.commit("start with a #! line");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/lib/notice-set.sh");
+}
+
+/// Archive case 20: package-plugin.sh also runs list-bins and run().
+#[test]
+fn a_check_sh_list_bins_or_run_change_flags_every_archived_plugin() {
+    let f = ArchiveFixture::new();
+    for (what, from, to) in [
+        (
+            "list-bins body",
+            "  echo tasty-plugin-beta\n}",
+            "  echo tasty-plugin-beta\n  return 0\n}",
+        ),
+        ("run()", "  echo \"+ $*\" >&2\n", "  echo \"> $*\" >&2\n"),
+        (
+            "list-bins branch",
+            "  list-bins) cmd_list_bins ;;",
+            "  list-bins) cmd_list_bins | sort ;;",
+        ),
+    ] {
+        f.edit("scripts/check.sh", from, to);
+        f.commit(what);
+        assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/check.sh");
+    }
+}
+
+/// Archive case 21: the package job inherits the top-level env and defaults.
+#[test]
+fn a_release_workflow_top_level_env_change_flags_every_archived_plugin() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        ".github/workflows/release.yml",
+        "  CARGO_TERM_COLOR: always\n",
+        "  CARGO_TERM_COLOR: always\n  RUSTFLAGS: -C debuginfo=1\n",
+    );
+    f.commit("add RUSTFLAGS");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
+
+    f.edit(".github/workflows/release.yml", "shell: bash", "shell: sh");
+    f.commit("change the default shell");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
+}
+
+/// Archive case 22: a die inside the region reader ends the check, not only a subshell.
+#[test]
+fn a_missing_closing_marker_is_undecidable() {
+    let f = ArchiveFixture::new();
+    f.edit(
+        "scripts/check.sh",
+        "  run cargo build --locked \"$@\"\n}\n",
+        "  run cargo build --locked \"$@\"\n",
+    );
+    f.commit("drop the closing brace of cmd_build");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("is not closed"), "{text}");
+    assert!(text.contains("^cmd_build"), "{text}");
+}
+
+/// Archive case 23: a .gitattributes in a crate changes how its shipped files check out.
+#[test]
+fn a_crate_gitattributes_change_flags_its_plugin() {
+    let f = ArchiveFixture::new();
+    f.write(
+        "crates/tasty-plugin-alpha/lang/.gitattributes",
+        "*.toml eol=crlf\n",
+    );
+    f.commit("check out the lang files of alpha with CRLF");
+    assert_only_alpha(&f.check(&HEAD_RANGE));
+
+    f.write("crates/tasty-plugin-alpha/.gitattributes", "* -text\n");
+    f.commit("check out alpha as binary");
+    assert_only_alpha(&f.check(&HEAD_RANGE));
 }
