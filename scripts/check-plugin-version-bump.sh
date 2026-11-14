@@ -717,6 +717,10 @@ external_update_needs_bump() {  # <plugin dir>
     return 0
 }
 
+# The first field of each line of comm -3: a line only in the second file starts with a tab.
+# awk, not sed 's/^\t//': BSD sed (macOS) reads \t in a pattern as the letter t.
+first_field() { awk -F '\t' '{ print ($1 == "" ? $2 : $1) }'; }
+
 # (ii) crates.io packages whose locked versions or checksums changed.
 judge_external_lock() {
     local name vb va plugins p needed
@@ -742,7 +746,7 @@ judge_external_lock() {
         PIN_SUMMARY="$PIN_SUMMARY
     $name ${vb:-<none>} → ${va:-<none>} (Cargo.lock); plugins: $plugins"
     done <<EOF2
-$(comm -3 "$WORK/ext.before" "$WORK/ext.after" | sed 's/^\t//' | cut -f1 | sort -u)
+$(comm -3 "$WORK/ext.before" "$WORK/ext.after" | first_field | sort -u)
 EOF2
 }
 
@@ -910,7 +914,7 @@ $(awk -F '\t' '$1 == "<unparsed>"' "$WORK/deps.before" "$WORK/deps.after" | sort
         PIN_SUMMARY="$PIN_SUMMARY
     $key ${val_b:-<none>} → ${val_a:-<none>} (Cargo.toml [workspace.dependencies]); plugins: ${LINKED# }"
     done <<EOF2
-$(comm -3 "$WORK/deps.before" "$WORK/deps.after" | sed 's/^\t//' | cut -f1 | sort -u)
+$(comm -3 "$WORK/deps.before" "$WORK/deps.after" | first_field | sort -u)
 EOF2
 }
 
