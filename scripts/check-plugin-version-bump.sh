@@ -1595,17 +1595,52 @@ $(grep 'uses:[[:space:]]*["'"'"']\{0,1\}\./' "$WORK/region.out" | sed 's/^/    /
             fi
             continue
         fi
-        # Sources in command position: at the start, or after ; & | ( { then do else.
+        # A source or . in command position: at the start of a line, after one of ; & | ( ) { }
+        # and a backtick, and after then do else elif if while until ! time exec builtin
+        # command or an assignment. Quoted text and text after an unquoted # are no commands;
+        # the word after source or . is its target, without its quotes.
         awk '
-            /^[[:space:]]*#/ { next }
-            {
-                s = $0
-                while (match(s, /(^[[:space:]]*|[;&|({][[:space:]]*|(^|[[:space:]])(then|do|else)[[:space:]]+)(source|\.)[[:space:]]+[^[:space:];&|)]+/)) {
-                    m = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
-                    sub(/^.*(source|\.)[[:space:]]+/, "", m)
-                    print NR "\t" m "\t" $0
+            function endword() {
+                if (!inword) return
+                if (want) { print NR "\t" word "\t" $0; want = 0; cmd = 0 }
+                else if (cmd) {
+                    if (word == "source" || word == ".") { want = 1; cmd = 0 }
+                    else if (word ~ /^(then|do|else|elif|if|while|until|!|time|exec|builtin|command)$/) cmd = 1
+                    else if (word ~ /^[A-Za-z_][A-Za-z0-9_]*=/) cmd = 1
+                    else cmd = 0
                 }
-            }' "$WORK/structure.src" > "$WORK/structure.sources" || die "cannot read $path (after)."
+                word = ""; inword = 0
+            }
+            {
+                s = $0; n = length(s)
+                if (q == "" && !cont) { cmd = 1; want = 0 }
+                cont = 0
+                for (i = 1; i <= n; i++) {
+                    c = substr(s, i, 1)
+                    if (q == "\047") { if (c == "\047") q = ""; else word = word c; continue }
+                    if (q == "\"") {
+                        if (c == "\\" && i < n) { i++; word = word "\\" substr(s, i, 1); continue }
+                        if (c == "\"") q = ""; else word = word c
+                        continue
+                    }
+                    if (c == "\\") {
+                        if (i == n) { cont = 1; break }
+                        i++; word = word "\\" substr(s, i, 1); inword = 1; continue
+                    }
+                    if (c == "\047" || c == "\"") { q = c; inword = 1; continue }
+                    if (c == "#" && !inword) break
+                    if (c == "$" && substr(s, i + 1, 1) == "{") {
+                        j = index(substr(s, i), "}")
+                        if (j == 0) j = n - i + 1
+                        word = word substr(s, i, j); inword = 1; i += j - 1; continue
+                    }
+                    if (c == " " || c == "\t") { endword(); continue }
+                    if (index(";&|(){}`", c)) { endword(); want = 0; cmd = 1; continue }
+                    word = word c; inword = 1
+                }
+                if (q == "" && !cont) endword()
+            }
+        ' "$WORK/structure.src" > "$WORK/structure.sources" || die "cannot read $path (after)."
         while IFS="$TAB" read -r ln target line; do
             [ -n "$ln" ] || continue
             target=${target#\"}; target=${target%\"}; target=${target#\'}; target=${target%\'}

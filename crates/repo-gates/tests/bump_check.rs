@@ -3097,6 +3097,53 @@ fn a_source_outside_the_list_is_undecidable() {
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), "scripts/package-plugin.sh");
 }
 
+/// A source in any command position is checked: after if, builtin, command, and !, too.
+/// Quoted text and comments are not commands, so a file that only mentions a source in them
+/// needs nothing.
+#[test]
+fn sources_in_every_command_position_are_checked_and_quoted_text_is_not() {
+    for line in [
+        "if . scripts/lib/extra.sh; then :; fi",
+        "builtin source scripts/lib/extra.sh",
+        "command . scripts/lib/extra.sh",
+        "! . scripts/lib/extra.sh",
+        "while . \"scripts/lib/extra.sh\"; do break; done",
+        "A=1 . scripts/lib/extra.sh",
+    ] {
+        let f = ArchiveFixture::new();
+        f.write(
+            "scripts/lib/extra.sh",
+            "export CARGO_PROFILE_DIST_OPT_LEVEL=0\n",
+        );
+        f.edit(
+            "scripts/check.sh",
+            "set -euo pipefail\n",
+            &format!("set -euo pipefail\n{line}\n"),
+        );
+        f.commit(line);
+        let r = f.check(&HEAD_RANGE);
+        assert_undecidable_with(&r, "scripts/check.sh line 6 sources scripts/lib/extra.sh");
+    }
+
+    // extra.sh is a region file: the whole file is checked for sources, but only its block
+    // is compared, and the lines below are outside it.
+    let f = ArchiveFixture::new();
+    f.write("scripts/extra.sh", "a() {\n  echo a\n}\n");
+    let list = archive_list();
+    f.write(
+        ARCHIVE_LIST,
+        &format!("{list}region\tscripts/extra.sh\tblock\t^a\\(\\) \\{{$\t^\\}}$\n"),
+    );
+    f.commit("judge a block of extra.sh");
+    f.write(
+        "scripts/extra.sh",
+        "a() {\n  echo a\n}\n: # example; . scripts/review.sh\n\
+         review_note=\"text; . scripts/review.sh\"\necho '. scripts/review.sh'\n",
+    );
+    f.commit("mention a source in a comment and in strings");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+}
+
 /// The package job must not hand the build to a local action or workflow, whose content the
 /// list does not judge. Another job may.
 #[test]
