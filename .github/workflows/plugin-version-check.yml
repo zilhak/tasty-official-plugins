@@ -31,10 +31,12 @@ on:
 permissions:
   contents: read
 
-# Only the latest commit of a ref matters for this check.
+# A newer pull request run replaces the older one, since both check the same base and head.
+# Push runs are not cancelled: each one checks only its own before..after range, so a
+# cancelled run would leave that range unchecked.
 concurrency:
   group: plugin-version-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -75,7 +77,13 @@ jobs:
 
       # Under the runner tool cache, never in ~/.cargo/bin; reused by later runs of the same pin.
       - name: Install strip-cfg-test
-        run: echo "TASTY_STRIP_CFG_TEST_BIN=$(bash scripts/install-judge.sh)" >> "$GITHUB_ENV"
+        run: |
+          bin=$(bash scripts/install-judge.sh)
+          if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+            echo "::error::install-judge.sh gave no runnable strip-cfg-test: '$bin'"
+            exit 1
+          fi
+          echo "TASTY_STRIP_CFG_TEST_BIN=$bin" >> "$GITHUB_ENV"
 
       - name: Check plugin versions
         env:
