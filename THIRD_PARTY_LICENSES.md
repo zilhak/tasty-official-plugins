@@ -9,10 +9,10 @@ Ubuntu Font Licence 1.0, and the Bitstream Vera license.
 | mermaid | 11.16.1 | MIT | markdown plugin binary | [`LICENSES/mermaid-MIT.txt`](LICENSES/mermaid-MIT.txt) |
 | highlight.js | 11.10.0 | BSD-3-Clause | markdown plugin binary | [`LICENSES/highlightjs-BSD-3-Clause.txt`](LICENSES/highlightjs-BSD-3-Clause.txt) |
 | KaTeX | 0.18.4 | MIT | markdown plugin binary (JS, CSS, 20 fonts) | [`LICENSES/KaTeX-MIT.txt`](LICENSES/KaTeX-MIT.txt) |
-| egui default fonts: Hack Regular | epaint_default_fonts 0.31.1 | MIT, Bitstream Vera | every plugin binary | [`LICENSES/Hack-MIT-Bitstream-Vera.txt`](LICENSES/Hack-MIT-Bitstream-Vera.txt) |
-| egui default fonts: Noto Emoji Regular | epaint_default_fonts 0.31.1 | OFL 1.1 | every plugin binary | [`LICENSES/NotoEmoji-OFL-1.1.txt`](LICENSES/NotoEmoji-OFL-1.1.txt) |
-| egui default fonts: Ubuntu Light | epaint_default_fonts 0.31.1 | Ubuntu Font Licence 1.0 | every plugin binary | [`LICENSES/Ubuntu-Ubuntu-font-1.0.txt`](LICENSES/Ubuntu-Ubuntu-font-1.0.txt) |
-| egui default fonts: emoji-icon-font | epaint_default_fonts 0.31.1 | MIT | every plugin binary | [`LICENSES/emoji-icon-font-MIT.txt`](LICENSES/emoji-icon-font-MIT.txt) |
+| egui default fonts: Hack Regular | epaint_default_fonts 0.31.1 | MIT, Bitstream Vera | clipboard-viewer, git-viewer, image, and markdown plugin binaries | [`LICENSES/Hack-MIT-Bitstream-Vera.txt`](LICENSES/Hack-MIT-Bitstream-Vera.txt) |
+| egui default fonts: Noto Emoji Regular | epaint_default_fonts 0.31.1 | OFL 1.1 | clipboard-viewer, git-viewer, image, and markdown plugin binaries | [`LICENSES/NotoEmoji-OFL-1.1.txt`](LICENSES/NotoEmoji-OFL-1.1.txt) |
+| egui default fonts: Ubuntu Light | epaint_default_fonts 0.31.1 | Ubuntu Font Licence 1.0 | clipboard-viewer, git-viewer, image, and markdown plugin binaries | [`LICENSES/Ubuntu-Ubuntu-font-1.0.txt`](LICENSES/Ubuntu-Ubuntu-font-1.0.txt) |
+| egui default fonts: emoji-icon-font | epaint_default_fonts 0.31.1 | MIT | clipboard-viewer, git-viewer, image, and markdown plugin binaries | [`LICENSES/emoji-icon-font-MIT.txt`](LICENSES/emoji-icon-font-MIT.txt) |
 
 The files in `LICENSES/` are copied unchanged. The mermaid, highlight.js, and KaTeX texts
 are the `LICENSE` files at the tags of the bundled versions, the same files tasty ships.
@@ -60,9 +60,11 @@ archive also ships as `NOTICE.md`.
 
 ## egui default fonts
 
-Every plugin links egui's `epaint` with its `default_fonts` feature, so the four fonts of
-the `epaint_default_fonts` crate (https://github.com/emilk/egui, version 0.31.1) are
-compiled into every plugin binary.
+The clipboard-viewer, git-viewer, image, and markdown plugins link egui's `epaint` with its
+`default_fonts` feature, so the four fonts of the `epaint_default_fonts` crate
+(https://github.com/emilk/egui, version 0.31.1) are compiled into those four plugin
+binaries. The other plugins do not link `epaint`. The notice set below still goes into
+every plugin archive.
 
 - Hack Regular (`Hack-Regular.ttf`, https://github.com/source-foundry/Hack): MIT for the Hack
   work, and the Bitstream Vera license with the Reserved Font Names "Bitstream" and "Vera".
