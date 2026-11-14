@@ -339,14 +339,18 @@ would leave that range unchecked.
 - `scripts/check.sh` is compared whole except the parts that the list leaves out because
   they do not build or pack: the functions `cmd_fmt`, `cmd_lint`, `cmd_test`, `cmd_audit`,
   `cmd_licenses`, and `warn_hooks`, the case branches `fmt)`, `lint)`, `test)`, `audit)`,
-  and `licenses)`, and the branch that calls `warn_hooks`; a case statement left with no
-  branch goes too. The `all)` branch stays. So a new subcommand like `licenses`, or the
-  hook warning, needs no bump, while top-level code, the build functions, the arrays, the
-  help branch, and a new `cmd_*` function count (a new function is compared until the
-  list leaves it out, on purpose). A function defined twice in `check.sh` is undecidable,
-  because the later definition replaces the earlier one. A left-out one-line function
-  with more code on its line, or a left-out function that is not closed before the next
-  definition, is undecidable too.
+  and `licenses)`, the help branch (`-h | --help | help)` up to its `;;`, which only
+  prints the head comment), and the branch that calls `warn_hooks`; a case statement left
+  with no branch goes too. The `all)` branch stays. `warn_hooks` also runs for `build`, so
+  its call is left out only as `( warn_hooks ) || true`: the subshell cannot change the
+  shell that builds, and a call outside a subshell is compared. So a new subcommand like
+  `licenses`, with its line in the head comment, or the hook warning, needs no bump, while
+  top-level code, the build functions, the arrays, and a new `cmd_*` function count (a new
+  function is compared until the list leaves it out, on purpose). A function defined
+  twice in `check.sh` is undecidable, because the later definition replaces the earlier
+  one. A left-out one-line function with more code on its line, a left-out function that
+  is not closed before the next definition, and a left-out branch that is not closed by
+  `;;` before another branch head or `esac` are undecidable too.
 - On every run, not only when they change, these are undecidable: a `source` or `.` in a
   listed script (`check.sh`, `package-plugin.sh`, `notice-set.sh`, `plugin-build.sh`) of a
   file the list does not name, or of a path that is not written out (a variable or a
