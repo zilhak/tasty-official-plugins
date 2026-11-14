@@ -22,7 +22,7 @@
 # blob and script lines count from either side's list. When the region lines of a path differ
 # between the two lists, that path counts as changed. On every run the gate also stops when a
 # script or a shell region file sources a file this list does not name, and when a job region
-# uses a local action or workflow (./).
+# has a uses: value other than owner/repo@ref or owner/repo/path@ref on its line.
 
 blob	LICENSE
 blob	THIRD_PARTY_LICENSES.md

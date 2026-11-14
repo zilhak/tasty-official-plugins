@@ -3144,22 +3144,50 @@ fn sources_in_every_command_position_are_checked_and_quoted_text_is_not() {
     assert_nothing_to_judge(&f.check(&HEAD_RANGE));
 }
 
-/// The package job must not hand the build to a local action or workflow, whose content the
-/// list does not judge. Another job may.
+/// The package job may use only actions written as owner/repo@ref or owner/repo/path@ref on
+/// the line of their uses: key; anything else could run content the list does not judge.
+/// Another job may.
 #[test]
-fn a_local_action_in_the_package_job_is_undecidable() {
+fn a_package_job_action_not_written_as_owner_repo_at_ref_is_undecidable() {
+    let step = "      - run: bash scripts/package-plugin.sh stage --all --profile dist\n";
+    for added in [
+        "      - uses: ./.github/actions/pack\n",
+        "      - uses: \"./.github/actions/pack\"\n",
+        "      - uses:\n          ./.github/actions/review\n",
+        "      - uses: >-\n          ./.github/actions/review\n",
+        "      - uses: |\n          actions/cache@v4\n",
+        "      - uses: docker://alpine:3.20\n",
+        "      - { uses: actions/cache@v4 }\n",
+        "      - name: x\n        uses: ../other/action@v1\n",
+    ] {
+        let f = ArchiveFixture::new();
+        f.edit(
+            ".github/workflows/release.yml",
+            step,
+            &format!("{step}{added}"),
+        );
+        f.commit("use another action");
+        assert_undecidable_with(
+            &f.check(&HEAD_RANGE),
+            "has a uses: value that is not owner/repo@ref or owner/repo/path@ref",
+        );
+    }
+
+    // The forms of the package job today, and a sub-path action, pass the check; the change
+    // of the job itself is judged as usual.
     let f = ArchiveFixture::new();
     f.edit(
         ".github/workflows/release.yml",
-        "      - run: bash scripts/package-plugin.sh stage --all --profile dist\n",
-        "      - run: bash scripts/package-plugin.sh stage --all --profile dist\n      \
-         - uses: ./.github/actions/pack\n",
+        step,
+        &format!(
+            "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n\
+             {step}      - uses: 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'\n\
+             \x20       with:\n          name: x\n\
+             \x20     - name: y\n        uses: \"github/codeql-action/upload-sarif@v3\"  # sub-path\n"
+        ),
     );
-    f.commit("pack with a local action");
-    assert_undecidable_with(
-        &f.check(&HEAD_RANGE),
-        "uses a local action or workflow (./)",
-    );
+    f.commit("check out, upload, and report");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
 
     let f = ArchiveFixture::new();
     f.edit(

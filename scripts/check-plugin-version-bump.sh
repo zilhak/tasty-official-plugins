@@ -1561,8 +1561,8 @@ regions_in() {  # <list file> <path> <out file>
 
 # Checks the after side of the list on every run, like the path patch check, so that
 # something committed earlier keeps blocking: a script or shell region file must source only
-# files the list names, by a path written out; and a job region of a workflow must not use a
-# local action or workflow, whose content the list does not judge.
+# files the list names, by a path written out; and a job region of a workflow may use only
+# actions written as owner/repo@ref, since the list does not judge the content of others.
 check_archive_structure() {
     local kind path how ref names ln target line
     names=$(awk -F '\t' '$1 == "blob" || $1 == "script" || $1 == "region" { print $2 }' "$WORK/list.after" | sort -u)
@@ -1589,9 +1589,25 @@ EOF2
         esac
         if [ "$kind" = region ] && [ "$how" = job ]; then
             region_of "$ref" "$path" <(P="$path" awk -F '\t' '$1 == "region" && $2 == ENVIRON["P"] && $3 == "job" { print $3 "\t" $4 "\t" $5 }' "$WORK/list.after") "$WORK/structure.cksum"
-            if grep -q 'uses:[[:space:]]*["'"'"']\{0,1\}\./' "$WORK/region.out"; then
-                die "a job that builds the archives in $path uses a local action or workflow (./), whose content is not judged; judge the plugin versions by hand:
-$(grep 'uses:[[:space:]]*["'"'"']\{0,1\}\./' "$WORK/region.out" | sed 's/^/    /')"
+            # A uses: key passes only with owner/repo@ref or owner/repo/path@ref on its own
+            # line, quoted or not, maybe with a trailing comment. Anything else (a local action
+            # or workflow, a Docker image, a value on the next line or in a block scalar, a
+            # flow mapping) could run content the list does not judge.
+            awk '
+                /^@ / { next }
+                $0 ~ /^[[:space:]]*(-[[:space:]]+)?["\047]?uses["\047]?[[:space:]]*:/ {
+                    v = $0
+                    sub(/^[[:space:]]*(-[[:space:]]+)?["\047]?uses["\047]?[[:space:]]*:/, "", v)
+                    sub(/[[:space:]]+#.*$/, "", v); sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+                    if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
+                    if (v ~ /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+(\/[^@[:space:]]+)?@[A-Za-z0-9_.\/-]+$/) next
+                    print "    " $0; next
+                }
+                /[{,][[:space:]]*["\047]?uses["\047]?[[:space:]]*:/ { print "    " $0 }
+            ' "$WORK/region.out" > "$WORK/structure.uses" || die "cannot read $path (after)."
+            if [ -s "$WORK/structure.uses" ]; then
+                die "a job that builds the archives in $path has a uses: value that is not owner/repo@ref or owner/repo/path@ref on its line (a local action or workflow, a Docker image, or a form the gate does not read), whose content is not judged; judge the plugin versions by hand:
+$(cat "$WORK/structure.uses")"
             fi
             continue
         fi
