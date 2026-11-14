@@ -264,9 +264,9 @@ workspace member as a root.
 `$RUNNER_TOOL_CACHE/cargo-deny/cargo-deny-<version>-<triple>`, with the SHA-256 sums of
 the Linux x86_64 and aarch64 musl archives pinned in the script, and never into
 `~/.cargo/bin`. Outside CI it uses `$CARGO_DENY_CACHE`, else
-`${XDG_CACHE_HOME:-~/.cache}/tasty-official-plugins/cargo-deny`. To update the tool, change the version and
-both sums together; the release publishes a `.sha256` file next to each archive. Run the
-check locally with `PATH="$(bash scripts/install-cargo-deny.sh):$PATH" scripts/check.sh
+`${XDG_CACHE_HOME:-~/.cache}/tasty-official-plugins/cargo-deny`. To update the tool,
+change the version and both sums together; the release publishes a `.sha256` file next to
+each archive. Run the check locally with `PATH="$(bash scripts/install-cargo-deny.sh):$PATH" scripts/check.sh
 licenses`.
 
 ## Plugin version check
