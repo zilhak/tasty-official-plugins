@@ -8,6 +8,7 @@ resolver = "2"
 # the pin-check tests fail if the entries disagree.
 [workspace.dependencies]
 tasty-plugin-agent-common = { path = "crates/tasty-plugin-agent-common" }
+tasty-doc-guards = { git = "https://github.com/zilhak/tasty", rev = "e277fce41d9a2db8bf3c14fda8f56dd6415bfcbc" }
 tasty-egui-theme = { git = "https://github.com/zilhak/tasty", rev = "e277fce41d9a2db8bf3c14fda8f56dd6415bfcbc" }
 tasty-git-core = { git = "https://github.com/zilhak/tasty", rev = "e277fce41d9a2db8bf3c14fda8f56dd6415bfcbc" }
 tasty-i18n = { git = "https://github.com/zilhak/tasty", rev = "e277fce41d9a2db8bf3c14fda8f56dd6415bfcbc" }

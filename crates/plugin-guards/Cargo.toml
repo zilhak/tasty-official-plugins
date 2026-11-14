@@ -1,0 +1,14 @@
+[package]
+name = "plugin-guards"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Source checks on the plugin crates: translation lists, literals, file handles, fonts"
+
+[dev-dependencies]
+tasty-doc-guards.workspace = true
+tasty-i18n.workspace = true
+
+[lints]
+workspace = true
