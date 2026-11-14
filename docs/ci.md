@@ -355,21 +355,28 @@ would leave that range unchecked.
   - a `source` or `.` in a listed script or shell region file (`check.sh`,
     `package-plugin.sh`, `notice-set.sh`, `plugin-build.sh`) of a file the list does not
     name, or of a path that is not written out (a variable or a command substitution;
-    none is in use now). A command position is the start of a line, a place after one of
-    `; & | ( )` or the words `{` and `}`, the start of `$( )`, `<( )`, `>( )`, or a
-    backtick substitution, the place after the `)` of a case pattern, and a place after
-    `then`, `do`, `else`, `elif`, `if`, `while`, `until`, `!`, `coproc` (and its name),
-    `time`, `exec`, `builtin`, `command` (and their options that start with `-`, `--`
-    too), an assignment (also `a[0]=` and `+=`), or a redirection (`> /dev/null`, `2>&1`,
+    none is in use now). A command position is the start of a line (also of a line inside
+    `$( )`, `<( )`, `>( )`, or a backtick substitution, but not inside arithmetic), a
+    place after one of `; & | ( )` or the words `{` and `}`, the start of `$( )`, `<( )`,
+    `>( )`, or a backtick substitution, the place after the `)` of a case pattern, and a
+    place after `then`, `do`, `else`, `elif`, `if`, `while`, `until`, `!`, `coproc` (and
+    its name), `time`, `exec`, `builtin`, `command` (and their options that start with
+    `-`, `--` too), an assignment (also `a[0]=` and `+=`), or a redirection (`> /dev/null`, `2>&1`,
     `</dev/null`, `&>x`, with the target attached or next). Quoted text, text after an
     unquoted `#`, braces inside a word (`find ... -exec rm {} \;`), the words after a
-    substitution that ends inside a word (`echo $(pwd) a\ b`), case patterns, and the
-    bodies of here-documents (`<<WORD`, `<<-WORD`, quoted words, several on one line, and
-    `<<` attached anywhere in a word: `cat<<EOF`, `cmd>f<<EOF`; not `<<<`) are not
-    commands, so a comment, a string, or a here-document that mentions a source does not
-    stop the check; a here-document without its end word does, and so does a quote that
-    is still open at the end of the file (the message names the file and the line where it
-    opens). Arithmetic (`$(( ))`, `(( ))`, `for (( ))`) is not commands either: `<<` and
+    substitution that ends inside a word (`echo $(pwd) a\ b`), and case patterns are not
+    commands, so a comment or a string that mentions a source does not stop the check.
+    Here-documents start at `<<WORD` or `<<-WORD`, several on one line, also with `<<`
+    attached anywhere in a word (`cat<<EOF`, `cmd>f<<EOF`; not `<<<`). When the end word
+    has a quote or a backslash (`<<'EOF'`, `<<"EOF"`, `<<\EOF`), the body is data, as in
+    bash. When it has none, the body is text, but bash expands `$( )`, backticks, and
+    `${ }` in it, so those are read as outside quotes (a source in `$(. x)` in the body
+    is found); quotes in the body are plain characters, `\$` and `` \` `` are escaped,
+    and the end word counts only outside those substitutions. A here-document without
+    its end word stops the check, and so do a quote and a substitution, arithmetic, or
+    `${ }` still open at the end of the file (the message names the file and the line
+    where it opens): the check could not tell where the text or the commands in them
+    end. Arithmetic (`$(( ))`, `(( ))`, `for (( ))`) is not commands either: `<<` and
     `<<=` in it are shifts, not here-documents, and its parentheses are counted, while a
     `$( )` inside it is read as commands. Inside an unquoted `${ }` (`${x:-$(. x)}`), a
     `$( )` and a backtick substitution are read as commands too; the rest of `${ }`
@@ -409,7 +416,9 @@ would leave that range unchecked.
   such a file to the list. Today the only such call runs `scripts/check.sh`, which is
   listed. The same holds for a source inside a quoted command substitution
   (`"$(. x.sh)"`, also inside a quoted `"${x:-$(. x.sh)}"`), since quoted text is not read
-  as commands.
+  as commands. A here-document opened inside a substitution in the body of another
+  here-document is not modelled, and the check can misread the lines after it; none is in
+  use now.
 - The list is read from both trees that are compared: the before rev, and the after rev or
   the index. Its blob and script lines count from either side, so a commit cannot drop an
   input from the list and change it at once. When the region lines of a path differ
