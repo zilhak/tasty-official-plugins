@@ -39,7 +39,7 @@ These are the same five platforms that tasty releases. Linux ARM64 is included b
 tasty ships a Linux ARM64 package, and the full-package lock file needs a plugin hash
 for every platform.
 
-Every job passes `--target` explicitly, even on a native runner. The ARM64 runner
+The `build` and `package` jobs pass `--target` explicitly, even on a native runner. The ARM64 runner
 images may not include rustup, so the workflows install it when it is missing. The
 toolchain itself comes from `rust-toolchain.toml`. If `windows-11-arm` stops being
 available, Windows ARM64 can be cross-built on `windows-latest` after
@@ -52,7 +52,7 @@ repository first. Then change `runner` in the matrix.
 
 | Platform | Job | What runs |
 |---|---|---|
-| `linux-x64` | `check` on `ubuntu-latest` | `scripts/check.sh test`: every test of every workspace crate |
+| `linux-x64` | `check` on `ubuntu-latest` | `scripts/check.sh test`: every test of every workspace crate that is not `#[ignore]` (the eight `#[ignore]` tests of `tasty-plugin-codex` and the two WebKitGTK tests do not run here) |
 | `linux-x64` | `check`, step "test (linux, webview layout)" | The two `#[ignore]` WebKitGTK tests of `tasty-plugin-markdown` under `xvfb-run`, with the same commands as tasty's `crossplatform-check.yml`. As in tasty, a failure is reported but does not fail the job yet |
 | `windows-x64` | `test` on `windows-latest` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |
 | `macos-arm64` | `test` on `macos-latest` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast` |

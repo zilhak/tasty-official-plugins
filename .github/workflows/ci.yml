@@ -75,8 +75,8 @@ jobs:
             cargo test -p tasty-plugin-markdown --locked --no-fail-fast -- --ignored --exact \
               render::bed_focus_webkit_tests::bed_focus_sheet_switches_state_values_in_place
 
-  # Unit tests with the Windows and macOS code paths. The ARM64 targets are only
-  # built, in the build job; see docs/ci.md.
+  # Unit tests with the Windows and macOS code paths. The Windows and Linux ARM64
+  # targets are only built, in the build job; see docs/ci.md.
   test:
     name: test ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
