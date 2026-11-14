@@ -96,6 +96,10 @@ closure_of() {
     [ -f "$cache" ] && return 0
     if ! cargo tree -p "$pname" -e normal,build --target all --prefix none --offline 2>"$cache.err" \
         > "$cache.raw"; then
+        if grep -q 'failed to download' "$cache.err"; then
+            die "cargo tree failed ($pname): a crate for some target is not downloaded. The check reads the dependencies of every target offline; run cargo fetch --locked first. cargo's stderr:
+$(cat "$cache.err")"
+        fi
         die "cargo tree failed ($pname). cargo's stderr:
 $(cat "$cache.err")"
     fi
