@@ -118,24 +118,42 @@ mkdir -p "$OUT"
 out=$(cd "$OUT" && pwd)
 
 build_dir=$repo
+build_copy=""
+files_list=""
+staging=""
+old=""
+cleanup() {
+  if [[ -n "$staging" ]]; then rm -rf "$staging"; fi
+  if [[ -n "$old" ]]; then rm -rf "$old"; fi
+  cd "$repo"
+  if [[ -n "$build_copy" ]]; then rm -rf "$build_copy"; fi
+  if [[ -n "$files_list" ]]; then rm -f "$files_list"; fi
+  return 0
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
 cargo_opts=(--locked)
 if [[ -n "$TASTY" ]]; then
   tasty=$(cd "$TASTY" 2>/dev/null && pwd) || die "--tasty: no such directory: $TASTY"
   [[ -f "$tasty/Cargo.toml" && -d "$tasty/crates" ]] || die "--tasty: $tasty is not a tasty checkout"
 
   # Build in a copy, so the Cargo.lock that the patches change stays out of this
-  # repository. tar keeps the modification times, so cargo does not rebuild unchanged
-  # crates on the next run.
+  # repository. Each run has a copy of its own, removed when it ends, so runs at the
+  # same time do not delete each other's sources. They share the build target, which
+  # cargo locks. The copy's path changes every run, so cargo rebuilds the plugin
+  # crates each time; the dependencies stay built.
   work="${CARGO_TARGET_DIR:-$repo/target}/dev-bundle"
-  build_dir="$work/src"
-  rm -rf "$build_dir"
-  mkdir -p "$build_dir"
+  mkdir -p "$work"
+  build_copy=$(mktemp -d "$work/src.XXXXXX")
+  files_list=$(mktemp "$work/files.XXXXXX")
+  build_dir=$build_copy
   # Tracked and new files as they are in the working tree; a deleted file is left out.
-  git ls-files -z --cached --others --exclude-standard >"$work/files" \
+  git ls-files -z --cached --others --exclude-standard >"$files_list" \
     || die "cannot list the files of this repository"
   while IFS= read -r -d '' f; do
     if [[ -e "$f" ]]; then printf '%s\0' "$f"; fi
-  done <"$work/files" | tar --null -T - -cf - | tar -xf - -C "$build_dir"
+  done <"$files_list" | tar --null -T - -cf - | tar -xf - -C "$build_dir"
   export CARGO_TARGET_DIR="$work/target"
 
   io_patches=$(crates_io_patches "$build_dir")
@@ -196,15 +214,6 @@ if [[ -n "$TASTY" ]]; then
 $wrong
 A version in $tasty that the requirements here do not accept leaves its patch unused."
 fi
-
-staging=""
-old=""
-cleanup() {
-  if [[ -n "$staging" ]]; then rm -rf "$staging"; fi
-  if [[ -n "$old" ]]; then rm -rf "$old"; fi
-  return 0
-}
-trap cleanup EXIT
 
 count=0
 while IFS= read -r crate; do
