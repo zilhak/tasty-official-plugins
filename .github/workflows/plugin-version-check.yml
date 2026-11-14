@@ -1,0 +1,107 @@
+name: Plugin version check
+
+# Checks that a change to a plugin's build output comes with a plugin version bump. It runs
+# the same script as the git hooks (scripts/check-plugin-version-bump.sh) on the two commits
+# of the event. See docs/ci.md#plugin-version-check.
+
+on:
+  # Path dependencies and root build inputs count too, so the paths are not listed narrowly.
+  # The patterns apply in order: everything, minus Markdown, plus the build input directories
+  # again, minus docs. Markdown under src, lang and assets is checked.
+  push:
+    branches: [develop, release, main]
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '**/src/**'
+      - '**/lang/**'
+      - '**/assets/**'
+      - '!docs/**'
+  pull_request:
+    branches: [develop, release, main]
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '**/src/**'
+      - '**/lang/**'
+      - '**/assets/**'
+      - '!docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Only the latest commit of a ref matters for this check.
+concurrency:
+  group: plugin-version-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail instead of installing a missing toolchain into the runner's shared RUSTUP_HOME; see docs/ci.md.
+  RUSTUP_AUTO_INSTALL: "0"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: plugin version check
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+    steps:
+      # Both commits of the range must be readable.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # The runner service may start without the rustup proxies on PATH, as on
+      # tasty's Linux runners.
+      - name: Setup PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # The toolchain in rust-toolchain.toml (with rustfmt) must already be on the runner.
+      - name: Show toolchain
+        run: |
+          if ! rustup show active-toolchain || ! cargo --version || ! rustfmt --version; then
+            echo "::error::The toolchain in rust-toolchain.toml is not installed on this runner; see docs/ci.md#what-the-runners-need"
+            exit 1
+          fi
+
+      # The check reads the dependency graph with cargo tree --offline.
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      # Under the runner tool cache, never in ~/.cargo/bin; reused by later runs of the same pin.
+      - name: Install strip-cfg-test
+        run: echo "TASTY_STRIP_CFG_TEST_BIN=$(bash scripts/install-judge.sh)" >> "$GITHUB_ENV"
+
+      - name: Check plugin versions
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          case "$EVENT" in
+            pull_request) BEFORE="$PR_BASE"; AFTER="$PR_HEAD" ;;
+            push) BEFORE="$PUSH_BEFORE"; AFTER="$PUSH_AFTER" ;;
+            *) BEFORE="$(git rev-parse HEAD^)"; AFTER="$(git rev-parse HEAD)" ;;
+          esac
+          case "$BEFORE" in
+            0000000000000000000000000000000000000000|'')
+              echo "first push of this ref; nothing to compare (skipped)"
+              exit 0 ;;
+          esac
+          # A force push can leave the old tip unreachable. That is not a pass.
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "::error::The range start $BEFORE is not in the clone (force push?); the versions cannot be judged."
+            exit 2
+          fi
+          echo "range: $BEFORE..$AFTER"
+          bash scripts/check-plugin-version-bump.sh --range "$BEFORE" "$AFTER"
+
+      - name: Gate tests
+        run: cargo test --locked -p repo-gates
