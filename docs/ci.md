@@ -71,10 +71,10 @@ Each runner needs:
 
 | Runner | Needs |
 |---|---|
-| All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, `tar`, `sha256sum` or `shasum`, and `jq` or Python 3 (`scripts/package-plugin.sh`, `scripts/release-meta.sh`). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
+| All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, `tar`, `awk`, and `sha256sum` or `shasum` (`scripts/package-plugin.sh`; Git for Windows provides them on Windows). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
 | Windows (both) | Git for Windows, whose bash runs `scripts/check.sh` (bash need not be on `PATH`: the jobs find `bin\bash.exe` from the location of `git` and put that folder first on `PATH`, ahead of the WSL bash in System32), PowerShell 7 (`pwsh`), and Visual Studio Build Tools with the MSVC x64 tools, `vswhere.exe`, and `dumpbin.exe` |
 | `[win-arm64]` | In addition, the MSVC ARM64 build tools (C dependencies are compiled for ARM64) and the `aarch64-pc-windows-msvc` Rust target installed for the toolchain above |
-| `[self-hosted, Linux, X64]` | `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `create-release` and `publish` jobs of `release.yml` need the GitHub CLI (`gh`) and `sha256sum` |
+| `[self-hosted, Linux, X64]` | `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum` |
 | `[self-hosted, Linux, ARM64]` | A C compiler |
 | `[self-hosted, macOS, ARM64]` | The Xcode command line tools |
 
@@ -191,8 +191,10 @@ com.tasty.claude/LICENSE
 ```
 
 The archives are tar.gz on every platform, including Windows, so one format and one
-hash list serve all platforms. The script needs bash, tar, `sha256sum` or `shasum`, and
-`jq` or Python 3. On Windows it runs under Git Bash.
+hash list serve all platforms. The script needs bash, tar, awk, and `sha256sum` or
+`shasum`, and reads cargo's JSON messages with awk, so it needs neither jq nor Python.
+On Windows it runs under Git Bash, where `python3` can be the Microsoft Store app
+execution alias rather than a Python.
 
 ### Plugins in the packages
 
@@ -287,7 +289,9 @@ bundle = true
 | `[[plugin]]` | `id`, `version`, and `bundle` from each plugin's `tasty-plugin.toml`. `bundle` is `true` unless the manifest says otherwise |
 
 The tasty values are read from Cargo's git checkout of the tasty crates, after the
-script checks that the checkout is at `tasty_rev`. To write the file locally:
+script checks that the checkout is at `tasty_rev`. The script reads cargo metadata with
+`jq`, or with Python 3 when `jq` is missing. It skips a `python3` or `python` that does not
+run, such as the Microsoft Store alias on Windows. To write the file locally:
 
 ```
 scripts/release-meta.sh --tag unreleased --out target/release-meta.toml
