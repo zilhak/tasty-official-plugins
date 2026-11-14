@@ -9,7 +9,7 @@ workflow.
 
 | File | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: unit tests on Windows x64 and macOS arm64, and on macOS also the `repo-gates` integration tests. `lint` job: shellcheck on every shell script and actionlint on every workflow. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
+| `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: unit tests and the `plugin-guards` source checks on Windows x64 and macOS arm64, and on macOS also the `repo-gates` integration tests. `lint` job: shellcheck on every shell script and actionlint on every workflow. `audit` job: runs `cargo audit` on `Cargo.lock`. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
 | `.github/workflows/release.yml` | push of a `v*` tag; manual (`workflow_dispatch`) | On a tag, releases the plugins on a GitHub Release of this repository (see [Releases](#releases)). A manual run builds the same release files as workflow artifacts and creates no Release |
 | `.github/workflows/plugin-version-check.yml` | push to `develop`, `release`, or `main`, pull request to one of them, for changes outside Markdown and `docs/`; manual | Checks that each plugin whose build output changed raised its version (see [Plugin version check](#plugin-version-check)), then runs the `repo-gates` tests |
 
@@ -157,9 +157,10 @@ outside CI the tools go to `~/.cache/tasty-official-plugins/lint-tools`.
 The `plugin-guards` crate holds source checks that tasty ran on the plugin crates before
 they moved here. They are integration tests (`crates/plugin-guards/tests/`). They run in
 the `check` job with `scripts/check.sh test` on Linux, and in the `test` job on Windows and
-macOS in a step of their own, because the `--lib --bins` run leaves them out. Run them with `cargo test --locked -p plugin-guards`. They read the
-sources as text and use the source readers of `tasty-doc-guards` from the pinned tasty
-commit, a dev-dependency of this crate only.
+macOS in a step of their own, because the `--lib --bins` run leaves them out. Run them
+with `cargo test --locked -p plugin-guards`. They read the sources as text and use the
+source readers of `tasty-doc-guards` from the pinned tasty commit, a dev-dependency of
+this crate only.
 
 - `notify_mod_language_lists`: the language lists in the Claude mod's TypeScript (the
   notify heading, the gate reason, and the heading test) match
