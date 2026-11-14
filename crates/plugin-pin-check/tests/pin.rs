@@ -32,11 +32,17 @@ type LockEntry = (String, String);
 
 /// Cargo.lock packages by name. Each name may appear with several versions.
 fn lock_packages() -> BTreeMap<String, Vec<LockEntry>> {
-    let lock: toml::Table = read_root_file("Cargo.lock")
-        .parse()
-        .expect("parse Cargo.lock");
+    parse_lock_packages(&read_root_file("Cargo.lock"), "Cargo.lock")
+}
+
+/// Packages by name from the text of a Cargo.lock; `what` names it in panics.
+fn parse_lock_packages(text: &str, what: &str) -> BTreeMap<String, Vec<LockEntry>> {
+    let lock: toml::Table = text.parse().unwrap_or_else(|e| panic!("parse {what}: {e}"));
     let mut out: BTreeMap<String, Vec<LockEntry>> = BTreeMap::new();
-    for p in lock["package"].as_array().expect("package array") {
+    let packages = lock["package"]
+        .as_array()
+        .unwrap_or_else(|| panic!("package array in {what}"));
+    for p in packages {
         let get = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or_default();
         out.entry(get("name").to_owned())
             .or_default()
@@ -151,6 +157,31 @@ fn tasty_checkout() -> PathBuf {
         .to_path_buf()
 }
 
+/// Cargo.lock packages of the pinned tasty checkout.
+fn tasty_lock_packages() -> BTreeMap<String, Vec<LockEntry>> {
+    let path = tasty_checkout().join("Cargo.lock");
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    parse_lock_packages(&text, "the tasty Cargo.lock")
+}
+
+/// The locked versions of one crate, or an empty set when it is not locked.
+fn locked_versions(lock: &BTreeMap<String, Vec<LockEntry>>, name: &str) -> BTreeSet<String> {
+    lock.get(name)
+        .into_iter()
+        .flatten()
+        .map(|(version, _)| version.clone())
+        .collect()
+}
+
+fn show_versions(versions: &BTreeSet<String>) -> String {
+    if versions.is_empty() {
+        "(none)".to_owned()
+    } else {
+        versions.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
+}
+
 #[test]
 fn build_list_matches_workspace_members() {
     let members = member_plugins();
@@ -260,4 +291,34 @@ fn plugin_manifest_versions_match_crate_versions() {
         checked += 1;
     }
     assert_eq!(checked, 8, "expected eight plugin manifests");
+}
+
+/// Crates whose types the egui-mesh wire carries as raw bytes between tasty and a
+/// plugin. The wire checks only its header and sizes, so both sides must lock the
+/// same versions.
+const EGUI_FAMILY: [&str; 5] = ["egui", "epaint", "emath", "ecolor", "bytemuck"];
+
+/// Crates of the family that every plugin build must lock.
+const EGUI_REQUIRED: [&str; 2] = ["egui", "epaint"];
+
+#[test]
+fn egui_family_matches_the_tasty_lock_at_the_pin() {
+    let ours = lock_packages();
+    let tasty = tasty_lock_packages();
+    for name in EGUI_REQUIRED {
+        assert!(ours.contains_key(name), "{name} missing from Cargo.lock");
+    }
+    for name in EGUI_FAMILY {
+        let our_versions = locked_versions(&ours, name);
+        if our_versions.is_empty() {
+            continue;
+        }
+        let tasty_versions = locked_versions(&tasty, name);
+        assert!(
+            our_versions == tasty_versions,
+            "{name} {} != tasty lock {}",
+            show_versions(&our_versions),
+            show_versions(&tasty_versions)
+        );
+    }
 }
