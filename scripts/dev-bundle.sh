@@ -123,11 +123,14 @@ files_list=""
 staging=""
 # The <id> being replaced, where this run moved its previous folder, and whether the
 # new folder took its place. old is set only after checking that nothing is at that
-# path yet and right before the move, so whatever the cleanup finds there is the folder
-# this run moved. The cleanup removes it only when the new folder is known to be in
-# place, puts it back when <id> is missing, and otherwise leaves it and says where.
+# path yet and right before the move, and cleared before the folder is removed, so
+# whatever the cleanup finds there is the folder this run moved, as long as other
+# writers respect the lock. The cleanup removes it only when the new folder is known
+# to be in place, puts it back when <id> is missing, and otherwise leaves it and says
+# where. removing is the previous folder while it is being removed.
 cur=""
 old=""
+removing=""
 published_id=0
 lock=""
 locked=0
@@ -156,6 +159,9 @@ cleanup() {
     else
       echo "the previous $(basename "$cur") is in $old" >&2
     fi
+  fi
+  if [[ -n "$removing" ]] && [[ -e "$removing" || -L "$removing" ]]; then
+    echo "the previous $(basename "$cur") may be partly left in $removing" >&2
   fi
   if [[ $locked -eq 1 ]]; then
     rmdir "$lock" || failed="$failed, remove the lock $lock"
@@ -304,10 +310,15 @@ while IFS= read -r crate; do
     die "cannot move the new $id into $cur"
   fi
   published_id=1
-  # The previous folder is removed only once the new one is in place.
-  if [[ -n "$old" ]]; then rm -rf "$old"; fi
+  # The previous folder is removed only once the new one is in place. old is cleared
+  # first, so a cleanup after this point never removes what is at that path.
+  if [[ -n "$old" ]]; then
+    removing=$old
+    old=""
+    rm -rf "$removing"
+    removing=""
+  fi
   staging=""
-  old=""
   published_id=0
   echo "bundled $id ($crate) into $out/$id" >&2
   count=$((count + 1))
