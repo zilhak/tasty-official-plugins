@@ -40,7 +40,9 @@ To move the pin:
 2. Start `Cargo.lock` from the tasty `Cargo.lock` at the new commit, then run
    `cargo metadata --format-version 1 > /dev/null` so Cargo trims it to this workspace.
    Do not run `cargo update`; the external crates should stay at the versions tasty
-   locks.
+   locks. The egui family (`egui`, `epaint`, `emath`, `ecolor`, `bytemuck`) must lock
+   the same versions as the tasty `Cargo.lock`, because the egui-mesh wire passes their
+   types as raw bytes. A pin test checks this.
 3. Update the sha in this README and run `scripts/check.sh`.
 
 If Cargo reports `patch location ... does not contain packages matching epaint`, tasty
@@ -52,7 +54,8 @@ patched copy in this README and in `docs/migration-plan.md`. The atlas statement
 The `pin` tests (`crates/plugin-pin-check/tests/pin.rs`) fail if the tasty entries use
 different revs, if a tasty crate in `Cargo.lock` comes from another source, if a plugin
 crate is not a local workspace crate, or if a plugin manifest version differs from its
-crate version.
+crate version. They also fail if a crate of the egui family locks other versions than
+the tasty `Cargo.lock` at the pin, or if `egui` or `epaint` is not locked.
 
 ## What is built
 
@@ -127,8 +130,10 @@ tasty crates and the `tiny_http` and `epaint` copies, which come from the tasty 
 are not matched.
 
 A vulnerability fails the job. Vulnerabilities are not ignored. A crates.io crate is
-updated here with `cargo update -p <crate>`; a fix in a tasty crate or in the tasty copies
-arrives with a pin move. Unsound and unmaintained advisories appear as warnings
+updated here with `cargo update -p <crate>` only to fix a vulnerability; a fix in a tasty
+crate or in the tasty copies arrives with a pin move. The egui family goes through tasty:
+if the update changes one of its versions, the pin test fails, so the crate is updated in
+tasty first and arrives here with a pin move. Unsound and unmaintained advisories appear as warnings
 in the job log and do not fail the job.
 
 This repository has no `deny.toml` and runs no `cargo deny` check. tasty keeps its
