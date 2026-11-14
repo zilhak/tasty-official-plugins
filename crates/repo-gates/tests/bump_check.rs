@@ -1427,6 +1427,178 @@ fn a_workspace_dependency_entry_change_flags_the_plugins_that_link_it() {
     assert!(text.contains("default-features = false"), "{text}");
 }
 
+impl PinFixture {
+    /// Gives tasty-a the features `x` and `y` and moves the pin there, so that entries can
+    /// name them.
+    fn with_features(&self) {
+        self.tasty_write(
+            "crates/tasty-a/Cargo.toml",
+            "[package]\nname = \"tasty-a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [features]\nx = []\ny = []\n",
+        );
+        let t2 = self.tasty_commit("add features");
+        self.move_pin(&t2);
+        self.commit("move the pin to the features");
+    }
+
+    /// Replaces the tasty-a entry line of the root Cargo.toml with `with(line)`.
+    fn edit_tasty_a_entry(&self, with: impl Fn(&str) -> String) {
+        let toml = fs::read_to_string(self.repo.join("Cargo.toml")).expect("read");
+        let line = toml
+            .lines()
+            .find(|l| l.trim_start().starts_with("tasty-a = "))
+            .expect("tasty-a entry")
+            .to_string();
+        write(
+            &self.repo,
+            "Cargo.toml",
+            &toml.replacen(&line, &with(&line), 1),
+        );
+        self.cargo(&["metadata", "--format-version", "1"]);
+    }
+
+    fn assert_only_alpha_flagged(&self, what: &str) {
+        let (code, text) = self.check(&HEAD_RANGE);
+        assert_eq!(code, 1, "{what}:\n{text}");
+        assert!(
+            text.contains("crates/tasty-plugin-alpha: shipped content changed"),
+            "{what}:\n{text}"
+        );
+        assert!(
+            !text.contains("crates/tasty-plugin-beta:"),
+            "{what}:\n{text}"
+        );
+        assert!(
+            text.contains("Cargo.toml [workspace.dependencies] tasty-a:"),
+            "{what}:\n{text}"
+        );
+    }
+}
+
+/// An entry written over several lines is one entry: changing only a continuation line
+/// changes the entry.
+#[test]
+fn a_continuation_line_of_a_multi_line_entry_is_part_of_the_entry() {
+    let f = PinFixture::new();
+    f.with_features();
+    f.edit_tasty_a_entry(|l| l.replacen(" }", ", features = [\n    \"x\",\n] }", 1));
+    f.commit("list the features of tasty-a on several lines");
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &toml.replacen("    \"x\",\n", "    \"x\",\n    \"y\",\n", 1),
+    );
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("add a feature on its own line");
+
+    f.assert_only_alpha_flagged("a continuation line was skipped");
+}
+
+/// `name.features = [...]` belongs to the entry `name`.
+#[test]
+fn a_dotted_key_belongs_to_its_entry() {
+    let f = PinFixture::new();
+    f.with_features();
+    f.edit_tasty_a_entry(|l| {
+        let inner = l
+            .trim_start_matches("tasty-a = { ")
+            .trim_end_matches(" }")
+            .to_string();
+        inner
+            .split(", ")
+            .map(|kv| format!("tasty-a.{kv}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    f.commit("write tasty-a with dotted keys");
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    let rev_line = toml
+        .lines()
+        .find(|l| l.starts_with("tasty-a.rev = "))
+        .expect("dotted rev")
+        .to_string();
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &toml.replacen(
+            &rev_line,
+            &format!("{rev_line}\ntasty-a.features = [\"x\"]"),
+            1,
+        ),
+    );
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("turn on a feature with a dotted key");
+
+    f.assert_only_alpha_flagged("a dotted key was skipped");
+}
+
+/// Indentation does not hide an entry.
+#[test]
+fn an_indented_entry_is_still_an_entry() {
+    let f = PinFixture::new();
+    f.with_features();
+    f.edit_tasty_a_entry(|l| format!("  {l}"));
+    f.commit("indent the tasty-a entry");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "indentation alone changed the entry:\n{text}");
+
+    f.edit_tasty_a_entry(|l| l.replacen(" }", ", features = [\"x\"] }", 1));
+    f.commit("turn on a feature in the indented entry");
+    f.assert_only_alpha_flagged("an indented entry was skipped");
+}
+
+/// An entry that no locked package answers to cannot be judged.
+#[test]
+fn a_changed_entry_without_a_locked_package_is_undecidable() {
+    let f = PinFixture::new();
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &toml.replacen(
+            "[workspace.dependencies]\n",
+            "[workspace.dependencies]\nnot-locked = \"1\"\n",
+            1,
+        ),
+    );
+    f.commit("declare an unused dependency");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains(
+            "not-locked changed in the root Cargo.toml, but no package not-locked is in Cargo.lock"
+        ),
+        "{text}"
+    );
+}
+
+/// A changed line whose key is not read (here a quoted key) stops the check.
+#[test]
+fn a_changed_entry_line_that_cannot_be_read_is_undecidable() {
+    let f = PinFixture::new();
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &toml.replacen(
+            "[workspace.dependencies]\n",
+            "[workspace.dependencies]\n\"quoted\" = \"1\"\n",
+            1,
+        ),
+    );
+    f.commit("declare a dependency with a quoted key");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("cannot read a changed line of [workspace.dependencies]"),
+        "{text}"
+    );
+    assert!(text.contains("\"quoted\" = \"1\""), "{text}");
+}
+
 /// Case 11: Only a profile changed: pass with a note.
 #[test]
 fn a_profile_change_passes_with_a_note() {

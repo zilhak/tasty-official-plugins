@@ -717,31 +717,99 @@ $(comm -3 "$WORK/ext.before" "$WORK/ext.after" | sed 's/^\t//' | cut -f1 | sort 
 EOF2
 }
 
-# Sections of a root Cargo.toml as "section<TAB>line", without comments, trailing spaces
-# and blank lines. Lines before the first header belong to section "".
+# Sections of a root Cargo.toml as "section<TAB>line", one line per TOML key/value: comments,
+# leading and trailing spaces and blank lines are dropped, and a value whose brackets stay
+# open ([ or {, outside strings) takes the following lines until they close. Lines before
+# the first header belong to section "". Multi-line strings are not read.
 toml_lines() {
     git show "$1" | awk '
-        { sub(/[[:space:]]+$/, "") }
-        /^[[:space:]]*#/ || /^$/ { next }
-        /^\[/ { sec = $0; gsub(/^\[+|\]+$/, "", sec); next }
-        { print sec "\t" $0 }'
+        # Drops a comment and counts the brackets outside strings; the count goes to depth.
+        function scan(s,    i, n, c, q, out) {
+            out = ""; q = ""; n = length(s)
+            for (i = 1; i <= n; i++) {
+                c = substr(s, i, 1)
+                if (q != "") {
+                    out = out c
+                    if (q == "\"" && c == "\\" && i < n) { i++; out = out substr(s, i, 1); continue }
+                    if (c == q) q = ""
+                    continue
+                }
+                if (c == "#") break
+                if (c == "\"" || c == "\047") q = c
+                else if (c == "[" || c == "{") depth++
+                else if (c == "]" || c == "}") depth--
+                out = out c
+            }
+            return out
+        }
+        {
+            line = scan($0)
+            sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+            if (line == "") next
+            if (pending != "") {
+                pending = pending " " line
+                if (depth <= 0) { print sec "\t" pending; pending = ""; depth = 0 }
+                next
+            }
+            if (line ~ /^\[/ && line ~ /\]$/ && depth == 0) {
+                sec = line; gsub(/^\[+[[:space:]]*|[[:space:]]*\]+$/, "", sec); next
+            }
+            if (depth > 0) { pending = line; next }
+            depth = 0
+            print sec "\t" line
+        }
+        END { if (pending != "") print sec "\t" pending }'
 }
 
-# The entries of [workspace.dependencies] as "key<TAB>value" with any rev removed, plus
-# [workspace.dependencies.<key>] tables folded into one value.
+# The entries of [workspace.dependencies] as "key<TAB>value" with any rev removed. Dotted
+# keys (`name.features = [...]`) and [workspace.dependencies.<name>] tables are folded into
+# the value of <name>. A line whose key cannot be read comes out under the key <unparsed>.
 dep_entries() {  # <toml_lines file>
     awk -F '\t' '
+        function add(k, sub_key, v) {
+            if (sub_key == "rev") return
+            seen[k] = 1
+            if (sub_key == "") plain[k] = v
+            else tab[k] = tab[k] " " sub_key " = " v ","
+        }
         $1 == "workspace.dependencies" {
-            line = $2; key = line; sub(/[[:space:]]*=.*/, "", key); val = line; sub(/^[^=]*=[[:space:]]*/, "", val)
+            line = $2
+            if (!match(line, /^[A-Za-z0-9_-]+([[:space:]]*\.[[:space:]]*[A-Za-z0-9_-]+)*[[:space:]]*=/)) {
+                print "<unparsed>\t" line; next
+            }
+            lhs = substr(line, 1, RLENGTH - 1); val = substr(line, RLENGTH + 1)
+            sub(/^[[:space:]]+/, "", val); gsub(/[[:space:]]/, "", lhs)
             gsub(/,?[[:space:]]*rev[[:space:]]*=[[:space:]]*"[^"]*"/, "", val)
-            print key "\t" val; next
+            key = lhs; sub(/\..*/, "", key)
+            add(key, substr(lhs, length(key) + 2), val); next
         }
         index($1, "workspace.dependencies.") == 1 {
-            key = substr($1, length("workspace.dependencies.") + 1)
-            if ($2 ~ /^rev[[:space:]]*=/) next
-            tab[key] = tab[key] " " $2; next
+            key = substr($1, length("workspace.dependencies.") + 1); gsub(/[[:space:]]/, "", key)
+            if (key !~ /^[A-Za-z0-9_-]+$/) { print "<unparsed>\t[" $1 "] " $2; next }
+            if (!match($2, /^[A-Za-z0-9_-]+([[:space:]]*\.[[:space:]]*[A-Za-z0-9_-]+)*[[:space:]]*=/)) {
+                print "<unparsed>\t[" $1 "] " $2; next
+            }
+            lhs = substr($2, 1, RLENGTH - 1); val = substr($2, RLENGTH + 1)
+            sub(/^[[:space:]]+/, "", val); gsub(/[[:space:]]/, "", lhs)
+            add(key, lhs, val); next
         }
-        END { for (k in tab) print k "\t{" tab[k] " }" }' "$1" | sort
+        END {
+            for (k in seen) {
+                v = plain[k]
+                if (k in tab) v = v (v == "" ? "" : " + ") "{" tab[k] " }"
+                print k "\t" v
+            }
+        }' "$1" | sort
+}
+
+# Whether a package named <name> is in Cargo.lock on either side of the range.
+in_either_lock() {  # <name>
+    local side
+    for side in "$BEFORE_REV:Cargo.lock" "$(after_ref Cargo.lock)"; do
+        exists_at "$side" || continue
+        git show "$side" | grep -qxF "name = \"$1\"" && return 0
+    done
+    return 1
 }
 
 judge_root_manifest() {
@@ -772,12 +840,20 @@ EOF2
     dep_entries "$WORK/root.after" > "$WORK/deps.after"
     while IFS= read -r key; do
         [ -n "$key" ] || continue
+        if [ "$key" = "<unparsed>" ]; then
+            die "cannot read a changed line of [workspace.dependencies] in the root Cargo.toml:
+$(awk -F '\t' '$1 == "<unparsed>"' "$WORK/deps.before" "$WORK/deps.after" | sort | uniq -u | cut -f2- | sed 's/^/    /')"
+        fi
         val_b=$(awk -F '\t' -v k="$key" '$1 == k { print $2 }' "$WORK/deps.before")
         val_a=$(awk -F '\t' -v k="$key" '$1 == k { print $2 }' "$WORK/deps.after")
         pkg=$(printf '%s\n%s\n' "$val_a" "$val_b" | sed -n 's/.*package[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | sed -n '1p')
         [ -n "$pkg" ] || pkg="$key"
         plugins_linking "$pkg"
-        [ -n "$LINKED" ] || continue
+        if [ -z "$LINKED" ]; then
+            # A crate that is locked but outside every plugin closure cannot change a plugin.
+            in_either_lock "$pkg" && continue
+            die "[workspace.dependencies] $key changed in the root Cargo.toml, but no package $pkg is in Cargo.lock; judge the plugin versions by hand."
+        fi
         for p in $LINKED; do
             add_dirty "$p" "Cargo.toml [workspace.dependencies] $key: ${val_b:-<none>} → ${val_a:-<none>}"
         done
