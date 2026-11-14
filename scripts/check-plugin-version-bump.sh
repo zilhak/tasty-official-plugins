@@ -1465,7 +1465,9 @@ EOF2
 # bytes are not reproducible (tar keeps mtimes), so the git content decides. These helpers
 # write to a file and are called without command substitution, so that die ends the check.
 
-ARCHIVE_INPUTS="$LIB_DIR/archive-inputs.txt"
+# The list is read from the two trees that are judged, not from the running script, so that
+# a commit cannot drop an input from the list and change it at once.
+ARCHIVE_INPUTS=scripts/lib/archive-inputs.txt
 ARCHIVE_SUMMARY=""
 TAB=$(printf '\t')
 
@@ -1490,10 +1492,10 @@ script_norm() {  # <ref> <out file>
     code_lines < "$WORK/script.src" | cksum > "$2" || die "cannot read $1."
 }
 
-# The checksum of the regions of <path> at <ref> that the list names, into <out>. Stops when
-# the file exists but a region cannot be found or is not closed.
-region_of() {  # <ref> <path> <out file>
-    local ref="$1" path="$2" out="$3" how open close where
+# The checksum of the regions of <path> at <ref> that <regions> names ("how<TAB>open<TAB>close"
+# lines), into <out>. Stops when the file exists but a region cannot be found or is not closed.
+region_of() {  # <ref> <path> <regions file> <out file>
+    local ref="$1" path="$2" regions="$3" out="$4" how open close where
     if ! exists_at "$ref"; then printf '<absent>' > "$out"; return 0; fi
     where="${ref%%:*}"; where="${where:-the index}"
     git show "$ref" > "$WORK/region.src" || die "cannot read $path at $where."
@@ -1532,13 +1534,35 @@ region_of() {  # <ref> <path> <out file>
             die "$path at $where: $(cat "$WORK/region.err"). The archive input regions are listed in $ARCHIVE_INPUTS; judge the plugin versions by hand or fix the list."
         fi
     done <<EOF2
-$(P="$path" awk -F '\t' '$1 == "region" && $2 == ENVIRON["P"] { print $3 "\t" $4 "\t" $5 }' "$ARCHIVE_INPUTS")
+$(cat "$regions")
 EOF2
     cksum < "$WORK/region.out" > "$out"
 }
 
+# The list of <side> into <out> without comment and blank lines; returns 1 when the tree has
+# no list.
+archive_list_at() {  # <side> <out file>
+    local ref
+    ref=$(side_ref "$1" "$ARCHIVE_INPUTS")
+    : > "$2"
+    exists_at "$ref" || return 1
+    git show "$ref" > "$WORK/list.src" || die "cannot read $ARCHIVE_INPUTS ($1)."
+    awk '/^[[:space:]]*(#|$)/ { next } { print }' "$WORK/list.src" > "$2" \
+        || die "cannot read $ARCHIVE_INPUTS ($1)."
+}
+
+# The region lines of <path> in <list> as "how<TAB>open<TAB>close", in list order.
+regions_in() {  # <list file> <path> <out file>
+    P="$2" awk -F '\t' '$1 == "region" && $2 == ENVIRON["P"] { print $3 "\t" $4 "\t" $5 }' "$1" > "$3" \
+        || die "cannot read the region lines of $2."
+}
+
+# The inputs of the lists of both sides that changed. blob and script lines count from either
+# list, so a line that one side drops is still judged. The region lines of a path are compared
+# first: when they differ between the lists, the path counts as changed. A side without a
+# list uses the list of the other side; without a list on either side nothing is judged here.
 judge_archive_inputs() {
-    local kind path changed="" seen=" " a b p f
+    local kind path changed="" seen=" " a b p f has_b=1 has_a=1
     # A file directly in SCAN_ROOT belongs to no crate. crates/.gitattributes decides how the
     # files of every crate check out, so such a file counts as an archive input.
     while IFS= read -r f; do
@@ -1546,28 +1570,42 @@ judge_archive_inputs() {
     done <<EOF2
 $CHANGED
 EOF2
-    [ -f "$ARCHIVE_INPUTS" ] || die "cannot read the archive input list $ARCHIVE_INPUTS."
+    archive_list_at before "$WORK/list.before" || has_b=0
+    archive_list_at after "$WORK/list.after" || has_a=0
+    if [ "$has_b" = 0 ] && [ "$has_a" = 1 ]; then cp "$WORK/list.after" "$WORK/list.before"; fi
+    if [ "$has_a" = 0 ] && [ "$has_b" = 1 ]; then cp "$WORK/list.before" "$WORK/list.after"; fi
     while IFS="$TAB" read -r kind path _; do
-        case "$kind" in ''|'#'*) continue ;; esac
+        [ -n "$kind" ] || continue
         [ -n "$path" ] || die "$ARCHIVE_INPUTS: a $kind line without a path."
-        case "$seen" in *" $path "*) continue ;; esac
-        seen="$seen$path "
-        outside_touches "$path" || continue
+        case "$seen" in *" $kind:$path "*) continue ;; esac
+        seen="$seen$kind:$path "
         case "$kind" in
             blob)
+                outside_touches "$path" || continue
                 a=$(archive_blob_id before "$path"); b=$(archive_blob_id after "$path") ;;
             script)
+                outside_touches "$path" || continue
                 script_norm "$BEFORE_REV:$path" "$WORK/archive.before"
                 script_norm "$(after_ref "$path")" "$WORK/archive.after"
                 a=$(cat "$WORK/archive.before"); b=$(cat "$WORK/archive.after") ;;
             region)
-                region_of "$BEFORE_REV:$path" "$path" "$WORK/archive.before"
-                region_of "$(after_ref "$path")" "$path" "$WORK/archive.after"
-                a=$(cat "$WORK/archive.before"); b=$(cat "$WORK/archive.after") ;;
+                regions_in "$WORK/list.before" "$path" "$WORK/regions.before"
+                regions_in "$WORK/list.after" "$path" "$WORK/regions.after"
+                if ! cmp -s "$WORK/regions.before" "$WORK/regions.after"; then
+                    a=list-before; b=list-after
+                else
+                    outside_touches "$path" || continue
+                    region_of "$BEFORE_REV:$path" "$path" "$WORK/regions.after" "$WORK/archive.before"
+                    region_of "$(after_ref "$path")" "$path" "$WORK/regions.after" "$WORK/archive.after"
+                    a=$(cat "$WORK/archive.before"); b=$(cat "$WORK/archive.after")
+                fi ;;
             *) die "$ARCHIVE_INPUTS: unknown kind '$kind' for $path." ;;
         esac
+        case "$changed " in *" $path "*) continue ;; esac
         [ "$a" = "$b" ] || changed="$changed $path"
-    done < "$ARCHIVE_INPUTS"
+    done <<EOF2
+$(cat "$WORK/list.before" "$WORK/list.after")
+EOF2
     [ -n "$changed" ] || return 0
     changed=${changed# }
     for p in $(plugin_dirs); do

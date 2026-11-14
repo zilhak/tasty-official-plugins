@@ -82,7 +82,7 @@ fn widened_script(d: &Path, root: &str) -> String {
     // The helpers that the script reads by relative path are copied too.
     let gate_dir = d.join(".gate");
     fs::create_dir_all(gate_dir.join("lib")).expect("create the copy directory");
-    for lib in ["judge-bin.sh", "judge-cache.sh", "archive-inputs.txt"] {
+    for lib in ["judge-bin.sh", "judge-cache.sh"] {
         fs::copy(
             support::repo_file(&format!("scripts/lib/{lib}")),
             gate_dir.join("lib").join(lib),
@@ -2159,8 +2159,15 @@ fn a_lock_update_of_a_platform_only_crate_flags_its_plugin() {
 
 // ── Archive inputs outside the crates ────────────────────────────────────────
 // alpha and beta have archives (tasty-plugin.toml); lib has none. The repository has the
-// notice set, .gitattributes, and small packaging files with the markers that
-// scripts/lib/archive-inputs.txt looks for.
+// notice set, .gitattributes, small packaging files with the markers that the list looks
+// for, and a copy of this repository's scripts/lib/archive-inputs.txt: the gate reads the
+// list from the trees it judges.
+
+const ARCHIVE_LIST: &str = "scripts/lib/archive-inputs.txt";
+
+fn archive_list() -> String {
+    fs::read_to_string(support::repo_file(ARCHIVE_LIST)).expect("read the archive input list")
+}
 
 const FIXTURE_CHECK_SH: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
@@ -2250,6 +2257,7 @@ impl ArchiveFixture {
                 "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n".into(),
             ),
             ("LICENSE".into(), "MIT License\n".into()),
+            (ARCHIVE_LIST.into(), archive_list()),
             (
                 "THIRD_PARTY_LICENSES.md".into(),
                 "# Third-party licenses\n".into(),
@@ -2716,6 +2724,92 @@ fn a_crate_gitattributes_change_flags_its_plugin() {
     f.write("crates/tasty-plugin-alpha/.gitattributes", "* -text\n");
     f.commit("check out alpha as binary");
     assert_only_alpha(&f.check(&HEAD_RANGE));
+}
+
+/// The list is read from both judged trees: a commit that drops an input from the list and
+/// changes it at once is still judged, in either mode, and the work tree list does not count.
+#[test]
+fn dropping_an_input_from_the_list_does_not_hide_its_change() {
+    let f = ArchiveFixture::new();
+    f.edit(ARCHIVE_LIST, "blob\tLICENSE\n", "");
+    f.write("LICENSE", "MIT License\n\nCopyright\n");
+    f.git(&["add", "-A"]);
+    assert_every_archive_flagged(&f.check(&["--staged"]), "LICENSE");
+    f.commit("drop LICENSE from the list and change it");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSE");
+
+    // Only LICENSE is staged; the list line is dropped in the work tree alone.
+    f.git(&["reset", "--quiet", "--hard", "HEAD^"]);
+    f.write("LICENSE", "MIT License\n\nCopyright\n");
+    f.git(&["add", "LICENSE"]);
+    f.edit(ARCHIVE_LIST, "blob\tLICENSE\n", "");
+    assert_every_archive_flagged(&f.check(&["--staged"]), "LICENSE");
+
+    // A line added in the work tree alone is not an input of the staged change.
+    f.git(&["reset", "--quiet", "--hard"]);
+    f.write("NOTES.txt", "notes\n");
+    f.commit("add notes");
+    f.write("NOTES.txt", "more notes\n");
+    f.git(&["add", "NOTES.txt"]);
+    f.edit(
+        ARCHIVE_LIST,
+        "blob\tLICENSE\n",
+        "blob\tLICENSE\nblob\tNOTES.txt\n",
+    );
+    assert_nothing_to_judge(&f.check(&["--staged"]));
+}
+
+/// The region lines of a path that differ between the two lists count as a change of that
+/// path, also when the file itself did not change.
+#[test]
+fn a_changed_region_line_counts_as_a_change_of_its_file() {
+    let f = ArchiveFixture::new();
+    let list = archive_list();
+    let line = list
+        .lines()
+        .find(|l| l.starts_with("region\t.github/workflows/release.yml\tjob\t"))
+        .expect("the package job region");
+    f.edit(
+        ARCHIVE_LIST,
+        &format!("{line}\n"),
+        &format!("{}\n", line.replace("package", "publish")),
+    );
+    f.commit("look at another job");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
+}
+
+/// A side without the list uses the list of the other side; without a list on either side
+/// nothing outside the crates is an archive input.
+#[test]
+fn a_side_without_the_list_uses_the_other_list() {
+    let f = ArchiveFixture::new();
+    f.git(&["rm", "--quiet", ARCHIVE_LIST]);
+    f.commit("before the list existed");
+    // The region lines of the new list are on both sides, so they did not change.
+    f.write(ARCHIVE_LIST, &archive_list());
+    f.edit(
+        "scripts/check.sh",
+        "run cargo audit;",
+        "run cargo audit --deny warnings;",
+    );
+    f.commit("add the list and change the audit command");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
+
+    f.git(&["rm", "--quiet", ARCHIVE_LIST]);
+    f.commit("remove the list again");
+    f.write(ARCHIVE_LIST, &archive_list());
+    f.write("LICENSE", "MIT License\n\nCopyright\n");
+    f.commit("add the list and change LICENSE");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSE");
+
+    f.git(&["rm", "--quiet", ARCHIVE_LIST]);
+    f.write("LICENSE", "MIT License\n\nCopyright 2\n");
+    f.commit("remove the list and change LICENSE");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSE");
+
+    f.write("LICENSE", "MIT License\n\nCopyright 3\n");
+    f.commit("change LICENSE without a list");
+    assert_nothing_to_judge(&f.check(&HEAD_RANGE));
 }
 
 /// A .gitattributes directly in crates/ belongs to no crate but decides how the files of
