@@ -118,8 +118,8 @@ Three more workspace crates belong to this repository only and are not published
 (`publish = false`): `plugin-pin-check` (the pin and lock tests above), `repo-gates` (the
 tests of the plugin version check, its fixup, and the git hooks), and `plugin-guards`
 (source checks on the plugin crates that moved here from tasty, see
-[docs/ci.md](docs/ci.md#source-checks-on-the-plugins)). They hold tests only and are not
-part of any plugin archive.
+[docs/ci.md](docs/ci.md#source-checks-on-the-plugins)). They hold only tests and their
+helpers and are not part of any plugin archive.
 
 The build matches tasty's own plugin build:
 
@@ -148,7 +148,7 @@ scripts/check.sh build [ARGS]    # cargo build --locked -p <each plugin> [ARGS]
 scripts/check.sh audit           # cargo audit --file Cargo.lock (needs cargo-audit, not part of all)
 scripts/check.sh list-plugins    # the PLUGINS list: the nine plugin crates, one per line
 scripts/check.sh list-bins       # PLUGINS without LIBS: the eight with an executable
-bash scripts/dev-setup.sh        # use the git hooks in .githooks, then cargo fetch --locked
+bash scripts/dev-setup.sh        # use the .githooks hooks, then cargo fetch --locked
 bash scripts/install-judge.sh    # install strip-cfg-test for the plugin version check
 bash scripts/check-plugin-version-bump.sh --staged   # plugin version check on the index
 bash scripts/check-plugin-version-bump.sh --range A B  # the same between two commits
