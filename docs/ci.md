@@ -303,8 +303,12 @@ would leave that range unchecked.
   update can pass locally; the CI checkout fetches it on every run. `[workspace]` and
   unknown sections are undecidable, and so is a changed `[workspace.dependencies]` line
   that cannot be read or that no package in `Cargo.lock` answers to. A root `Cargo.toml`
-  with a multi-line string (`"""` or `'''`) or with unbalanced brackets is undecidable as
-  a whole.
+  with a multi-line string (`"""` or `'''`), with unbalanced brackets, or with a backslash
+  escape in a table name or key (`[profile."rele\u0061se"]`; escapes are not decoded) is
+  undecidable as a whole. The path patch check below reads the root `Cargo.toml` on every
+  run, so while such a spelling is in it, every commit is undecidable, also one that does
+  not touch the file. This is the policy: the repository does not use these spellings now,
+  and they stay out of the root `Cargo.toml` and the cargo config.
 - Build settings change every plugin binary, so a change asks every plugin with a
   `tasty-plugin.toml` for a bump, once per release (the rule of a `Cargo.lock` update):
   a `[profile.*]` table in the inheritance chain of the release profile `dist` (now
@@ -322,23 +326,52 @@ would leave that range unchecked.
   every plugin with an archive for a bump, once per release: the notice set (`LICENSE`,
   `THIRD_PARTY_LICENSES.md`, every file in `LICENSES/`), `.gitattributes`, and the
   packaging code (`scripts/package-plugin.sh`, `scripts/lib/notice-set.sh`,
-  `scripts/lib/plugin-build.sh`, the build and list-bins parts of `scripts/check.sh`, and
-  the `package` job of `release.yml` with the top-level `env` and `defaults` it
-  inherits). The notice set and `.gitattributes` are compared by path, file mode, and
-  blob, so a move, a mode change, or a file that becomes a link counts. The scripts are
+  `scripts/lib/plugin-build.sh`, `scripts/check.sh` without the parts below, and the
+  `package` job of `release.yml` with the top-level `env` and `defaults` it inherits). A
+  file directly in `crates/`, outside every crate (`crates/.gitattributes`), counts the
+  same way, because it decides how the files of every crate check out.
+- The notice set and `.gitattributes` are compared by path, file mode, and blob, so a
+  move, a mode change, or a file that becomes a link counts. A symbolic link among them
+  (a root notice file, or a file in `LICENSES/`) is undecidable on every run: the
+  packaging copies through the link, so its target could change unseen. The scripts are
   compared without whole-line comments and blank lines, so a comment change needs no
-  bump, while a comment after code still counts. A region of `check.sh` or `release.yml`
-  that cannot be found is undecidable. In a crate, `lang/`, `assets/NOTICE.md`, and
-  `.gitattributes` files are compared by mode and blob, so a final newline counts, and
-  the mode of `tasty-plugin.toml` counts too. The archive bytes are not compared: tar
-  keeps file times, so the same content packs differently every time.
+  bump, while a comment after code still counts.
+- `scripts/check.sh` is compared whole except the parts that the list leaves out because
+  they do not build or pack: the functions `cmd_fmt`, `cmd_lint`, `cmd_test`, `cmd_audit`,
+  `cmd_licenses`, and `warn_hooks`, the case branches `fmt)`, `lint)`, `test)`, `audit)`,
+  and `licenses)`, and the branch that calls `warn_hooks`; a case statement left with no
+  branch goes too. The `all)` branch stays. So a new subcommand like `licenses`, or the
+  hook warning, needs no bump, while top-level code, the build functions, the arrays, the
+  help branch, and a new `cmd_*` function count (a new function is compared until the
+  list leaves it out, on purpose). A function defined twice in `check.sh` is undecidable,
+  because the later definition replaces the earlier one. A left-out one-line function
+  with more code on its line, or a left-out function that is not closed before the next
+  definition, is undecidable too.
+- On every run, not only when they change, these are undecidable: a `source` or `.` in a
+  listed script (`check.sh`, `package-plugin.sh`, `notice-set.sh`, `plugin-build.sh`) of a
+  file the list does not name, or of a path that is not written out (a variable or a
+  command substitution; none is in use now), and a `uses: ./` (a local action or reusable
+  workflow) in the `package` job of `release.yml`. The content of such a file would not be
+  judged.
+- The list is read from both trees that are compared: the before rev, and the after rev or
+  the index. Its blob and script lines count from either side, so a commit cannot drop an
+  input from the list and change it at once. When the except or region lines of a path
+  differ between the two lists, that path counts as changed. A side without the list (a
+  commit before it existed) uses the list of the other side. A region of `release.yml`
+  that cannot be found is undecidable; a trailing comment on a marker, or on the key line
+  of another job, does not move a region.
+- In a crate, `lang/`, `assets/NOTICE.md`, and `.gitattributes` files are compared by mode
+  and blob, so a final newline counts, and the mode of `tasty-plugin.toml` counts too;
+  they ask only for a bump of that plugin. The archive bytes are not compared: tar keeps
+  file times, so the same content packs differently every time.
 - A `[patch]` entry of the root `Cargo.toml` is judged by the change it makes in
   `Cargo.lock`: a new or moved git source needs a bump of each plugin that links the
   crate on every commit, and a move to crates.io once per release, as above. When the
-  lock rows of the patched package stay the same, no bump is needed. A patched package in
-  no lock, two git sources of one package name, and a `[patch]` spelling other than
-  `[patch.<source>]` entries, dotted keys, or `[patch.<source>.<name>]` tables are
-  undecidable.
+  lock rows of the patched package stay the same, no bump is needed. A quoted key in an
+  entry (`{ "path" = ... }`) reads like the bare key. A patched package in no lock, two
+  git sources of one package name, a key with a backslash escape, and a `[patch]` spelling
+  other than `[patch.<source>]` entries, dotted keys, or `[patch.<source>.<name>]` tables
+  are undecidable.
 - A path `[patch]` in the root `Cargo.toml` or in the repository cargo config (and what it
   includes), and a `paths` override, are undecidable on every check, not only when they
   change: a clean clone and CI do not have the folder. Use git with the pinned rev, or

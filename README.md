@@ -26,9 +26,10 @@ packages are not signed. See [docs/ci.md](docs/ci.md#releases).
 MIT. See [LICENSE](LICENSE). Each plugin archive includes a copy as `<id>/LICENSE`, next
 to the third-party notices: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and the
 license texts in [LICENSES/](LICENSES), and the markdown archive also holds
-`<id>/NOTICE.md`, the sources of its bundled assets. A change of these files or of the
-packaging code changes every archive and needs a patch bump of every plugin, once per
-release.
+`<id>/NOTICE.md`, the sources of its bundled assets. A change of the root notice set
+(`LICENSE`, `THIRD_PARTY_LICENSES.md`, `LICENSES/`) or of the packaging code changes every
+archive and needs a patch bump of every plugin, once per release. A change of
+`assets/NOTICE.md` changes only the markdown archive and needs a bump of that plugin.
 
 ## Pinned tasty commit
 
@@ -133,7 +134,8 @@ The build matches tasty's own plugin build:
 - Profiles: `release` and `dist` are the same as in tasty.
 - Windows MSVC targets link the C runtime statically (`.cargo/config.toml`).
 - Changing the toolchain, the release profiles, or `.cargo/config.toml` bumps every plugin
-  (once per release).
+  (once per release). A change only in `components` or `profile` of the toolchain, or only
+  in `[alias]`, `[term]`, `[net]`, or `[http]` of the cargo config, passes with a note.
 - `tiny_http` is patched to the copy tasty vendors, which `tasty-plugin-agent-stream` uses
   for its SSE server. Cargo applies `[patch]` only from the root workspace, so tasty's
   patch does not reach this repository, which sets the same one.
