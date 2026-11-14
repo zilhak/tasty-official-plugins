@@ -91,10 +91,10 @@ sha256_of() {
 
 mkdir -p "$base" || die "cannot create the tool cache $base."
 # This run's own folder, next to $dir on the same file system. Only this run writes to it,
-# and it is removed on exit unless it was published.
+# and it is removed on exit only while it cannot have been published (see below).
 work=$(mktemp -d "$base/.$name.XXXXXX")
-published=0
-trap '[ "$published" -eq 1 ] || rm -rf "$work"' EXIT
+exposed=0
+trap '[ "$exposed" -eq 1 ] || rm -rf "$work"' EXIT
 trap 'exit 1' HUP INT TERM
 
 fetch() {  # <url> <file> <sha256>
@@ -122,20 +122,28 @@ installed "$work" || die "the downloaded tools do not report the pinned versions
 # Publish: ln -sn fails when $dir exists, so exactly one run's link wins. Without -n, ln
 # would create the link inside the folder that an existing $dir points at, and succeed. -n
 # is in GNU, BSD (macOS), and busybox ln. It does not help when $dir is a plain directory,
-# so then ln is not tried before that directory has been checked and moved aside. A run that loses
-# uses the install that won. When $dir is broken (a link to a folder that fails the check,
-# or an old plain directory), it is renamed aside and the link is created again. mv onto an
-# existing link to a directory would move into that directory, so the broken one is never
-# replaced in place. Nothing is deleted: another job may still use the old folder.
+# so then ln is not tried before that directory has been checked and moved aside. A run
+# that loses uses the install that won. When $dir is broken (a link to a folder that fails
+# the check, or an old plain directory), it is renamed aside and the link is created again.
+# mv onto an existing link to a directory would move into that directory, so the broken one
+# is never replaced in place. Nothing is deleted: another job may still use the old folder.
+#
+# From the first ln on, this run never deletes its folder. ln may have created the link
+# even when it reports a failure or this run is stopped right after it, and another run may
+# have printed the folder since, so neither ln's status nor the current link tells whether
+# the folder was ever visible. A run that loses therefore leaves its folder behind.
 link=$(basename "$work")
+exposed=1
 for attempt in 1 2 3; do
     if [ -L "$dir" ] || [ ! -d "$dir" ]; then
         if ln -sn "$link" "$dir" 2>/dev/null; then
-            published=1
             use "installed" "$work"
         fi
     fi
     if real=$(current_install); then
+        # ln can fail after it made the link, and then the link is this run's own.
+        if [ "$real" = "$work" ]; then use "installed" "$work"; fi
+        printf '[install-lint-tools] left the unused folder of this run, remove it when no job runs: %s\n' "$work" >&2
         use "installed by another run" "$real"
     fi
     if [ -e "$dir" ] || [ -L "$dir" ]; then
@@ -145,4 +153,4 @@ for attempt in 1 2 3; do
         fi
     fi
 done
-die "cannot publish $dir: it is still there and broken after three attempts."
+die "cannot publish $dir: it is still there and broken after three attempts. Left the folder of this run: $work"

@@ -133,14 +133,16 @@ Jobs that share a tool cache can install at the same time without a lock. Each r
 downloads, checks, and unpacks into a folder of its own next to the install
 (`.shellcheck-<version>-actionlint-<version>-<arch>.<random>`) and publishes it by creating
 the install name as a symlink to that folder with `ln -sn`, which fails when the name
-exists. A run that loses uses the install that won and removes its own folder. The script
+exists. A run that loses uses the install that won. The script
 prints the folder the link points at, not the link, so a job keeps its tools when another
 run replaces the link later. When the link points at a folder whose tools fail the version
 check, or the name is a plain directory from an earlier version of the script, the run
 renames it aside to `.broken.<name>.<pid>.<attempt>` and creates the link again. No run
-deletes a folder that another run may use. When the download or its sum check fails, the
-run removes its own folder and the install name is not created. Replaced folders, the
-`.broken.*` entries, and the folder of a run that was killed before it could remove it
+deletes a folder that another run may use: once a run has tried `ln`, it keeps its own
+folder, because the link may have been made and another run may have printed that folder.
+When the download or its sum check fails, the run removes its own folder and the install
+name is not created. Replaced folders, the `.broken.*` entries, the folders of runs that
+lost the race (each run says so in its log), and the folder of a run that was killed
 (`.shellcheck-*`) may remain; remove them by hand when no job is running.
 
 `lint-scripts.sh` finds the scripts instead of listing them: tracked files that end in
