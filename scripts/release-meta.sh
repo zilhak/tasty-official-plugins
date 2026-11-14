@@ -143,6 +143,10 @@ epaint_version=$(one_value "epaint in Cargo.lock" "$(
        /^version = / && name == "\"epaint\"" { gsub(/"/, "", $3); print $3 }' Cargo.lock
 )")
 
+# Read before render: a process substitution would hide a failure of list-bins
+# after it printed part of the list.
+bins=$(scripts/check.sh list-bins) || die "cannot list the plugin crates"
+
 # Built in full before anything is written, so a failure leaves no partial file.
 render() {
   echo "# Release metadata of $REPOSITORY. Written by scripts/release-meta.sh."
@@ -178,7 +182,7 @@ render() {
     echo "version = \"$version\""
     echo "bundle = ${bundle:-true}"
     count=$((count + 1))
-  done < <(scripts/check.sh list-bins)
+  done <<<"$bins"
   [[ $count -gt 0 ]] || die "no plugins listed"
 }
 
