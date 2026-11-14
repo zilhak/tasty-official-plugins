@@ -1693,6 +1693,50 @@ fn a_changed_entry_line_that_cannot_be_read_is_undecidable() {
     assert!(text.contains("\"quoted\" = \"1\""), "{text}");
 }
 
+/// Puts `block` in front of [workspace.dependencies], commits, then turns on feature `x` of
+/// tasty-a and commits again.
+fn multi_line_string_then_feature(block: &str) -> (i32, String) {
+    let f = PinFixture::new();
+    f.with_features();
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    write(
+        &f.repo,
+        "Cargo.toml",
+        &toml.replacen(
+            "[workspace.dependencies]\n",
+            &format!("{block}\n[workspace.dependencies]\n"),
+            1,
+        ),
+    );
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("add a lint with a multi-line string");
+    f.edit_tasty_a_entry(|l| l.replacen(" }", ", features = [\"x\"] }", 1));
+    f.commit("turn on a feature of tasty-a");
+    f.check(&HEAD_RANGE)
+}
+
+/// A multi-line string with a bracket in a skipped section must not swallow the
+/// [workspace.dependencies] change after it.
+#[test]
+fn a_multi_line_string_in_an_inline_lint_table_is_undecidable() {
+    let (code, text) = multi_line_string_then_feature(
+        "[workspace.lints.rust]\n\
+         dead_code = { level = \"deny\", priority = 0, note = \"\"\"\nkeep { open\n\"\"\" }\n",
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("cannot read the root Cargo.toml"), "{text}");
+    assert!(text.contains("a multi-line string"), "{text}");
+}
+
+#[test]
+fn a_multi_line_string_in_a_lint_table_is_undecidable() {
+    let (code, text) = multi_line_string_then_feature(
+        "[workspace.lints.rust.dead_code]\nlevel = \"deny\"\nreason = \"\"\"\n[\n\"\"\"\n",
+    );
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("cannot read the root Cargo.toml"), "{text}");
+}
+
 /// Case 11: Only a profile changed: pass with a note.
 #[test]
 fn a_profile_change_passes_with_a_note() {

@@ -738,7 +738,10 @@ EOF2
 # Sections of a root Cargo.toml as "section<TAB>line", one line per TOML key/value: comments,
 # leading and trailing spaces and blank lines are dropped, and a value whose brackets stay
 # open ([ or {, outside strings) takes the following lines until they close. Lines before
-# the first header belong to section "". Multi-line strings are not read.
+# the first header belong to section "". Multi-line strings (""" or ''') are not read: their
+# brackets would be counted and swallow the sections after them. Such a line, brackets that
+# close more than they open, and brackets still open at the end come out as
+# "<unreadable><TAB>reason" so that the caller stops.
 toml_lines() {
     git show "$1" | awk '
         # Drops a comment and counts the brackets outside strings; the count goes to depth.
@@ -753,6 +756,7 @@ toml_lines() {
                     continue
                 }
                 if (c == "#") break
+                if ((c == "\"" || c == "\047") && substr(s, i, 3) == c c c) multi = 1
                 if (c == "\"" || c == "\047") q = c
                 else if (c == "[" || c == "{") depth++
                 else if (c == "]" || c == "}") depth--
@@ -761,7 +765,10 @@ toml_lines() {
             return out
         }
         {
+            multi = 0
             line = scan($0)
+            if (multi) { print "<unreadable>\tline " NR ", a multi-line string: " $0; bad = 1 }
+            if (depth < 0) { print "<unreadable>\tline " NR ", a bracket that closes nothing: " $0; bad = 1; depth = 0 }
             sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
             if (line == "") next
             if (pending != "") {
@@ -776,7 +783,11 @@ toml_lines() {
             depth = 0
             print sec "\t" line
         }
-        END { if (pending != "") print sec "\t" pending }'
+        END {
+            if (pending != "" || depth != 0) {
+                print "<unreadable>\tbrackets still open at the end of the file, after: " substr(pending, 1, 80)
+            }
+        }'
 }
 
 # The entries of [workspace.dependencies] as "key<TAB>value" with any rev removed. Dotted
@@ -844,6 +855,10 @@ judge_root_manifest() {
     fi
     toml_lines "$before" > "$WORK/root.before"
     toml_lines "$after" > "$WORK/root.after"
+    if grep -q '^<unreadable>' "$WORK/root.before" "$WORK/root.after"; then
+        die "cannot read the root Cargo.toml; judge the plugin versions by hand:
+$(grep -h '^<unreadable>' "$WORK/root.before" "$WORK/root.after" | cut -f2- | sort -u | sed 's/^/    /')"
+    fi
     while IFS= read -r sec; do
         if cmp -s <(awk -F '\t' -v s="$sec" '$1 == s' "$WORK/root.before") \
                   <(awk -F '\t' -v s="$sec" '$1 == s' "$WORK/root.after"); then
