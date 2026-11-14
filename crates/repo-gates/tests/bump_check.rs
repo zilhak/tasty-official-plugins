@@ -3419,7 +3419,6 @@ fn a_package_job_action_not_written_as_owner_repo_at_ref_is_undecidable() {
         "      - uses: >-\n          ./.github/actions/review\n",
         "      - uses: |\n          actions/cache@v4\n",
         "      - uses: docker://alpine:3.20\n",
-        "      - { uses: actions/cache@v4 }\n",
         "      - name: x\n        uses: ../other/action@v1\n",
     ] {
         let f = ArchiveFixture::new();
@@ -3475,6 +3474,13 @@ fn yaml_forms_that_hide_a_uses_key_in_the_package_job_are_undecidable() {
         "      - <<: *base\n        name: x\n",
         "      - <<: { name: x }\n        run: echo x\n",
         "      - name: x\n        uses: &u actions/cache@v4\n",
+        "      - !!str uses: ./.github/actions/x\n",
+        "      - <<: m\n        run: echo x\n",
+        "      - name: x\n        !!str uses: ./.github/actions/x\n",
+        "      - { uses: ./.github/actions/x }\n",
+        "      - [a]\n",
+        "      - uses: actions/cache@v4\n        with: { path: x }\n",
+        "      - uses: actions/cache@v4\n        with:\n          key: [a, { uses: x }]\n",
     ] {
         let f = ArchiveFixture::new();
         f.edit(
@@ -3501,6 +3507,28 @@ fn yaml_forms_that_hide_a_uses_key_in_the_package_job_are_undecidable() {
     );
     f.commit("add run blocks");
     assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
+
+    // Text inside a scalar value is not read: JSON, a quoted value with ": *", a glob list,
+    // a quoted key-like text, a quoted value over two lines, and a flow sequence of words.
+    for added in [
+        "      - run: echo \"{\\\"REVIEW_MARK\\\":1}\"\n",
+        "      - run: echo '{\"uses\":\"REVIEW_MARK\"}'\n",
+        "      - run: 'echo \"REVIEW_MARK: *review\"'\n",
+        "      - uses: actions/upload-artifact@v4\n        with:\n          \
+         path: ${{ env.PKG_OUT }}/*.sha256,*.txt\n",
+        "      - run: printf '%s' \"a\\tb\":x\n",
+        "      - run: \"echo a\n          - *x &y: z\"\n",
+        "      - uses: actions/cache@v4\n        with:\n          list: [self-hosted, Linux, X64]\n",
+    ] {
+        let f = ArchiveFixture::new();
+        f.edit(
+            ".github/workflows/release.yml",
+            step,
+            &format!("{step}{added}"),
+        );
+        f.commit("add a step");
+        assert_every_archive_flagged(&f.check(&HEAD_RANGE), ".github/workflows/release.yml");
+    }
 
     // After a block scalar the next key is read again.
     let f = ArchiveFixture::new();

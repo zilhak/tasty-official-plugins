@@ -1595,40 +1595,72 @@ EOF2
         esac
         if [ "$kind" = region ] && [ "$how" = job ]; then
             region_of "$ref" "$path" <(P="$path" awk -F '\t' '$1 == "region" && $2 == ENVIRON["P"] && $3 == "job" { print $3 "\t" $4 "\t" $5 }' "$WORK/list.after") "$WORK/structure.cksum"
-            # A uses: key passes only with owner/repo@ref or owner/repo/path@ref on its own
-            # line, quoted or not, maybe with a trailing comment. Anything else (a local action
-            # or workflow, a Docker image, a value on the next line or in a block scalar, a
-            # flow mapping) could run content the list does not judge (U). YAML forms that could
-            # spell a uses: key or value another way stop the check too (Y): an explicit key
-            # (?), a double-quoted key with a backslash escape, an anchor, an alias, and a merge
-            # key. The body of a block scalar (run: |) is data and is skipped, by indentation.
+            # The package job is read line by line as indentation, "- " items, a key, and a
+            # value; text inside a scalar value is not read. A uses key passes only with
+            # owner/repo@ref or owner/repo/path@ref as its value on the same line, quoted or
+            # not, maybe with a trailing comment (U otherwise: a local action or workflow, a
+            # Docker image, a value on the next line or in a block scalar). YAML forms that
+            # could spell a uses key another way stop the check too (Y): an explicit key (?), a
+            # double-quoted key with a backslash escape, a merge key (<<), a key or an item that
+            # starts with a tag (!), an anchor (&), an alias (*), or a flow collection ({ [),
+            # and a value that starts with one of these. A one-line flow sequence of plain
+            # words ([self-hosted, Linux, X64]) cannot hold a key and passes. The body of a block
+            # scalar (run: |) and the rest of a quoted scalar over several lines are data.
             awk '
                 function lead(t) { match(t, /^ */); return RLENGTH }
+                # The position of the quote that ends the quoted scalar at the start of t, or 0.
+                function qend(t,   qc, i, c) {
+                    qc = substr(t, 1, 1)
+                    for (i = 2; i <= length(t); i++) {
+                        c = substr(t, i, 1)
+                        if (qc == "\"" && c == "\\") { i++; continue }
+                        if (c == qc) {
+                            if (qc == "\047" && substr(t, i + 1, 1) == "\047") { i++; continue }
+                            return i
+                        }
+                    }
+                    return 0
+                }
+                function y() { print "Y\t    " $0 }
                 /^@ / { next }
                 blk >= 0 { if ($0 ~ /^[[:space:]]*$/ || lead($0) > blk) next; blk = -1 }
-                /^[[:space:]]*#/ { next }
+                mq != "" { if (qend(mq $0)) mq = ""; next }
+                /^[[:space:]]*(#|$)/ { next }
                 {
-                    l = $0; sub(/[[:space:]]+#.*$/, "", l)
-                    if (l ~ /^[[:space:]]*(-[[:space:]]+)*\?([[:space:]]|$)/ \
-                        || l ~ /"[^"]*\\[^"]*"[[:space:]]*:/ \
-                        || l ~ /^[[:space:]]*(-[[:space:]]+)*["\047]?<<["\047]?[[:space:]]*:/ \
-                        || l ~ /(^[[:space:]]*(-[[:space:]]+)*|:[[:space:]]+|[{,[][[:space:]]*)[&*][^[:space:]]/) {
-                        print "Y\t    " $0; next
+                    r = $0; sub(/^ */, "", r); seq = 0
+                    while (r ~ /^-([[:space:]]|$)/) { r = substr(r, 2); sub(/^[[:space:]]+/, "", r); seq = 1 }
+                    col = length($0) - length(r)
+                    if (r == "") next
+                    if (r ~ /^\?([[:space:]]|$)/ || (seq && r ~ /^[{[&*!]/)) { y(); next }
+                    # The key: a quoted scalar or plain text, followed by ": " or a final ":".
+                    if (r ~ /^["\047]/) {
+                        e = qend(r)
+                        if (e == 0) { mq = substr(r, 1, 1); next }
+                        v = substr(r, e + 1)
+                        if (v !~ /^[[:space:]]*:([[:space:]]|$)/) next
+                        key = substr(r, 1, e); sub(/^[[:space:]]*:/, "", v)
+                        if (key ~ /^"/ && key ~ /\\/) { y(); next }
+                        name = substr(key, 2, e - 2)
+                    } else if (match(r, /:([[:space:]]|$)/)) {
+                        key = substr(r, 1, RSTART - 1); v = substr(r, RSTART + 1); name = key
+                        sub(/[[:space:]]+$/, "", name)
+                        if (key ~ /^[{[&*!]/) { y(); next }
+                    } else next
+                    if (name == "<<") { y(); next }
+                    sub(/^[[:space:]]+/, "", v)
+                    # The value: quoted, plain without a trailing comment, or a block scalar.
+                    if (v ~ /^["\047]/) {
+                        e = qend(v)
+                        if (e == 0) { mq = substr(v, 1, 1); val = "" } else val = substr(v, 2, e - 2)
+                    } else {
+                        val = v; sub(/(^|[[:space:]]+)#.*$/, "", val); sub(/[[:space:]]+$/, "", val)
+                        if (val ~ /^[&*!{]/ || (val ~ /^\[/ && val !~ /^\[[^][{}:&*!?"\047#]*\]$/)) { y(); next }
                     }
-                }
-                l ~ /^[[:space:]]*(-[[:space:]]+)?["\047]?uses["\047]?[[:space:]]*:/ {
-                    v = l
-                    sub(/^[[:space:]]*(-[[:space:]]+)?["\047]?uses["\047]?[[:space:]]*:/, "", v)
-                    sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
-                    if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
-                    if (v !~ /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+(\/[^@[:space:]]+)?@[A-Za-z0-9_.\/-]+$/) {
-                        print "U\t    " $0; next
+                    if (name == "uses" && val !~ /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+(\/[^@[:space:]]+)?@[A-Za-z0-9_.\/-]+$/) {
+                        print "U\t    " $0
                     }
-                }
-                l ~ /[{,][[:space:]]*["\047]?uses["\047]?[[:space:]]*:/ { print "U\t    " $0; next }
-                # A block scalar starts: its body is the lines indented deeper than its key.
-                l ~ /:[[:space:]]+[|>][-+0-9]*[[:space:]]*$/ {
-                    k = l; sub(/^[[:space:]]*(-[[:space:]]+)*/, "", k); blk = length(l) - length(k)
+                    # A block scalar starts: its body is the lines indented deeper than its key.
+                    if (v !~ /^["\047]/ && val ~ /^[|>][-+0-9]*$/) blk = col
                 }
             ' blk=-1 "$WORK/region.out" > "$WORK/structure.uses" || die "cannot read $path (after)."
             if grep -q '^U' "$WORK/structure.uses"; then
@@ -1636,7 +1668,7 @@ EOF2
 $(sed -n "s/^U$TAB//p" "$WORK/structure.uses")"
             fi
             if [ -s "$WORK/structure.uses" ]; then
-                die "a job that builds the archives in $path uses a YAML form the gate does not read (an explicit ? key, a double-quoted key with a backslash escape, an anchor, an alias, or a merge key), which could spell a uses: key another way; judge the plugin versions by hand:
+                die "a job that builds the archives in $path uses a YAML form the gate does not read (an explicit ? key, a double-quoted key with a backslash escape, a merge key, a tag, an anchor, an alias, or a flow collection), which could spell a uses: key another way; judge the plugin versions by hand:
 $(sed -n "s/^Y$TAB//p" "$WORK/structure.uses")"
             fi
             continue
