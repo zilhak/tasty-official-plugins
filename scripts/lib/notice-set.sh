@@ -3,7 +3,9 @@
 # root as the working directory. Follows tasty's scripts/lib/notice-set.sh.
 # shellcheck shell=bash
 
-# The asset notice a plugin crate may carry; staged as <id>/NOTICE.md.
+# The asset notice a plugin crate may carry; staged as <id>/NOTICE.md. Read by the
+# scripts that source this file.
+# shellcheck disable=SC2034
 NOTICE_ASSET="assets/NOTICE.md"
 
 # Prints the notice set, one repository path per line. An empty LICENSES/ means a
