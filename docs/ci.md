@@ -251,9 +251,9 @@ workspace member as a root.
   with `version`, `confidence-threshold`, `unused-allowed-license`, and `allow`, whose
   set must equal tasty's list. Any other table or key, such as advisories, bans, sources,
   exceptions, clarifications, private-crate skips, or graph exclusions, fails it. It also
-  requires `scripts/check.sh licenses` to run exactly
-  `cargo deny --locked --workspace check licenses`, defined once and with no other
-  argument.
+  runs `scripts/check.sh licenses` with a `cargo` that records its arguments and requires
+  exactly one call with `deny --locked --workspace check licenses`, with or without extra
+  arguments to `check.sh`.
 - No exceptions: `deny.toml` has no `[[licenses.exceptions]]` and no allow entry for one
   crate. When a crate fails the check, update it or replace the dependency that brings it
   in. When neither is possible, the maintainers decide; the check is not widened to pass.
