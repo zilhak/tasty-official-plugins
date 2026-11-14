@@ -126,7 +126,19 @@ and actionlint from their GitHub release pages into the runner tool cache
 then `scripts/lint-scripts.sh`. The versions and the SHA-256 sums of the release archives
 are pinned in `install-lint-tools.sh`: an archive with another sum fails the job, and an
 install that is already there and reports the pinned versions is reused. To update a
-tool, change its version and sums together. actionlint publishes its sums in the release's
+tool, change its version and sums together.
+
+Jobs that share a tool cache can install at the same time. The script stages the download
+in a folder next to the install and publishes it with one rename on the same file system,
+so a run that stops halfway leaves no partial install. Only one run installs a version at
+a time: it holds the lock folder `<install folder>.lock`, which records its pid, and the
+others wait for it (`LINT_TOOL_LOCK_WAIT`, 300 seconds by default) and then reuse what it
+installed. A lock whose pid no longer runs, left by a killed run, is taken over together
+with that run's staging folder. A lock without a pid, or with the pid of a process that
+still runs, is waited for, and the job fails at the limit with the lock's path. A working
+install is never deleted; an install that fails the version check is replaced under the
+lock. When the download or its sum check fails, the install folder is not created; the
+empty `lint-tools` folder may remain. actionlint publishes its sums in the release's
 `checksums.txt`; shellcheck publishes none, so take the sum of the downloaded archive.
 
 `lint-scripts.sh` finds the scripts instead of listing them: tracked files that end in
