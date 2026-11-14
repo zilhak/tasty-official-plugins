@@ -137,8 +137,9 @@ the job.
 commits of the event: the pull request base and head, or the push before and after
 (`HEAD^` and `HEAD` for a manual run). It runs for every change except Markdown outside
 `src`, `lang`, and `assets`, and `docs/`. A newer pull request run cancels the older one
-on the same ref. Push runs are not cancelled, because each one checks only its own
-before..after range and a cancelled run would leave that range unchecked.
+on the same ref. Push runs are neither cancelled nor replaced: each push run has a
+concurrency group of its own (the pushed commit), because each one checks only its own
+before..after range and a cancelled or replaced run would leave that range unchecked.
 
 - `cargo fetch --locked` comes first, so `cargo tree --offline` works on a runner without
   a warm cache.

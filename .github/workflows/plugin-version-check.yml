@@ -31,11 +31,12 @@ on:
 permissions:
   contents: read
 
-# A newer pull request run replaces the older one, since both check the same base and head.
-# Push runs are not cancelled: each one checks only its own before..after range, so a
-# cancelled run would leave that range unchecked.
+# A newer pull request run cancels the older one, since both check the same base and head.
+# Other runs (push, manual) get a group of their own: each one checks only its own range,
+# and in a shared group GitHub would cancel a run that is still pending when a newer one
+# arrives, leaving that range unchecked.
 concurrency:
-  group: plugin-version-${{ github.ref }}
+  group: plugin-version-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
