@@ -875,10 +875,13 @@ fn the_manifest_declares_remote_attach() {
         ]
     );
     assert_eq!(ra["receive"].as_str(), Some("remote_receive"));
-    // 부모 쪽 완료 알림이 턴 종료를 셀 때 읽는 활동 순번만 옮긴다.
+    // 부모 쪽 완료 알림이 턴 종료를 셀 때 읽는 활동 순번과 샌드박스 안내의 도구 실패 순번만 옮긴다.
     assert_eq!(
         ra["relay_meta"].as_array().unwrap(),
-        &vec![toml::Value::from(crate::handlers::ACTIVITY_SEQ_META_KEY)]
+        &vec![
+            toml::Value::from(crate::handlers::ACTIVITY_SEQ_META_KEY),
+            toml::Value::from(super::sandbox_hint::SANDBOX_FAIL_SEQ_META_KEY),
+        ]
     );
 }
 
@@ -1141,4 +1144,80 @@ fn a_failed_hand_over_stops_this_pump_round() {
     );
     assert_eq!(attach_out::pending(fx.root()), 3);
     assert!(next.is_some(), "the rest is asked again on the next wake");
+}
+
+/// 원격 자식(mirror L)의 완료 줄은 서버에서 relay 된 L 의 도구 실패 순번으로 안내를 정한다. 순번이 이번 tell 의
+/// 문턱 이상이면 error, 키가 없으면(업그레이드 전 서버) 화면에 표식이 있어도 info 다.
+#[test]
+fn a_remote_child_judges_the_sandbox_hint_from_the_relayed_failure_sequence() {
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    for (relayed, expected) in [(Some("4"), "[error] "), (None, "[info] ")] {
+        let fx = Fixture::new();
+        let hooks: Rc<RefCell<Vec<Value>>> = Rc::default();
+        let meta: Rc<RefCell<HashMap<String, String>>> = Rc::default();
+        meta.borrow_mut()
+            .insert(crate::handlers::ACTIVITY_SEQ_META_KEY.into(), "5".into());
+        if let Some(seq) = relayed {
+            meta.borrow_mut().insert(
+                super::sandbox_hint::SANDBOX_FAIL_SEQ_META_KEY.into(),
+                seq.into(),
+            );
+        }
+        let (h, m) = (hooks.clone(), meta.clone());
+        let host = Host::new(&fx, move |method, p| match method {
+            "hook.set" => {
+                let id = h.borrow().len() + 1;
+                h.borrow_mut().push(
+                    json!({ "id": id, "event": p["event"], "command": p["command"], "surface": p["surface_id"] }),
+                );
+                Ok(json!({ "hook_id": id }))
+            }
+            "hook.list" => Ok(Value::Array(
+                h.borrow()
+                    .iter()
+                    .filter(|x| x["surface"] == p["surface_id"])
+                    .cloned()
+                    .collect(),
+            )),
+            "surface.meta.get" if p["surface_id"] == json!(L) => {
+                Ok(json!({ "value": m.borrow().get(p["key"].as_str().unwrap()).cloned() }))
+            }
+            "terminal.state" => Ok(json!({ "state": "idle" })),
+            "surface.screen_text" => Ok(
+                json!({ "text": "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted" }),
+            ),
+            _ => surface_parent(method, p),
+        });
+        super::super::register_notify_hooks(
+            &host,
+            5,
+            L,
+            "tell",
+            Some(completion_gate::Threshold::once(4)),
+        );
+        let command = hooks
+            .borrow()
+            .iter()
+            .find(|x| x["event"] == json!("codex-idle"))
+            .and_then(|x| x["command"].as_str().map(String::from))
+            .unwrap();
+        let mut params = json!({});
+        let mut words = command
+            .strip_prefix("tasty codex notify-caller ")
+            .unwrap()
+            .split_whitespace();
+        while let (Some(flag), Some(value)) = (words.next(), words.next()) {
+            let name = flag.trim_start_matches("--").replace('-', "_");
+            params[name] = value
+                .parse::<u64>()
+                .map_or_else(|_| json!(value), |n| json!(n));
+        }
+        crate::notice::test_log::take();
+        super::super::handle_notify_caller(&host, &params, &fx.tr).unwrap();
+        let lines = crate::notice::test_log::take();
+        assert_eq!(lines.len(), 1, "{relayed:?} {lines:?}");
+        assert!(lines[0].1.starts_with(expected), "{relayed:?} {lines:?}");
+    }
 }

@@ -131,7 +131,7 @@ description = "Codex CLI設定にTastyフックをインストール"
 description = "Codex CLI設定からTastyフックを削除"
 
 [codex.cli.sub.hook]
-description = "Codexフック連携（Codex CLIのフックシステムから呼び出し）。呼び出し時にstdinからJSONペイロード（session_id、prompt、last_assistant_message、model、turn_id）を読み取ります。"
+description = "Codexフック連携（Codex CLIのフックシステムから呼び出し）。呼び出し時にstdinからJSONペイロード（session_id、prompt、last_assistant_message、model、turn_id、tool_response）を読み取ります。"
 
 [codex.cli.arg.launch_args.workspace]
 help = "作成するワークスペース名（既定値：\"codex\"）"
@@ -339,6 +339,9 @@ help = "TUI に渡すポリシー・モデル引数の JSON 配列"
 
 [codex.cli.arg.hook_args.gen]
 help = "Tasty セッション helper が設定したセッション世代。現在の世代でないフックは無視します。"
+
+[codex.cli.arg.hook_args.tool_response]
+help = "ツールの結果。PostToolUseフックのstdin JSONの 'tool_response' から自動設定。サンドボックス初期化失敗の行があるかの確認にだけ使い、保存やどこかへの送信はしない"
 
 [codex.cli.arg.hook_args.model]
 help = "セッションのモデル。stdin JSON の 'model' から自動で設定します。セッションの復元で同じモデルを使うために記録します。"

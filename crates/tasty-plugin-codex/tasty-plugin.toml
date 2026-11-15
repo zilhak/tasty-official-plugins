@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.codex"
 name = "Codex"
-version = "0.3.3"
+version = "0.3.4"
 description = "Codex CLI integration for Tasty"
 api_version = "1"
 permissions = [
@@ -49,11 +49,12 @@ executable = "codex"
 prefix = "codex"
 
 # attach mirror 의 원격 자식. 서버 host 는 이 메서드만 holder 대신 실행하고, client host 는 원격 결과를
-# receive 메서드로 넘긴다. relay_meta 는 부모 쪽 완료 알림이 턴 종료를 셀 때 읽는 활동 순번이다.
+# receive 메서드로 넘긴다. relay_meta 는 부모 쪽 완료 알림이 턴 종료를 셀 때 읽는 활동 순번과, 샌드박스 안내를
+# 판정할 때 읽는 도구 실패 순번이다.
 [contributes.remote_attach]
 methods = ["spawn", "tell", "kill"]
 receive = "remote_receive"
-relay_meta = ["codex-activity-seq"]
+relay_meta = ["codex-activity-seq", "codex-sandbox-fail-seq"]
 
 # 호스트가 등록·발생 요청을 검증할 이벤트 목록. 내장 process-exit은 선언하지 않는다.
 [[contributes.hook_events]]
@@ -87,7 +88,7 @@ subcommands = [
     { name = "reboot",        ipc_method = "codex.reboot",        args = "reboot_args",        description = "Restart the Codex instance in a surface and resume the same session (delayed kill + codex resume). Call this as the LAST action of a turn — anything after the delay is cut off.", description_i18n_key = "codex.cli.sub.reboot.description" },
     { name = "install",       ipc_method = "codex.install",       args = "install_args",            description = "Install Tasty hook into Codex CLI configuration", description_i18n_key = "codex.cli.sub.install.description" },
     { name = "uninstall",     ipc_method = "codex.uninstall",     args = "install_args",            description = "Uninstall Tasty hook from Codex CLI configuration", description_i18n_key = "codex.cli.sub.uninstall.description" },
-    { name = "hook", internal = true, ipc_method = "codex.hook",          args = "hook_args",          stdin_json = true, description = "Codex hook integration (called by Codex CLI's hook system). Reads JSON payload from stdin (session_id, prompt, last_assistant_message, model, turn_id) when invoked by Codex's hook system.", description_i18n_key = "codex.cli.sub.hook.description" },
+    { name = "hook", internal = true, ipc_method = "codex.hook",          args = "hook_args",          stdin_json = true, description = "Codex hook integration (called by Codex CLI's hook system). Reads JSON payload from stdin (session_id, prompt, last_assistant_message, model, turn_id, tool_response) when invoked by Codex's hook system.", description_i18n_key = "codex.cli.sub.hook.description" },
 ]
 
 [contributes.cli.arg_groups.launch_args]
@@ -223,6 +224,7 @@ flags = [
     { name = "model", type = "string", flag = "--model", required = false, stdin_field = "model", help = "Model of the session. Auto-populated from stdin JSON 'model'. Kept so that restoring the session uses the same model.", help_i18n_key = "codex.cli.arg.hook_args.model.help" },
     { name = "turn_id", type = "string", flag = "--turn-id", required = false, stdin_field = "turn_id", help = "Turn ID. Auto-populated from stdin JSON 'turn_id'. Used so that one turn is returned to a Codex parent only once.", help_i18n_key = "codex.cli.arg.hook_args.turn_id.help" },
     { name = "last_assistant_message", type = "string", flag = "--last-assistant-message", required = false, stdin_field = "last_assistant_message", help = "The assistant's final message of the turn. Auto-populated from stdin JSON 'last_assistant_message' on the Stop hook. When the surface runs a Tasty agent task, it is reported as that turn's final answer.", help_i18n_key = "codex.cli.arg.hook_args.last_assistant_message.help" },
+    { name = "tool_response", type = "string", flag = "--tool-response", required = false, stdin_field = "tool_response", help = "Tool result. Auto-populated from stdin JSON 'tool_response' on the PostToolUse hook. Only checked for the sandbox setup failure line; it is not stored or sent anywhere.", help_i18n_key = "codex.cli.arg.hook_args.tool_response.help" },
 ]
 
 [contributes.cli.arg_groups.no_args]

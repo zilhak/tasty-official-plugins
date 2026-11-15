@@ -31,6 +31,8 @@ struct GateHost {
     queued: RefCell<Vec<String>>,
     alive: RefCell<HashSet<u32>>,
     methods: RefCell<Vec<String>>,
+    /// 받은 모든 호출의 본문. 도구 결과가 새지 않는지 볼 때 쓴다.
+    calls: RefCell<Vec<Value>>,
     screen: RefCell<String>,
 }
 
@@ -55,16 +57,22 @@ impl GateHost {
 
 impl HostCall for GateHost {
     fn call(&self, method: &str, p: Value) -> Result<Value, tasty_plugin_sdk::PluginError> {
+        self.calls.borrow_mut().push(p.clone());
         self.methods.borrow_mut().push(match method {
             "surface.meta.get" => format!("{method}:{}", p["key"].as_str().unwrap_or("")),
             _ => method.to_string(),
         });
         let surface = |key: &str| p[key].as_u64().unwrap_or(0) as u32;
         let meta_key = || {
-            (
-                surface("surface_id"),
-                p["key"].as_str().unwrap().to_string(),
-            )
+            let key = p["key"].as_str().unwrap();
+            // 호스트의 meta 키 규칙(소문자·숫자·`.`·`_`·`-`). 어기면 호스트가 거절하므로 여기서 실패시킨다.
+            assert!(
+                key.bytes().all(|c| c.is_ascii_lowercase()
+                    || c.is_ascii_digit()
+                    || matches!(c, b'.' | b'_' | b'-')),
+                "host rejects meta key {key:?}"
+            );
+            (surface("surface_id"), key.to_string())
         };
         Ok(match method {
             "terminal.state" => {
@@ -180,8 +188,16 @@ impl Rig {
     }
 
     fn hook(&self, event: &str) {
-        let params =
+        self.hook_with(event, json!({}));
+    }
+
+    /// 훅 페이로드에 필드(`tool_response`·`prompt` 등)를 더해 처리한다.
+    fn hook_with(&self, event: &str, extra: Value) {
+        let mut params =
             json!({ "surface": CHILD, "event": event, "session": THREAD, "gen": self.generation });
+        for (k, v) in extra.as_object().unwrap() {
+            params[k] = v.clone();
+        }
         self.fx
             .with(|d| handle_hook(&self.host, &params, &self.fx.tr, d))
             .expect("hook");
@@ -517,4 +533,144 @@ fn a_tell_that_answers_an_approval_wait_notices_one_more_turn_end() {
         counts.push(rig.drain().len());
     }
     assert_eq!(counts, [1, 1, 0]);
+}
+
+const FAILED: &str = "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n";
+
+fn sandbox_fail_seq(rig: &Rig) -> Option<String> {
+    rig.host
+        .meta
+        .borrow()
+        .get(&(CHILD, "codex-sandbox-fail-seq".to_string()))
+        .cloned()
+}
+
+/// 1. 이번 턴 도구 결과에 표식이 있으면 완료 줄에 안내를 붙인다.
+#[test]
+fn a_tool_result_with_the_sandbox_failure_marks_this_turn() {
+    let rig = Rig::new();
+    rig.tell();
+    rig.hook("prompt-submit");
+    rig.hook_with("post-tool-use", json!({ "tool_response": FAILED }));
+    rig.hook("stop");
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("[error] ") && lines[0].contains("RTM_NEWADDR"),
+        "{lines:?}"
+    );
+    assert_eq!(sandbox_fail_seq(&rig).as_deref(), Some("2"));
+}
+
+/// 2. 다음 tell 에서 표식 없는 턴은 화면에 옛 표식이 남아 있어도 안내가 없다.
+#[test]
+fn the_next_tell_without_the_marker_is_info_even_if_the_screen_still_shows_it() {
+    let rig = Rig::new();
+    rig.tell();
+    rig.hook("prompt-submit");
+    rig.hook_with("post-tool-use", json!({ "tool_response": FAILED }));
+    rig.hook("stop");
+    assert!(rig.drain()[0].starts_with("[error] "));
+    // TUI 가 옛 표식을 다시 그린 상태.
+    rig.host.screen.replace(FAILED.into());
+    rig.tell();
+    rig.turn("stop");
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("[info] "), "{lines:?}");
+}
+
+/// 3. 표식이 대화 본문·화면에만 있고 도구 결과에는 없으면 안내가 없다. 표식을 내용으로 담은 도구 결과도 아니다.
+#[test]
+fn the_marker_only_in_the_conversation_is_not_a_sandbox_failure() {
+    let rig = Rig::new();
+    rig.host.screen.replace(FAILED.into());
+    rig.tell();
+    rig.hook_with("prompt-submit", json!({ "prompt": FAILED }));
+    rig.hook_with(
+        "post-tool-use",
+        json!({ "tool_response": "docs/x.md:3: bwrap: loopback: Failed RTM_NEWADDR\n" }),
+    );
+    rig.hook("stop");
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("[info] "), "{lines:?}");
+    assert_eq!(sandbox_fail_seq(&rig), None);
+}
+
+/// 4. 진행 중인 대상에 보낸 tell(`idle-twice`): 지금 턴의 실패는 첫 줄에만 붙고 두 번째 턴 종료 줄에는 붙지 않는다.
+#[test]
+fn the_second_turn_end_of_a_busy_tell_judges_only_its_own_tools() {
+    let rig = Rig::new();
+    rig.hook("prompt-submit");
+    rig.tell();
+    rig.hook_with("post-tool-use", json!({ "tool_response": FAILED }));
+    rig.hook("stop");
+    let first = rig.drain();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].starts_with("[error] "), "{first:?}");
+    rig.hook("prompt-submit");
+    rig.hook_with("post-tool-use", json!({ "tool_response": "ok\n" }));
+    rig.hook("stop");
+    let second = rig.drain();
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert!(second[0].starts_with("[info] "), "{second:?}");
+}
+
+/// 5. 옛 형식 훅의 줄은 화면으로 판정하지만, 재무장 뒤 다음 턴은 화면에 표식이 있어도 도구 기록이 없으면 info.
+#[test]
+fn after_an_old_hook_rearms_the_next_turn_ignores_the_screen() {
+    let rig = Rig::new();
+    register_notify_hooks(&rig.host, PARENT, CHILD, "tell", None);
+    rig.host.screen.replace(FAILED.into());
+    rig.host.fire(CHILD, "codex-idle");
+    let lines = rig.drain();
+    assert!(lines[0].starts_with("[error] "), "{lines:?}");
+    rig.turn("stop");
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("[info] "), "{lines:?}");
+}
+
+/// 6. 도구 결과는 판정에만 쓴다. 어떤 호스트 호출 본문에도, 원장 파일에도 남지 않는다. meta 에는 순번만 쓴다.
+#[test]
+fn a_tool_result_is_not_stored_or_sent() {
+    let rig = Rig::new();
+    let secret = "bwrap: loopback: Failed RTM_NEWADDR: secret-tool-output-7731\n";
+    rig.tell();
+    rig.hook("prompt-submit");
+    rig.host.calls.borrow_mut().clear();
+    rig.hook_with("post-tool-use", json!({ "tool_response": secret }));
+    rig.hook("stop");
+    rig.drain();
+    for call in rig.host.calls.borrow().iter() {
+        assert!(!call.to_string().contains("secret-tool-output"), "{call}");
+    }
+    assert_eq!(sandbox_fail_seq(&rig).as_deref(), Some("2"));
+    let mut stack = vec![rig.fx.root().to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                assert!(!text.contains("secret-tool-output"), "{path:?}");
+            }
+        }
+    }
+}
+
+/// 7. 순번 meta 가 실패 기록보다 작으면(순번만 초기화된 경우) 옛 기록이라 안내를 붙이지 않는다.
+#[test]
+fn a_failure_record_past_the_current_sequence_is_ignored() {
+    let rig = Rig::new();
+    rig.host.meta.borrow_mut().insert(
+        (CHILD, "codex-sandbox-fail-seq".to_string()),
+        "40".to_string(),
+    );
+    rig.tell();
+    rig.turn("stop");
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("[info] "), "{lines:?}");
 }

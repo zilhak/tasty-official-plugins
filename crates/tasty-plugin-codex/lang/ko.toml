@@ -131,7 +131,7 @@ description = "Codex CLI 설정에 Tasty 훅 설치"
 description = "Codex CLI 설정에서 Tasty 훅 제거"
 
 [codex.cli.sub.hook]
-description = "Codex 훅 연동(Codex CLI 훅 시스템에서 호출). 호출 시 stdin에서 JSON payload(session_id, prompt, last_assistant_message, model, turn_id)를 읽습니다."
+description = "Codex 훅 연동(Codex CLI 훅 시스템에서 호출). 호출 시 stdin에서 JSON payload(session_id, prompt, last_assistant_message, model, turn_id, tool_response)를 읽습니다."
 
 [codex.cli.arg.launch_args.workspace]
 help = "생성할 워크스페이스 이름(기본값: \"codex\")"
@@ -339,6 +339,9 @@ help = "TUI에 넘길 정책·모델 인자의 JSON 배열"
 
 [codex.cli.arg.hook_args.gen]
 help = "Tasty 세션 helper가 설정한 세션 세대. 현재 세대가 아닌 훅은 무시합니다."
+
+[codex.cli.arg.hook_args.tool_response]
+help = "도구 결과. PostToolUse 훅의 stdin JSON 'tool_response'에서 자동으로 채웁니다. 샌드박스 초기화 실패 줄이 있는지만 확인하고 저장하거나 어디에도 보내지 않습니다."
 
 [codex.cli.arg.hook_args.model]
 help = "세션의 모델. stdin JSON의 'model'에서 자동으로 채웁니다. 세션을 복원할 때 같은 모델을 쓰도록 기록합니다."

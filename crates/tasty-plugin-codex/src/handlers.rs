@@ -485,6 +485,7 @@ fn parent_args<H: HostCall>(
 }
 
 pub(crate) mod remote;
+mod sandbox_hint;
 mod spawn;
 pub(crate) use spawn::handle_spawn;
 
@@ -509,7 +510,8 @@ fn notify_caller_message(tr: &Translator, kind: &str, target: u32) -> String {
         .replace("{kind}", kind)
 }
 
-/// 화면에서 샌드박스 초기화 실패를 추정할 때 찾는 문구. 대화 내용에도 나타날 수 있다.
+/// 샌드박스 초기화 실패를 추정할 때 찾는 문구. 꼬리 없는 옛 훅은 화면에서 찾으며, 화면에서는 대화 내용에도 나타날
+/// 수 있다. 새 형식은 도구 결과의 `bwrap:` 줄에서 찾는다([`sandbox_hint`]).
 const SANDBOX_FAILURE_MARKER: &str = "RTM_NEWADDR";
 
 /// 완료 로그에 덧붙일 번역된 샌드박스 안내의 키.
@@ -536,7 +538,7 @@ fn append_sandbox_hint_if_detected(
     }
 }
 
-/// 오류 표식을 찾을 최근 화면 줄 수.
+/// 꼬리 없는 옛 훅에서 오류 표식을 찾을 최근 화면 줄 수.
 const SCREEN_TEXT_SCAN_LINES: u64 = 800;
 
 /// 힌트에 쓸 화면 내용을 읽는다. 조회에 실패하면 힌트만 생략한다.
@@ -654,6 +656,7 @@ pub(crate) fn handle_notify_caller<H: HostCall>(
             &kind,
             target,
             evaluation.state.as_deref(),
+            HintBasis::SinceActivity(tail.done_from),
         )),
         completion_gate::Decision::NeedsInput => Some((
             crate::notice::NoticeKind::NeedsInput,
@@ -675,17 +678,38 @@ pub(crate) fn handle_notify_caller<H: HostCall>(
     Ok(json!({ "written": written }))
 }
 
-/// 끝난 턴의 줄. 화면에 샌드박스 실패 표식이 있으면 안내를 붙여 error 로 쓴다.
+/// 샌드박스 안내를 판정할 근거.
+enum HintBasis {
+    /// 이 활동 순번 이상에서 도구 결과가 실패를 냈는가. 새 형식 훅의 `done_from` 이다. `idle-twice` 의 두 번째
+    /// 턴 종료는 `finish` 가 다시 건 꼬리의 `done_from`(그때 순번 + 1)이라 두 번째 턴의 도구만 본다.
+    SinceActivity(u64),
+    /// 최근 화면에 표식이 있는가. 꼬리 없는 옛 훅만 쓴다.
+    Screen,
+}
+
+/// 끝난 턴의 줄. 샌드박스 실패 근거가 있으면 안내를 붙여 error 로 쓴다.
 fn done_line<H: HostCall>(
     host: &H,
     tr: &Translator,
     kind: &str,
     target: u32,
     state: Option<&str>,
+    basis: HintBasis,
 ) -> (crate::notice::NoticeKind, String) {
     let message = notify_caller_message(tr, kind, target);
-    let screen_text = fetch_screen_text_for_hint(host, target);
-    let with_hint = append_sandbox_hint_if_detected(tr, message.clone(), screen_text.as_deref());
+    let with_hint = match basis {
+        HintBasis::SinceActivity(done_from) => {
+            if sandbox_hint::failed_since(host, target, done_from) {
+                format!("{message} {}", tr.t(SANDBOX_FAILURE_HINT_KEY))
+            } else {
+                message.clone()
+            }
+        }
+        HintBasis::Screen => {
+            let screen_text = fetch_screen_text_for_hint(host, target);
+            append_sandbox_hint_if_detected(tr, message.clone(), screen_text.as_deref())
+        }
+    };
     let notice = crate::notice::NoticeKind::of_done_line(state, with_hint != message);
     (notice, with_hint)
 }
@@ -712,6 +736,7 @@ fn legacy_notify_caller<H: HostCall>(
         kind,
         target,
         target_state(host, target).as_deref(),
+        HintBasis::Screen,
     );
 
     // 로그 쓰기에 실패해도 경고를 남기고 훅 정리를 계속한다.
@@ -1116,7 +1141,12 @@ pub(crate) fn handle_hook<H: HostCall>(
     crate::task_turn::report(host, event, surface_id, params);
     // 새 활동이면 상태보다 먼저 활동 순번을 올린다. 부모 완료 알림은 이 순번이 오른 뒤의 턴 종료만 센다.
     if new_state == "active" {
-        host_call_failures += count_activity(host, surface_id);
+        let seq = completion_gate::activity_seq(host, surface_id, ACTIVITY_SEQ_META_KEY) + 1;
+        // 샌드박스 실패 기록을 순번보다 먼저 쓴다. 순번 N 을 본 쪽은 그 순번의 기록도 본다(원격 relay 도 같은 순서).
+        if event == "post-tool-use" && sandbox_hint::tool_failed(params.get("tool_response")) {
+            host_call_failures += sandbox_hint::record(host, surface_id, seq);
+        }
+        host_call_failures += count_activity(host, surface_id, seq);
     }
     // 상태 갱신 실패는 호출자에게 알린다. 뒤의 알림 실패는 집계하고 계속한다.
     host_call(
@@ -1240,9 +1270,8 @@ fn record_session_meta<H: HostCall>(
 /// spawn·tell 뒤 이 순번이 오른 다음의 턴 종료만 완료로 센다. 원격 mirror 에도 relay 한다.
 pub(crate) const ACTIVITY_SEQ_META_KEY: &str = "codex-activity-seq";
 
-/// 활동 순번을 1 올려 meta 에 쓴다. 실패한 호출 수를 반환한다.
-fn count_activity<H: HostCall>(host: &H, surface_id: u32) -> usize {
-    let seq = completion_gate::activity_seq(host, surface_id, ACTIVITY_SEQ_META_KEY) + 1;
+/// 새 활동 순번(지금 값 + 1)을 meta 에 쓴다. 실패한 호출 수를 반환한다.
+fn count_activity<H: HostCall>(host: &H, surface_id: u32, seq: u64) -> usize {
     match host.call(
         "surface.meta.set",
         json!({ "surface_id": surface_id, "key": ACTIVITY_SEQ_META_KEY, "value": seq.to_string() }),

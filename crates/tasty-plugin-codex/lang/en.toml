@@ -131,7 +131,7 @@ description = "Install Tasty hook into Codex CLI configuration"
 description = "Uninstall Tasty hook from Codex CLI configuration"
 
 [codex.cli.sub.hook]
-description = "Codex hook integration (called by Codex CLI's hook system). Reads JSON payload from stdin (session_id, prompt, last_assistant_message, model, turn_id) when invoked by Codex's hook system."
+description = "Codex hook integration (called by Codex CLI's hook system). Reads JSON payload from stdin (session_id, prompt, last_assistant_message, model, turn_id, tool_response) when invoked by Codex's hook system."
 
 [codex.cli.arg.launch_args.workspace]
 help = "Workspace name to create (defaults to \"codex\")"
@@ -339,6 +339,9 @@ help = "JSON array of policy and model arguments passed to the TUI"
 
 [codex.cli.arg.hook_args.gen]
 help = "Session generation set by the Tasty session helper. Hooks without the current generation are ignored."
+
+[codex.cli.arg.hook_args.tool_response]
+help = "Tool result. Auto-populated from stdin JSON 'tool_response' on the PostToolUse hook. Only checked for the sandbox setup failure line; it is not stored or sent anywhere."
 
 [codex.cli.arg.hook_args.model]
 help = "Model of the session. Auto-populated from stdin JSON 'model'. Kept so that restoring the session uses the same model."

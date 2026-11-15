@@ -131,7 +131,7 @@ description = "将 Tasty 钩子安装到 Codex CLI 配置中"
 description = "从 Codex CLI 配置中卸载 Tasty 钩子"
 
 [codex.cli.sub.hook]
-description = "Codex 钩子集成（由 Codex CLI 的钩子系统调用）。由 Codex 钩子系统调用时，从 stdin 读取 JSON 载荷（session_id, prompt, last_assistant_message, model, turn_id）。"
+description = "Codex 钩子集成（由 Codex CLI 的钩子系统调用）。由 Codex 钩子系统调用时，从 stdin 读取 JSON 载荷（session_id, prompt, last_assistant_message, model, turn_id, tool_response）。"
 
 [codex.cli.arg.launch_args.workspace]
 help = "要创建的工作区名称（默认为 \"codex\"）"
@@ -339,6 +339,9 @@ help = "传给 TUI 的策略和模型参数的 JSON 数组"
 
 [codex.cli.arg.hook_args.gen]
 help = "Tasty 会话辅助程序设置的会话代次。忽略不属于当前代次的钩子。"
+
+[codex.cli.arg.hook_args.tool_response]
+help = "工具结果。在 PostToolUse 钩子中，从 stdin JSON 的 'tool_response' 自动填充。仅用于检查是否有沙箱初始化失败的行；不会保存或发送到任何地方。"
 
 [codex.cli.arg.hook_args.model]
 help = "会话使用的模型。从 stdin JSON 的 'model' 自动填充。保留此值，以便恢复会话时使用同一模型。"
