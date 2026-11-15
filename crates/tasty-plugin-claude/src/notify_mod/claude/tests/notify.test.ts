@@ -2,7 +2,7 @@ import { test, expect, mock } from 'claude-code/testing';
 import type { Engine } from 'claude-code/testing';
 import type { On } from 'claude-code';
 import { batch, position, retention } from '../hooks/reader';
-import { delivery, heading } from '../hooks/messages';
+import { delivery, heading, queueHeading } from '../hooks/messages';
 import { register as gate } from '../gate/hooks/register';
 
 // Installed beside this mod; most tests load both, as an install does.
@@ -158,6 +158,36 @@ test('visible heading has four translations and an English fallback', () => {
   expect(heading('unknown')).toBe(heading('en'));
 });
 
+test('queue heading has four translations and an English fallback', () => {
+  expect(queueHeading('en')).toContain('tasty read queue');
+  expect(queueHeading('ko')).toContain('큐');
+  expect(queueHeading('ja')).toContain('キュー');
+  expect(queueHeading('zh-Hans')).toContain('队列');
+  expect(queueHeading('unknown')).toBe(queueHeading('en'));
+});
+
+test('queue lines take the queue heading, status lines keep theirs', () => {
+  const q = delivery(1, 'en', '[queue] surface 7: 1 queued message\n');
+  expect(q).toBe(`[[tasty-notify 1]]\n${queueHeading('en')}\n[queue] surface 7: 1 queued message\n`);
+  expect(q).not.toContain(heading('en'));
+  // Without queue lines the text is byte for byte what it was before queue headings.
+  expect(delivery(2, 'ko', '[info] surface 9: state changed\n'))
+    .toBe(`[[tasty-notify 2]]\n${heading('ko')}\n[info] surface 9: state changed\n`);
+  // Mixed: both headings, status first; the lines keep log order.
+  const body = '[info] surface 9: state changed\n[queue] surface 7: 2 queued messages\n[error] surface 9: x\n';
+  expect(delivery(3, 'ja', body)).toBe(`[[tasty-notify 3]]\n${heading('ja')}\n${queueHeading('ja')}\n${body}`);
+  // Unknown tags, untagged lines and look-alikes keep the status heading.
+  for (const line of ['[foo] x\n', 'child one\n', '[Queue] x\n', '[queue]x\n', ' [queue] x\n', 'x [queue] y\n', '[warning] x\n']) {
+    const text = delivery(4, 'en', line);
+    expect(text).toContain(heading('en'));
+    expect(text).not.toContain(queueHeading('en'));
+  }
+  // A CRLF line is still a queue line.
+  const crlf = delivery(5, 'en', '[queue] surface 7: 1\r\n');
+  expect(crlf).toContain(queueHeading('en'));
+  expect(crlf).not.toContain(heading('en'));
+});
+
 
 it('fully consumed unchanged snapshots suppress body reads but changed stat and meta are observed', async ($, on) => {
   const f = fixture(on); await start($);
@@ -299,3 +329,18 @@ for (const mode of ['drop', 'throw'] as const) {
     await f.clock.advance(1500); expect(f.prompts.length).toBe(1);
   });
 }
+
+it('a queue line from the log is delivered under the queue heading', async ($, on) => {
+  const f = fixture(on); await start($);
+  f.files[root] += '[queue] surface 7: 1 queued message\n';
+  await f.clock.advance(500);
+  expect(f.prompts.length).toBe(1);
+  expect(f.prompts[0]).toBe(`${queueHeading(undefined)}\n[queue] surface 7: 1 queued message\n`);
+  expect(f.prompts[0]).not.toContain('not proof');
+  f.files[root] += '[info] surface 9: state changed\n[queue] surface 7: 2 queued messages\n';
+  await f.clock.advance(500);
+  expect(f.prompts.length).toBe(2);
+  expect(f.prompts[1]).toContain('not proof');
+  expect(f.prompts[1]).toContain(queueHeading(undefined));
+  expect(f.prompts[1]).toContain('[info] surface 9: state changed\n[queue] surface 7: 2 queued messages\n');
+});

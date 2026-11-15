@@ -1,7 +1,7 @@
 {
   "name": "tasty-notify",
-  "version": "0.2.0",
-  "description": "Receive Tasty child status notifications without terminal input",
+  "version": "0.2.1",
+  "description": "Receive Tasty child status and message queue notifications without terminal input",
   "author": {
     "name": "Tasty"
   },
