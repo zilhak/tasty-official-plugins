@@ -353,15 +353,16 @@ spawn·tell 하나에 대해 부모 로그에는 다음 줄만 생긴다. 규칙
 
 | 사건 | 줄 | 타입 | 횟수 |
 |---|---|---|---|
-| 일을 시작한 뒤 턴이 끝남(`codex-idle`: Stop·Interrupt) | `surface N state changed (via tell)` | `info` (샌드박스 안내가 붙으면 `error`) | spawn·tell 하나에 한 번 |
+| 일을 시작한 뒤 턴이 끝남(`codex-idle`: Stop·Interrupt) | `surface N state changed (via tell)` | `info` (샌드박스 안내가 붙으면 `error`) | spawn·tell 하나에 한 번(진행 중·승인 대기 중인 자식에 보낸 tell은 최대 두 번) |
 | 도구 승인 대기(`needs-input`: PermissionRequest) | `surface N waiting for approval (via tell)` | `warning` | 대기마다 한 번 |
 | 프로세스 종료(`process-exit`) | `surface N state changed (via tell)` | `error` | 항상(활동이 없었어도) |
 
 - 일을 시작하지 않은 idle과 완료 줄 뒤 자식이 스스로 연 턴은 줄을 만들지 않는다. 다음 spawn·tell이 오면 다시 한 번 알린다. 처리할 때 이미 끝난 승인 대기도 줄이 없다.
+- 진행 중이거나 승인을 기다리는 자식에 보낸 tell은 완료 줄이 두 번 나올 수 있다. 메시지가 다음 턴으로 넘어가 처리되는 경우를 놓치지 않으려고, 첫 완료 줄 뒤 턴 종료를 한 번 더 알린다. 메시지가 지금 턴에 흡수됐으면 그 뒤 자식이 스스로 연 턴 하나의 끝에도 줄이 나온다. 두 번째 줄 뒤에는 더 나오지 않는다.
 - 훅 처리기는 `prompt-submit`·`session-start`·`post-tool-use`마다 상태를 바꾸기 전에 surface meta `codex-activity-seq`를 1 올린다.
-- tell은 입력을 보내기 **전에** 대상 상태와 순번을 읽어 문턱 `N`을 정한다. 대상이 `active`면 `N = 순번`(진행 중인 턴에 흡수돼도 그 턴의 끝을 알린다), 그 밖은 `N = 순번 + 1`이다. spawn은 `N = 순번 + 1`이다.
-- 훅 명령은 `tasty codex notify-caller --caller C --target T --kind tell --event idle|input|exit --done-from N --arm G`다. `G`는 무장마다 새로 받는 id다. notify-caller는 그룹에 다른 무장의 훅이 있으면 줄을 쓰지 않는다. 그렇지 않으면 `idle`은 대상이 `idle`이고 순번이 `N` 이상일 때 완료 줄을 쓰고 그 뒤 턴 종료 훅 없이 승인 대기·종료 훅만 다시 건다. `input`은 대상이 아직 `needs_input`일 때, `exit`는 항상 쓴다. 다시 걸지는 `surface.locate` 성공 여부로 정한다. Surface 존재는 프로세스 생존과 다르며, 훅 등록과 로그 쓰기 실패나 재등록 사이의 이벤트 전달까지 보장하지 않는다.
-- 원격 attach 자식: 서버가 tell·spawn 응답에 `done_from`을 싣고, mirror는 `codex-activity-seq`를 relay(`relay_meta`)로 받는다. relay가 늦을 수 있어 mirror의 `idle`에서 순번이 모자라면 250ms 간격으로 네 번까지 다시 읽는다. `done_from`이 없는 응답(업그레이드 전 서버)과 늦게 도착한 원격 spawn 결과는 예전 형식으로 건다.
+- tell은 입력을 보내기 **전에** 대상 상태와 순번을 읽어 문턱 `N`을 정한다. 대상이 `active`이거나 `needs_input`이면(답이 대기하던 턴을 이어 간다) `N = 순번`이고 턴 종료를 두 번 알린다. 진행 중인 턴에 흡수돼도, 다음 턴으로 넘어가도 그 턴의 끝을 알린다. 그 밖은 `N = 순번 + 1`이고 한 번 알린다. spawn은 `N = 순번 + 1`이다.
+- 훅 명령은 `tasty codex notify-caller --caller C --target T --kind tell --event idle|input|exit --done-from N --arm G`다. 턴 종료를 두 번 알리는 무장의 턴 종료 훅은 `--event idle-twice`다. `G`는 spawn·tell이 무장할 때마다 새로 받는 id이고, 훅 처리는 무장 id를 바꾸지 않는다. notify-caller는 그룹에 다른 무장의 훅이 있으면 줄을 쓰지 않는다. 그렇지 않으면 `idle`은 대상이 `idle`이고 순번이 `N` 이상일 때 완료 줄을 쓰고 턴 종료 훅을 다시 걸지 않는다(`idle-twice`는 그때 순번 + 1을 문턱으로 한 번 더 건다). `input`은 대상이 아직 `needs_input`일 때, `exit`는 항상 쓴다. 처리는 자기 이벤트의 훅만 같은 무장 id로 다시 걸고, 같은 무장의 다른 훅과 이미 발화해 처리를 기다리는 다른 명령은 건드리지 않는다. 다시 걸기는 `surface.locate` 성공 여부로 정한다. Surface 존재는 프로세스 생존과 다르며, 훅 등록과 로그 쓰기 실패나 재등록 사이의 이벤트 전달까지 보장하지 않는다.
+- 원격 attach 자식: 서버가 tell·spawn 응답에 `done_from`을 싣고, mirror는 `codex-activity-seq`를 relay(`relay_meta`)로 받는다. relay가 늦을 수 있어 mirror의 `idle`에서 순번이 모자라면 250ms 간격으로 네 번까지 다시 읽고, 그때의 상태를 다시 읽어 판정한다. tell 응답은 턴 종료를 두 번 알릴지(`done_twice`)도 싣는다. `done_from`이 없는 응답(업그레이드 전 서버)과 늦게 도착한 원격 spawn 결과는 예전 형식으로 건다.
 - 업그레이드 전에 등록된 훅(`--event` 없는 명령)은 예전처럼 대상 상태로 줄을 정하고 새 형식으로 다시 건다(대상이 이미 `idle`이면 턴 종료 훅 없이).
 
 완료 로그 줄은 타입 표지로 시작한다. 종료는 `[error] `(부모가 kill로 끝낸 경우도 같다), 샌드박스 안내가 붙으면 `[error] `, 승인 대기는 `[warning] `, 그 밖의 턴 종료와 원격 결과 저장은 `[info] `다. 옛 훅은 대상 상태가 `exited`면 `[error] `다. 종류와 타입의 대응은 `notice.rs`의 `NoticeKind`가 와일드카드 없는 `match`로 정한다([완료 알림 로그](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/external-interaction.md#child-완료-알림--completion-log)).

@@ -47,7 +47,7 @@
 
 | 사건 | 줄 | 타입 | 횟수 |
 |---|---|---|---|
-| 일을 시작한 뒤 턴이 끝남(`claude-idle`) | `surface N: state changed (via tell)` (API 오류로 끝나면 힌트가 붙음) | `info` (힌트가 붙으면 `error`) | spawn·tell 하나에 한 번 |
+| 일을 시작한 뒤 턴이 끝남(`claude-idle`) | `surface N: state changed (via tell)` (API 오류로 끝나면 힌트가 붙음) | `info` (힌트가 붙으면 `error`) | spawn·tell 하나에 한 번(진행 중·입력 대기 중인 자식에 보낸 tell은 최대 두 번) |
 | 입력 대기(`needs-input`) | `surface N: waiting for input (via tell)` | `warning` | 대기마다 한 번 |
 | 프로세스 종료(`process-exit`) | `surface N: state changed (via tell)` | `error` | 항상(활동이 없었어도) |
 
@@ -55,16 +55,17 @@
 
 - 일을 시작하지 않은 idle: 입력 대기 화면으로 시작한 세션, `child-profile`·`reboot`의 재기동(SessionEnd·SessionStart), 게이트가 보류했던 앞 턴의 idle이 새 턴이 시작된 뒤 처리된 경우.
 - 완료 줄 뒤 자식이 스스로 연 턴: 백그라운드 작업이 끝나 열린 턴, Monitor 이벤트로 깨어난 턴, 자동 재개, 사용자가 자식에 직접 친 입력. 다음 `spawn`·`tell`이 오면 다시 한 번 알린다.
+  - 예외: 진행 중이거나 입력을 기다리는 자식에 보낸 `tell`은 완료 줄이 두 번 나올 수 있다. 메시지가 다음 턴으로 넘어가 처리되는 경우를 놓치지 않으려고, 첫 완료 줄 뒤 턴 종료를 한 번 더 알린다. 메시지가 지금 턴에 흡수됐으면 그 뒤 자식이 스스로 연 턴 하나의 끝에도 줄이 나온다. 두 번째 줄 뒤에는 더 나오지 않는다.
 - AskUserQuestion 하나의 두 번째 신호: PreToolUse 뒤에 오는 Notification(`permission_prompt`)은 상태만 `needs_input`으로 두고 훅과 화면 알림을 다시 보내지 않는다. 같은 턴에서 질문을 두 번 하면(사이에 PostToolUse) 줄도 두 개다.
 - 처리할 때 이미 끝난 입력 대기(대상이 `active`·`idle`로 바뀜).
 
 판정 방법:
 
 - 훅 처리기는 새 활동마다 surface meta `claude-activity-seq`를 1 올린다. 대상은 최종 상태가 `active`인 `prompt-submit`·`session-start`·`active`·`post-tool-use`·`notification`이다. 게이트 보류 Stop과 백그라운드 대기의 `active`는 올리지 않는다. 순번은 같은 호출 목록의 상태·훅 발화보다 먼저 쓴다. 플러그인을 다시 시작해도 meta에서 이어 간다.
-- `tell`은 입력을 보내기 **전에** 대상 상태·순번·보류 Stop을 읽어 문턱 `N`을 정한다. 대상이 `active`이고 판정을 기다리는 턴 종료 Stop이 없으면 `N = 순번`(진행 중인 턴에 메시지가 흡수돼도 그 턴의 끝을 알린다), 그 밖은 `N = 순번 + 1`이다. `spawn`·`child-profile`은 `N = 순번 + 1`이다.
-- 완료 훅은 이벤트마다 다른 명령으로 건다: `tasty claude notify-done --caller-surface C --target-surface T --command tell --event idle|input|exit --done-from N --arm G`. `G`는 무장마다 새로 받는 id다. 같은 부모·대상의 그룹(명령 앞부분 `... --command `)은 새 무장이 통째로 바꾼다.
-- `notify-done`은 그룹을 조회해 다른 무장의 훅이 있으면(새 tell이 이미 다시 걸었다) 줄을 쓰지 않고 자기 무장의 남은 훅만 지운다. 그렇지 않으면 `idle`은 대상이 `idle`이고 순번이 `N` 이상일 때 완료 줄을 쓰고, 그 뒤 턴 종료 훅 없이 입력 대기·종료 훅만 다시 건다. 문턱에 못 미치면 줄 없이 같은 `N`으로 다시 건다. `input`은 대상이 아직 `needs_input`이면 입력 대기 줄을 쓰고, `exit`는 항상 종료 줄을 쓴다. 다시 걸지는 대상 surface가 조회될 때만 정한다. 플러그인 안에서 notify-done 처리는 한 번에 하나씩 한다.
-- 원격 attach 자식: 서버가 `tell`·`spawn` 응답에 `done_from`을 싣고, mirror는 `claude-activity-seq`를 relay로 받는다. relay가 늦을 수 있어 mirror의 `idle`에서 순번이 모자라면 250ms 간격으로 네 번까지 다시 읽은 뒤 판정한다. 응답에 `done_from`이 없는 서버(업그레이드 전)와 늦게 도착한 원격 spawn 결과는 예전 형식으로 건다.
+- `tell`은 입력을 보내기 **전에** 대상 상태·순번·보류 Stop을 읽어 문턱 `N`을 정한다. 대상이 `active`이고 판정을 기다리는 턴 종료 Stop이 없거나, 대상이 `needs_input`이면(답이 대기하던 턴을 이어 간다) `N = 순번`이고 턴 종료를 두 번 알린다. 진행 중인 턴에 메시지가 흡수돼도 그 턴의 끝을 알리고, 다음 턴으로 넘어가도 그 턴의 끝을 알린다. 그 밖은 `N = 순번 + 1`이고 한 번 알린다. `spawn`·`child-profile`은 `N = 순번 + 1`이다.
+- 완료 훅은 이벤트마다 다른 명령으로 건다: `tasty claude notify-done --caller-surface C --target-surface T --command tell --event idle|input|exit --done-from N --arm G`. 턴 종료를 두 번 알리는 무장의 턴 종료 훅은 `--event idle-twice`다. `G`는 `spawn`·`tell`·`child-profile`이 무장할 때마다 새로 받는 id다. 같은 부모·대상의 그룹(명령 앞부분 `... --command `)은 새 무장이 통째로 바꾼다. 훅 처리는 무장 id를 바꾸지 않는다.
+- `notify-done`은 그룹을 조회해 다른 무장의 훅이 있으면(새 tell이 이미 다시 걸었다) 줄을 쓰지 않고 자기 무장의 남은 훅만 지운다. 그렇지 않으면 `idle`은 대상이 `idle`이고 순번이 `N` 이상일 때 완료 줄을 쓰고 턴 종료 훅을 다시 걸지 않는다(`idle-twice`는 그때 순번 + 1을 문턱으로 한 번 더 건다). 문턱에 못 미치면 줄 없이 같은 `N`으로 턴 종료 훅을 다시 건다. `input`은 대상이 아직 `needs_input`이면 입력 대기 줄을 쓰고, `exit`는 항상 종료 줄을 쓴다. 둘 다 자기 훅을 다시 건다. 처리는 자기 이벤트의 훅만 같은 무장 id로 다시 걸고, 같은 무장의 다른 훅과 이미 발화해 처리를 기다리는 다른 명령은 건드리지 않는다. 다시 걸기는 대상 surface가 조회될 때만 한다. 플러그인 안에서 notify-done 처리는 한 번에 하나씩 한다.
+- 원격 attach 자식: 서버가 `tell`·`spawn` 응답에 `done_from`을 싣고, mirror는 `claude-activity-seq`를 relay로 받는다. relay가 늦을 수 있어 mirror의 `idle`에서 순번이 모자라면 250ms 간격으로 네 번까지 다시 읽고, 그때의 상태를 다시 읽어 판정한다. `tell` 응답은 턴 종료를 두 번 알릴지(`done_twice`)도 싣는다. 응답에 `done_from`이 없는 서버(업그레이드 전)와 늦게 도착한 원격 spawn 결과는 예전 형식으로 건다.
 - 업그레이드 전에 등록된 훅(꼬리 없는 명령)은 예전처럼 대상 상태로 줄을 정하고, 새 형식으로 다시 건다(대상이 이미 `idle`이면 턴 종료 훅 없이).
 
 ### Codex 부모로 결과 반환
@@ -131,7 +132,7 @@ attach 로 연결한 원격 워크스페이스(mirror)에 `spawn` 하면 자식�
 [짝 핸들러 호환 경계](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/paired-agent-handlers.md)를 따른다. 완료 알림은
 [completion-log](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/external-interaction.md#child-완료-알림--completion-log)에 기록하며 caller PTY에 메시지를 입력하지 않는다.
 
-- **cli `claude`** (`tasty claude …`) — 서브커맨드: `launch`(새 워크스페이스에서 실행) · `spawn`(자식 인스턴스, 페인 분할) · `children`/`parent`(관계 조회) · `tell`/`broadcast`(메시지 전송) · `kill`/`respawn` · `reboot`(같은 세션 resume 재시작, 아래) · `child-profile`(자식에게 지속 프로필 부착, 아래) · `hook`(Claude Code 훅 통합, 아래 "Claude Code 훅 통합" 절) · `checklist-hook`(`continue-checklist` 세션 프로필 전용 `Stop` 훅, 아래 "continue-checklist 세션 프로필" 절) · `checklist-enable`/`checklist-disable`/`checklist-status`(게이트별 마커 파일을 켜고 끄고 조회 — `--gate` 생략 시 `continue-checklist`, 같은 절) · `quiet`(무출력 알림 선언, 아래 "무출력 알림 선언" 절) · `notify-done`(내부용: spawn/tell 완료 훅 하나를 판정해 caller 로그에 한 줄을 쓰고 자기 무장의 훅을 정리·재등록, 위 "부모 알림 줄이 생기는 경우") · `notify-quiet-release`(내부용: 끝난 선언의 묶음 전달, 아래) · `profile-register`/`profile-unregister`/`profile-list`/`profile-show`/`profile-current`(Claude 세션 프로필 레지스트리, 아래 "Claude 세션 프로필 레지스트리" 절).
+- **cli `claude`** (`tasty claude …`) — 서브커맨드: `launch`(새 워크스페이스에서 실행) · `spawn`(자식 인스턴스, 페인 분할) · `children`/`parent`(관계 조회) · `tell`/`broadcast`(메시지 전송) · `kill`/`respawn` · `reboot`(같은 세션 resume 재시작, 아래) · `child-profile`(자식에게 지속 프로필 부착, 아래) · `hook`(Claude Code 훅 통합, 아래 "Claude Code 훅 통합" 절) · `checklist-hook`(`continue-checklist` 세션 프로필 전용 `Stop` 훅, 아래 "continue-checklist 세션 프로필" 절) · `checklist-enable`/`checklist-disable`/`checklist-status`(게이트별 마커 파일을 켜고 끄고 조회 — `--gate` 생략 시 `continue-checklist`, 같은 절) · `quiet`(무출력 알림 선언, 아래 "무출력 알림 선언" 절) · `notify-done`(내부용: spawn/tell 완료 훅 하나를 판정해 caller 로그에 한 줄을 쓰고 자기 이벤트의 훅을 같은 무장으로 다시 등록, 위 "부모 알림 줄이 생기는 경우") · `notify-quiet-release`(내부용: 끝난 선언의 묶음 전달, 아래) · `profile-register`/`profile-unregister`/`profile-list`/`profile-show`/`profile-current`(Claude 세션 프로필 레지스트리, 아래 "Claude 세션 프로필 레지스트리" 절).
 - `spawn`/`tell`은 필요한 호스트 호출의 응답을 받은 뒤 반환하며 자식 작업 완료까지 기다리지는 않는다. `claude-idle`/`needs-input`/`process-exit` once 훅을 이벤트마다 다른 명령으로 등록한다. 같은 부모·대상의 완료 훅 그룹(명령 앞부분 `tasty claude notify-done --caller-surface <부모> --target-surface <대상> --command `)이 이미 있으면 먼저 지우고 등록하므로, tell을 반복하거나 spawn 뒤 tell해도 부모마다 그룹은 하나이고 한 번의 턴 종료에 완료 줄은 한 줄이다. 다른 부모의 그룹은 그대로 둔다. 어떤 줄을 쓰고 언제 다시 등록하는지는 위 "부모 알림 줄이 생기는 경우"에 있다. Surface 존재는 프로세스 생존과 같지 않으며, 등록·호출·로그 기록 실패나 재등록 사이의 이벤트까지 전달한다고 보장하지 않는다.
 - **ipc_namespace `claude`** — 위 동작에 대응하는 IPC API.
 - 실제 Claude 프로세스는 터미널 surface 안에서 돌고(`terminal.spawn`), 플러그인은 그 생명주기·관계를 관리한다.
