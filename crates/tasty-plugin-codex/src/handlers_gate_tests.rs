@@ -560,6 +560,16 @@ fn a_tool_result_with_the_sandbox_failure_marks_this_turn() {
         "{lines:?}"
     );
     assert_eq!(sandbox_fail_seq(&rig).as_deref(), Some("2"));
+    // 실패 기록은 같은 순번의 활동 순번보다 먼저 쓴다. 순번 2 를 본 쪽(원격 mirror 포함)은 기록도 본다.
+    let calls = rig.host.calls.borrow();
+    let set_at = |key: &str| {
+        calls.iter().position(|p| {
+            p["surface_id"] == json!(CHILD) && p["key"] == json!(key) && p["value"] == json!("2")
+        })
+    };
+    let failure = set_at("codex-sandbox-fail-seq").expect("failure record written");
+    let activity = set_at(ACTIVITY_SEQ_META_KEY).expect("activity sequence written");
+    assert!(failure < activity, "{failure} < {activity}");
 }
 
 /// 2. 다음 tell 에서 표식 없는 턴은 화면에 옛 표식이 남아 있어도 안내가 없다.
