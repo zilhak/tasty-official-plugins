@@ -167,8 +167,8 @@ source readers of `tasty-doc-guards` from the pinned tasty commit, a dev-depende
 this crate and of `plugin-pin-check` only, so it never enters a plugin build.
 
 - `notify_mod_language_lists`: the language lists in the Claude mod's TypeScript (the
-  notify heading, the gate reason, and the heading test) match
-  `tasty_i18n::BUILTIN_CODES`.
+  notify heading, the queue heading, the gate reason, and the tests of both headings)
+  match `tasty_i18n::BUILTIN_CODES`.
 - `plugin_locale_literals`: the shipped code of the plugins with a manifest holds no
   string literal with Hangul, kana, or CJK ideographs. Test-only code, comment lines, and
   diagnostic calls are left out.

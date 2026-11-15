@@ -42,14 +42,13 @@ fn object_keys(source: &str, opening: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Languages whose text the heading test expects. `unknown` is the input that checks the
-/// fallback to English.
-fn expected_heading_codes(test_source: &str) -> BTreeSet<String> {
-    const CALL: &str = "expect(heading('";
+/// Languages whose text a heading test expects, read from calls that start with `call`,
+/// such as `expect(heading('`. `unknown` is the input that checks the fallback to English.
+fn expected_heading_codes(test_source: &str, call: &str) -> BTreeSet<String> {
     test_source
-        .match_indices(CALL)
+        .match_indices(call)
         .filter_map(|(at, _)| {
-            let rest = &test_source[at + CALL.len()..];
+            let rest = &test_source[at + call.len()..];
             let (code, after) = rest.split_once("')")?;
             after.starts_with(").toContain(").then(|| code.to_string())
         })
@@ -75,6 +74,13 @@ fn notify_heading_covers_every_builtin_language() {
 }
 
 #[test]
+fn notify_queue_heading_covers_every_builtin_language() {
+    let file = format!("{MOD_DIR}/hooks/messages.ts");
+    let keys = object_keys(&read(&file), "const queueMessages = {");
+    assert_same(&file, "queueMessages", &keys);
+}
+
+#[test]
 fn notify_gate_reason_covers_every_builtin_language() {
     let file = format!("{MOD_DIR}/gate/hooks/register.ts");
     let keys = object_keys(&read(&file), "const duplicates: Record<string, string> = {");
@@ -87,7 +93,17 @@ fn notify_heading_test_expects_every_builtin_language() {
     assert_same(
         &file,
         "expected heading",
-        &expected_heading_codes(&read(&file)),
+        &expected_heading_codes(&read(&file), "expect(heading('"),
+    );
+}
+
+#[test]
+fn notify_queue_heading_test_expects_every_builtin_language() {
+    let file = format!("{MOD_DIR}/tests/notify.test.ts");
+    assert_same(
+        &file,
+        "expected queue heading",
+        &expected_heading_codes(&read(&file), "expect(queueHeading('"),
     );
 }
 
@@ -98,10 +114,14 @@ fn the_readers_take_the_named_object_and_the_expected_calls_only() {
         object_keys(source, "const messages = {"),
         BTreeSet::from(["en".to_string(), "zh-Hans".to_string()])
     );
-    let test = "expect(heading('en')).toContain('x');\nexpect(heading('unknown')).toBe(heading('en'));\nexpect(heading('zh-Hans')).toContain('y');\n";
+    let test = "expect(heading('en')).toContain('x');\nexpect(heading('unknown')).toBe(heading('en'));\nexpect(heading('zh-Hans')).toContain('y');\nexpect(queueHeading('ko')).toContain('z');\n";
     assert_eq!(
-        expected_heading_codes(test),
+        expected_heading_codes(test, "expect(heading('"),
         BTreeSet::from(["en".to_string(), "zh-Hans".to_string()])
+    );
+    assert_eq!(
+        expected_heading_codes(test, "expect(queueHeading('"),
+        BTreeSet::from(["ko".to_string()])
     );
 }
 
