@@ -417,7 +417,8 @@ pub(crate) fn handle_tell<H: HostCall>(
         Err((e, false)) => return Err(rollback(e)),
     };
     // 원격 자식의 문턱은 서버가 보내기 전에 정해 응답에 싣는다. 없으면 업그레이드 전 서버다.
-    let done_from = local_done_from.or_else(|| resp.get(DONE_FROM_KEY).and_then(Value::as_u64));
+    let done_from =
+        local_done_from.or_else(|| completion_gate::Threshold::of_reply(&resp, DONE_FROM_KEY));
 
     if caller.is_none()
         && let Ok(caller) = require_u32(params, "caller_surface", tr)
@@ -569,9 +570,10 @@ fn notify_group<'a>(target: u32, prefix: &'a str, kind: &'a str) -> completion_g
     }
 }
 
-/// tell 의 완료 문턱. 보내기 전의 상태와 활동 순번으로 정한다. 진행 중인 턴에 흡수될 수 있으면 그 턴의 끝도
-/// 완료로 센다. Codex 에는 보류하는 Stop 이 없다.
-pub(crate) fn tell_threshold<H: HostCall>(host: &H, target: u32) -> u64 {
+/// tell 의 완료 문턱. 보내기 전의 상태와 활동 순번으로 정한다. 진행 중인 턴에 흡수되거나 승인 대기를 이어 갈
+/// 수 있으면 그 턴의 끝도 완료로 세고, 다음 턴으로 넘어가는 경우를 위해 턴 종료를 두 번 알린다. Codex 에는
+/// 보류하는 Stop 이 없다.
+pub(crate) fn tell_threshold<H: HostCall>(host: &H, target: u32) -> completion_gate::Threshold {
     let state = completion_gate::target_state(host, target);
     let seq = completion_gate::activity_seq(host, target, ACTIVITY_SEQ_META_KEY);
     completion_gate::threshold(state.as_deref(), seq, false)
@@ -591,7 +593,7 @@ fn register_notify_hooks<H: HostCall>(
     caller_surface: u32,
     target_surface: u32,
     kind: &str,
-    done_from: Option<u64>,
+    done_from: Option<completion_gate::Threshold>,
 ) {
     let prefix = notify_caller_group_prefix(caller_surface, target_surface);
     match done_from {
@@ -742,7 +744,7 @@ fn rearm_if_still_alive<H: HostCall>(host: &H, caller: u32, target: u32, kind: &
     completion_gate::arm(
         host,
         &notify_group(target, &prefix, kind),
-        next_activity_threshold(host, target),
+        completion_gate::Threshold::once(next_activity_threshold(host, target)),
         with_idle,
     );
 }

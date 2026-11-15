@@ -316,7 +316,13 @@ fn an_interrupt_ends_the_turn() {
 fn spawn_notices_its_turn_once_and_an_exit_always() {
     let rig = Rig::new();
     let done_from = next_activity_threshold(&rig.host, CHILD);
-    register_notify_hooks(&rig.host, PARENT, CHILD, "spawn", Some(done_from));
+    register_notify_hooks(
+        &rig.host,
+        PARENT,
+        CHILD,
+        "spawn",
+        Some(completion_gate::Threshold::once(done_from)),
+    );
     rig.turn("stop");
     let lines = rig.drain();
     assert_eq!(lines.len(), 1, "{lines:?}");
@@ -354,4 +360,113 @@ fn an_old_hook_writes_by_state_and_rearms_in_the_new_form() {
         hooks.iter().all(|(_, c)| c.contains("--event")),
         "{hooks:?}"
     );
+}
+
+/// 같은 무장의 승인 대기 처리가 이미 발화한 턴 종료를 지우지 않는다. 승인 대기 처리는 상태가 이미 idle 이라
+/// 줄이 없고, 뒤의 턴 종료 처리가 완료 줄 하나를 쓴다.
+#[test]
+fn a_late_approval_wait_run_keeps_the_fired_turn_end() {
+    let rig = Rig::new();
+    rig.tell();
+    rig.hook("prompt-submit");
+    rig.hook("permission-request");
+    rig.hook("post-tool-use");
+    rig.hook("stop");
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("state changed (via tell)"), "{lines:?}");
+}
+
+/// 같은 무장의 늦은 턴 종료 처리가 이미 발화한 승인 대기를 지우지 않는다. 앞 턴의 끝은 처리할 때 이미 다음 턴이
+/// 시작돼 완료로 셀 수 없으므로 줄이 없고, 승인 대기 줄 하나가 나온다. 턴 종료 훅은 같은 문턱으로 남아 그 턴의
+/// 끝에 완료 줄 하나를 쓴다(tell 하나에 완료 한 번).
+#[test]
+fn a_late_turn_end_run_keeps_the_fired_approval_wait() {
+    let rig = Rig::new();
+    rig.tell();
+    rig.turn("stop");
+    rig.hook("prompt-submit");
+    rig.hook("permission-request");
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("waiting for approval (via tell)"),
+        "{lines:?}"
+    );
+    rig.hook("post-tool-use");
+    rig.hook("stop");
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("state changed (via tell)"), "{lines:?}");
+    rig.turn("stop");
+    assert!(rig.drain().is_empty(), "완료는 tell 하나에 한 번");
+}
+
+/// 다음 tell 뒤에 늦게 실행된 옛 무장의 승인 대기·턴 종료 처리는 줄을 쓰지 않고 새 무장을 건드리지 않는다.
+#[test]
+fn late_runs_of_a_replaced_arm_stay_superseded() {
+    let rig = Rig::new();
+    rig.tell();
+    rig.hook("prompt-submit");
+    rig.hook("permission-request");
+    rig.hook("post-tool-use");
+    rig.hook("stop");
+    let late: Vec<String> = rig.host.queued.borrow_mut().drain(..).collect();
+    assert_eq!(late.len(), 2, "{late:?}");
+    rig.tell();
+    let armed = rig.host.done_hooks();
+    rig.host.queued.borrow_mut().extend(late);
+    assert!(rig.drain().is_empty());
+    assert_eq!(rig.host.done_hooks(), armed);
+}
+
+/// 승인 요청에 tell 로 답하면 대기하던 턴이 이어진다. post-tool-use 없이 끝나도 그 턴의 끝에 완료 줄 하나가 나온다.
+#[test]
+fn a_tell_that_answers_an_approval_wait_notices_that_turn_end() {
+    let rig = Rig::new();
+    rig.tell();
+    rig.hook("prompt-submit");
+    rig.hook("permission-request");
+    let first = rig.drain();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].contains("waiting for approval"), "{first:?}");
+    rig.tell();
+    rig.hook("stop");
+    let second = rig.drain();
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert!(second[0].contains("state changed (via tell)"), "{second:?}");
+}
+
+/// 진행 중인 child 에 보낸 tell 이 다음 턴으로 넘어가 처리되면, 지금 턴의 끝과 처리한 턴의 끝에 한 줄씩 나온다.
+/// 그 뒤 스스로 연 턴은 줄이 없다.
+#[test]
+fn a_tell_queued_for_the_next_turn_notices_both_turn_ends() {
+    let rig = Rig::new();
+    rig.tell();
+    rig.hook("prompt-submit");
+    rig.tell();
+    rig.hook("stop");
+    let first = rig.drain();
+    rig.turn("stop");
+    let second = rig.drain();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(second.len(), 1, "{second:?}");
+    rig.turn("stop");
+    assert!(rig.drain().is_empty());
+}
+
+/// 한계: 진행 중인 child 에 보낸 tell 이 지금 턴에 흡수되면, 그 뒤 스스로 연 턴 하나의 끝에도 줄이 나온다. 두 번째
+/// 줄 뒤에는 더 나오지 않는다.
+#[test]
+fn a_tell_absorbed_by_the_running_turn_may_notice_one_more_turn() {
+    let rig = Rig::new();
+    rig.tell();
+    rig.hook("prompt-submit");
+    rig.tell();
+    rig.hook("stop");
+    assert_eq!(rig.drain().len(), 1);
+    rig.turn("stop");
+    assert_eq!(rig.drain().len(), 1, "스스로 연 턴 하나");
+    rig.turn("stop");
+    assert!(rig.drain().is_empty());
 }

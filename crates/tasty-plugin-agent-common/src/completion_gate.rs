@@ -1,14 +1,15 @@
 //! 부모 완료 로그에 줄을 남길지 정한다. spawn·tell 하나에 턴 종료는 한 번만 알리고, 그 뒤에는 입력 대기와
-//! 종료만 알린다.
+//! 종료만 알린다. 진행 중이거나 입력을 기다리는 대상에 보낸 tell 은 턴 종료를 한 번 더 알린다.
 //!
 //! - 자식의 훅 처리기는 새 활동(턴 시작 등)마다 surface meta 의 활동 순번을 1 올린다.
-//! - spawn·tell 은 입력을 보내기 전에 문턱 `N`([`threshold`])을 정하고, 이벤트마다 다른 명령으로 once 훅을
-//!   건다([`arm`]). 명령 꼬리에 이벤트·문턱·무장 id 가 들어간다.
-//! - 훅 명령(notify-done 등)은 [`evaluate`] 로 줄의 종류와 다시 무장할지를 정하고, 줄을 쓴 뒤 [`finish`] 로
-//!   자기 무장의 남은 훅을 지우고 필요하면 다시 무장한다.
+//! - spawn·tell 은 입력을 보내기 전에 문턱([`threshold`])을 정하고, 이벤트마다 다른 명령으로 once 훅을
+//!   건다([`arm`]). 명령 꼬리에 이벤트·문턱·무장 id 가 들어간다. 무장 id 를 바꾸는 것은 spawn·tell 뿐이다.
+//! - 훅 명령(notify-done 등)은 [`evaluate`] 로 줄의 종류를 정하고, 줄을 쓴 뒤 [`finish`] 로 자기 이벤트의 훅만
+//!   필요하면 같은 무장 id 로 다시 건다. 같은 무장의 다른 훅과 이미 발화한 다른 명령은 건드리지 않는다.
 //!
 //! 꼬리가 없는 명령은 업그레이드 전에 등록한 훅이다. 호출자는 그 경우 예전 처리를 따른다.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -47,6 +48,17 @@ impl NoticeEvent {
     }
 }
 
+/// 턴 종료를 두 번 알리는 무장의 `--event` 값. 첫 완료 뒤 턴 종료 훅을 한 번 더 건다.
+const IDLE_TWICE: &str = "idle-twice";
+
+/// `--event` 값을 사건과 "턴 종료를 두 번 알림" 표시로 읽는다.
+fn parse_event(value: &str) -> Option<(NoticeEvent, bool)> {
+    if value == IDLE_TWICE {
+        return Some((NoticeEvent::Idle, true));
+    }
+    NoticeEvent::parse(value).map(|e| (e, false))
+}
+
 /// 이벤트별 호스트 훅 이름. 각 플러그인의 매니페스트에 선언한 이름이다.
 #[derive(Debug, Clone, Copy)]
 pub struct HookEvents {
@@ -71,18 +83,23 @@ pub struct Tail {
     pub event: NoticeEvent,
     /// 이 순번 이상의 활동 뒤에 온 턴 종료만 완료로 센다.
     pub done_from: u64,
-    /// 무장 id. 무장할 때마다 새로 받는다.
+    /// 무장 id. spawn·tell 이 무장할 때마다 새로 받는다.
     pub arm: u64,
+    /// 턴 종료 훅에만 쓴다. 완료를 알린 뒤 턴 종료 훅을 한 번 더 건다(`--event idle-twice`).
+    pub twice: bool,
 }
 
 impl Tail {
     /// 명령 뒤에 붙이는 꼬리(앞에 공백 포함).
     pub fn render(&self) -> String {
+        let event = if self.event == NoticeEvent::Idle && self.twice {
+            IDLE_TWICE
+        } else {
+            self.event.as_str()
+        };
         format!(
-            " --event {} --done-from {} --arm {}",
-            self.event.as_str(),
-            self.done_from,
-            self.arm
+            " --event {event} --done-from {} --arm {}",
+            self.done_from, self.arm
         )
     }
 
@@ -96,16 +113,18 @@ impl Tail {
         while let Some(flag) = words.next() {
             let value = words.next()?;
             match flag {
-                "--event" => event = NoticeEvent::parse(value),
+                "--event" => event = parse_event(value),
                 "--done-from" => done_from = value.parse().ok(),
                 "--arm" => arm = value.parse().ok(),
                 _ => return None,
             }
         }
+        let (event, twice) = event?;
         Some(Self {
-            event: event?,
+            event,
             done_from: done_from?,
             arm: arm?,
+            twice,
         })
     }
 
@@ -117,10 +136,12 @@ impl Tail {
                     .or_else(|| v.as_i64().and_then(|n| u64::try_from(n).ok()))
             })
         };
+        let (event, twice) = parse_event(params.get("event")?.as_str()?)?;
         Some(Self {
-            event: NoticeEvent::parse(params.get("event")?.as_str()?)?,
+            event,
             done_from: number("done_from")?,
             arm: number("arm")?,
+            twice,
         })
     }
 }
@@ -135,13 +156,54 @@ pub fn new_arm_id() -> u64 {
     ms * 1000 + NEXT.fetch_add(1, Ordering::Relaxed) % 1000
 }
 
-/// 입력을 보내기 전의 대상 상태와 활동 순번으로 정하는 문턱. 대상이 턴을 진행 중이고 끝난 턴의 보류도 없으면
-/// 메시지가 그 턴에 흡수될 수 있으므로 지금 턴의 끝도 완료로 센다. 그 밖에는 새 활동이 시작된 뒤의 끝만 센다.
-pub fn threshold(state: Option<&str>, seq: u64, held_stop: bool) -> u64 {
-    if state == Some("active") && !held_stop {
-        seq
-    } else {
-        seq + 1
+/// 무장의 문턱.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Threshold {
+    /// 이 순번 이상의 활동 뒤에 온 턴 종료만 완료로 센다.
+    pub done_from: u64,
+    /// 완료를 알린 뒤 턴 종료를 한 번 더 알린다. 메시지가 다음 턴으로 넘어가 처리되는 경우를 놓치지 않으려고
+    /// 진행 중이거나 입력을 기다리는 대상에 보낸 tell 에 둔다.
+    pub twice: bool,
+}
+
+/// 원격 tell 응답에 "턴 종료를 두 번 알림"을 싣는 키. 문턱 순번은 각 플러그인의 `done_from` 키에 싣는다.
+pub const DONE_TWICE_KEY: &str = "done_twice";
+
+impl Threshold {
+    /// 턴 종료를 한 번만 알리는 문턱.
+    pub fn once(done_from: u64) -> Self {
+        Self {
+            done_from,
+            twice: false,
+        }
+    }
+
+    /// 원격 응답에서 읽는다. 순번이 없으면 업그레이드 전 서버라 `None`, 두 번 표시가 없으면 한 번이다.
+    pub fn of_reply(reply: &Value, done_from_key: &str) -> Option<Self> {
+        Some(Self {
+            done_from: reply.get(done_from_key).and_then(Value::as_u64)?,
+            twice: reply
+                .get(DONE_TWICE_KEY)
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+    }
+}
+
+/// 입력을 보내기 전의 대상 상태와 활동 순번으로 정하는 문턱. 대상이 턴을 진행 중(끝난 턴의 보류 없음)이거나
+/// 입력을 기다리면 메시지가 그 턴을 이어 갈 수 있으므로 지금 턴의 끝도 완료로 세고, 다음 턴으로 넘어가는 경우를
+/// 위해 턴 종료를 한 번 더 알린다. 그 밖에는 새 활동이 시작된 뒤의 끝만 한 번 센다.
+pub fn threshold(state: Option<&str>, seq: u64, held_stop: bool) -> Threshold {
+    match state {
+        Some("active") if !held_stop => Threshold {
+            done_from: seq,
+            twice: true,
+        },
+        Some("needs_input") => Threshold {
+            done_from: seq,
+            twice: true,
+        },
+        _ => Threshold::once(seq + 1),
     }
 }
 
@@ -186,6 +248,22 @@ impl Group<'_> {
     fn command(&self, tail: Tail) -> String {
         format!("{}{}{}", self.prefix, self.kind, tail.render())
     }
+
+    /// 꼬리의 이벤트에 once 훅 하나를 건다. 실패는 로그만 남긴다.
+    fn set_hook<H: HostCall>(&self, host: &H, tail: Tail) {
+        let name = self.events.name(tail.event);
+        if let Err(e) = host.call(
+            "hook.set",
+            json!({
+                "surface_id": self.target,
+                "event": name,
+                "command": self.command(tail),
+                "once": true,
+            }),
+        ) {
+            tracing::warn!("{} notify hook.set '{name}' failed: {e}", self.agent);
+        }
+    }
 }
 
 /// 같은 접두어에서 무장 id 가 `arm` 인 훅의 id.
@@ -202,7 +280,7 @@ pub fn arm_members(hooks: &[Value], group_prefix: &str, arm: u64) -> Vec<u64> {
         .collect()
 }
 
-/// 같은 접두어에 다른 무장(옛 형식 포함)의 훅이 있는가. 있으면 새 tell 이나 다른 처리가 이미 다시 무장했다.
+/// 같은 접두어에 다른 무장(옛 형식 포함)의 훅이 있는가. 있으면 새 spawn·tell 이 이미 다시 무장했다.
 pub fn other_arm_present(hooks: &[Value], group_prefix: &str, arm: u64) -> bool {
     hooks.iter().any(|h| {
         h.get("command")
@@ -212,19 +290,19 @@ pub fn other_arm_present(hooks: &[Value], group_prefix: &str, arm: u64) -> bool 
     })
 }
 
-/// 같은 무장에 턴 종료 훅이 남아 있는가.
-fn idle_in_arm(hooks: &[Value], group_prefix: &str, arm: u64) -> bool {
+/// 같은 무장에 이 이벤트의 훅이 남아 있는가.
+fn event_in_arm(hooks: &[Value], group_prefix: &str, arm: u64, event: NoticeEvent) -> bool {
     hooks.iter().any(|h| {
         h.get("command")
             .and_then(Value::as_str)
             .and_then(|c| Tail::parse(c, group_prefix))
-            .is_some_and(|t| t.arm == arm && t.event == NoticeEvent::Idle)
+            .is_some_and(|t| t.arm == arm && t.event == event)
     })
 }
 
 /// 같은 부모·대상의 그룹을 지우고 새 무장으로 이벤트별 once 훅을 건다. `with_idle` 이 거짓이면 턴 종료 훅은
-/// 걸지 않는다(이 무장에서 완료를 이미 알렸다). 등록 실패는 로그만 남긴다. 새 무장 id 를 돌려준다.
-pub fn arm<H: HostCall>(host: &H, group: &Group<'_>, done_from: u64, with_idle: bool) -> u64 {
+/// 걸지 않는다(옛 훅 처리에서 그 턴 종료를 이미 알렸다). 등록 실패는 로그만 남긴다. 새 무장 id 를 돌려준다.
+pub fn arm<H: HostCall>(host: &H, group: &Group<'_>, threshold: Threshold, with_idle: bool) -> u64 {
     let arm = new_arm_id();
     match host.call("hook.list", json!({ "surface_id": group.target })) {
         Ok(resp) => {
@@ -249,23 +327,15 @@ pub fn arm<H: HostCall>(host: &H, group: &Group<'_>, done_from: u64, with_idle: 
         .into_iter()
         .filter(|e| with_idle || *e != NoticeEvent::Idle)
     {
-        let name = group.events.name(event);
-        let command = group.command(Tail {
-            event,
-            done_from,
-            arm,
-        });
-        if let Err(e) = host.call(
-            "hook.set",
-            json!({
-                "surface_id": group.target,
-                "event": name,
-                "command": command,
-                "once": true,
-            }),
-        ) {
-            tracing::warn!("{} notify hook.set '{name}' failed: {e}", group.agent);
-        }
+        group.set_hook(
+            host,
+            Tail {
+                event,
+                done_from: threshold.done_from,
+                arm,
+                twice: event == NoticeEvent::Idle && threshold.twice,
+            },
+        );
     }
     arm
 }
@@ -283,68 +353,53 @@ pub enum Decision {
     Skip,
 }
 
-/// 다시 무장할 내용.
+/// 처리한 뒤 자기 이벤트의 훅을 어떻게 할지.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Rearm {
-    pub done_from: u64,
-    /// 턴 종료 훅도 거는가.
-    pub with_idle: bool,
+pub enum Next {
+    /// 이 꼬리로 자기 이벤트의 훅을 다시 건다(무장 id 는 같다). 대상이 조회될 때만 건다.
+    Keep(Tail),
+    /// 다시 걸지 않는다. 같은 무장의 다른 훅은 남는다.
+    Stop,
+    /// 새 spawn·tell 이 다시 무장했다. 자기 무장의 남은 훅을 지운다.
+    Retire,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Verdict {
     pub decision: Decision,
-    /// `None` 이면 다시 무장하지 않는다.
-    pub rearm: Option<Rearm>,
+    pub next: Next,
 }
 
-/// 판정. `idle_armed` 는 이 무장에 턴 종료 훅이 있었는가, `superseded` 는 그룹에 다른 무장이 있는가다.
-/// 턴 종료를 알린 뒤에는 턴 종료 훅을 다시 걸지 않는다. 다음 spawn·tell 이 다시 건다.
-pub fn decide(
-    tail: Tail,
-    idle_armed: bool,
-    state: Option<&str>,
-    seq: u64,
-    superseded: bool,
-) -> Verdict {
+/// 판정. `superseded` 는 그룹에 다른 무장이 있는가다. 같은 무장의 다른 이벤트 처리는 서로를 바꾸지 않는다.
+/// 턴 종료를 알린 뒤에는 턴 종료 훅을 다시 걸지 않는다. 두 번 알리는 무장은 그때의 순번 다음 활동부터 세는 턴
+/// 종료 훅을 한 번 더 건다. 다음 spawn·tell 이 다시 건다.
+pub fn decide(tail: Tail, state: Option<&str>, seq: u64, superseded: bool) -> Verdict {
     if superseded {
         return Verdict {
             decision: Decision::Skip,
-            rearm: None,
+            next: Next::Retire,
         };
     }
-    let same = Rearm {
-        done_from: tail.done_from,
-        with_idle: idle_armed,
+    let (decision, next) = match tail.event {
+        NoticeEvent::Idle if state == Some("idle") && seq >= tail.done_from => {
+            let next = if tail.twice {
+                Next::Keep(Tail {
+                    done_from: seq + 1,
+                    twice: false,
+                    ..tail
+                })
+            } else {
+                Next::Stop
+            };
+            (Decision::Done, next)
+        }
+        NoticeEvent::Input if state == Some("needs_input") => {
+            (Decision::NeedsInput, Next::Keep(tail))
+        }
+        NoticeEvent::Exit => (Decision::Exited, Next::Keep(tail)),
+        NoticeEvent::Idle | NoticeEvent::Input => (Decision::Skip, Next::Keep(tail)),
     };
-    match tail.event {
-        NoticeEvent::Idle if state == Some("idle") && seq >= tail.done_from => Verdict {
-            decision: Decision::Done,
-            rearm: Some(Rearm {
-                done_from: tail.done_from,
-                with_idle: false,
-            }),
-        },
-        NoticeEvent::Idle => Verdict {
-            decision: Decision::Skip,
-            rearm: Some(Rearm {
-                with_idle: true,
-                ..same
-            }),
-        },
-        NoticeEvent::Input if state == Some("needs_input") => Verdict {
-            decision: Decision::NeedsInput,
-            rearm: Some(same),
-        },
-        NoticeEvent::Input => Verdict {
-            decision: Decision::Skip,
-            rearm: Some(same),
-        },
-        NoticeEvent::Exit => Verdict {
-            decision: Decision::Exited,
-            rearm: Some(same),
-        },
-    }
+    Verdict { decision, next }
 }
 
 /// 훅 명령 처리를 한 번에 하나씩 하게 한다. 같은 부모·대상의 늦은 처리가 새 무장을 덮거나 같은 무장의 두
@@ -353,6 +408,28 @@ pub fn serialize() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// 완료를 알린 턴 종료 명령(접두어·무장·문턱)의 최근 기록 수.
+const DONE_MEMORY: usize = 64;
+
+/// 이 턴 종료 명령으로 완료를 처음 알리면 기록하고 참이다. 같은 명령이 두 번 실행되면 두 번째는 거짓이다.
+/// 프로세스 안에서만 기억한다.
+fn first_done(prefix: &str, tail: Tail) -> bool {
+    static DONE: std::sync::Mutex<VecDeque<(String, u64, u64)>> =
+        std::sync::Mutex::new(VecDeque::new());
+    let mut done = DONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (prefix.to_string(), tail.arm, tail.done_from);
+    if done.contains(&key) {
+        return false;
+    }
+    if done.len() == DONE_MEMORY {
+        done.pop_front();
+    }
+    done.push_back(key);
+    true
 }
 
 /// relay 가 늦을 수 있는 원격 대상에서 활동 순번을 다시 읽는 횟수와 간격.
@@ -384,13 +461,14 @@ pub struct Evaluation {
     pub state: Option<String>,
 }
 
-/// 그룹을 조회하고 대상 상태와 활동 순번을 읽어 판정한다. 원격 대상이면 relay 가 늦은 순번을 잠깐 다시 읽는다.
+/// 그룹을 조회하고 대상 상태와 활동 순번을 읽어 판정한다. 원격 대상이면 relay 가 늦은 순번을 잠깐 다시 읽고,
+/// 다시 읽은 순번은 그때의 상태와 함께 판정한다.
 pub fn evaluate<H: HostCall>(
     host: &H,
     group: &Group<'_>,
     tail: Tail,
     remote: bool,
-    pause: impl FnMut(),
+    mut pause: impl FnMut(),
 ) -> Evaluation {
     let hooks = host
         .call("hook.list", json!({ "surface_id": group.target }))
@@ -398,11 +476,18 @@ pub fn evaluate<H: HostCall>(
         .and_then(|r| r.as_array().cloned())
         .unwrap_or_default();
     let superseded = other_arm_present(&hooks, group.prefix, tail.arm);
-    let idle_armed = tail.event == NoticeEvent::Idle || idle_in_arm(&hooks, group.prefix, tail.arm);
-    let state = target_state(host, group.target);
+    let mut state = target_state(host, group.target);
     let read = || activity_seq(host, group.target, group.seq_key);
     let seq = if tail.event == NoticeEvent::Idle && state.as_deref() == Some("idle") && remote {
-        let seq = settle_seq(read, tail.done_from, REMOTE_SEQ_RETRIES, pause);
+        let mut paused = false;
+        let seq = settle_seq(read, tail.done_from, REMOTE_SEQ_RETRIES, || {
+            paused = true;
+            pause()
+        });
+        // 기다리는 동안 새 턴이 시작됐을 수 있다. 순번과 같은 시점의 상태로 판정한다.
+        if paused {
+            state = target_state(host, group.target);
+        }
         if seq < tail.done_from {
             tracing::warn!(
                 "{} s{}: idle without new activity (seq {seq} < {}); the relay may be late",
@@ -415,18 +500,27 @@ pub fn evaluate<H: HostCall>(
     } else {
         read()
     };
-    Evaluation {
-        verdict: decide(tail, idle_armed, state.as_deref(), seq, superseded),
-        state,
+    let mut verdict = decide(tail, state.as_deref(), seq, superseded);
+    if verdict.decision == Decision::Done && !first_done(group.prefix, tail) {
+        verdict = Verdict {
+            decision: Decision::Skip,
+            next: Next::Stop,
+        };
     }
+    Evaluation { verdict, state }
 }
 
-/// 자기 무장의 남은 훅을 지우고, 판정이 정하면 대상이 조회될 때 다시 무장한다.
+/// 판정대로 자기 이벤트의 훅을 같은 무장 id 로 다시 걸거나, 덮인 무장의 남은 훅을 지운다. 같은 무장의 다른
+/// 이벤트 훅은 건드리지 않는다. 대상이 조회되지 않으면 다시 걸지 않고 자기 무장의 남은 훅을 지운다.
 pub fn finish<H: HostCall>(host: &H, group: &Group<'_>, tail: Tail, verdict: Verdict) {
-    if let Ok(resp) = host.call("hook.list", json!({ "surface_id": group.target }))
-        && let Some(hooks) = resp.as_array()
-    {
-        for hook_id in arm_members(hooks, group.prefix, tail.arm) {
+    let hooks = || {
+        host.call("hook.list", json!({ "surface_id": group.target }))
+            .ok()
+            .and_then(|r| r.as_array().cloned())
+    };
+    let retire = || {
+        let Some(hooks) = hooks() else { return };
+        for hook_id in arm_members(&hooks, group.prefix, tail.arm) {
             if let Err(e) = host.call("hook.unset", json!({ "hook_id": hook_id })) {
                 tracing::warn!(
                     "{} hook.unset {hook_id} failed during arm cleanup: {e}",
@@ -434,11 +528,22 @@ pub fn finish<H: HostCall>(host: &H, group: &Group<'_>, tail: Tail, verdict: Ver
                 );
             }
         }
-    }
-    if let Some(rearm) = verdict.rearm
-        && surface_is_alive(host, group.target)
-    {
-        arm(host, group, rearm.done_from, rearm.with_idle);
+    };
+    match verdict.next {
+        Next::Stop => {}
+        Next::Retire => retire(),
+        Next::Keep(next) => {
+            // 대상이 사라졌으면 남은 훅도 쓸모가 없다.
+            if !surface_is_alive(host, group.target) {
+                retire();
+                return;
+            }
+            let present =
+                hooks().is_some_and(|h| event_in_arm(&h, group.prefix, next.arm, next.event));
+            if !present {
+                group.set_hook(host, next);
+            }
+        }
     }
 }
 
@@ -452,95 +557,110 @@ mod tests {
             event,
             done_from,
             arm: 1,
+            twice: false,
         }
     }
 
-    fn skip_rearm(done_from: u64, with_idle: bool) -> Verdict {
+    fn keep(t: Tail) -> Verdict {
         Verdict {
             decision: Decision::Skip,
-            rearm: Some(Rearm {
-                done_from,
-                with_idle,
-            }),
+            next: Next::Keep(t),
         }
     }
 
-    /// A1: 새 활동 없이 온 턴 종료는 줄을 쓰지 않고 같은 문턱으로 다시 건다.
+    /// A1: 새 활동 없이 온 턴 종료는 줄을 쓰지 않고 자기 훅을 같은 무장·문턱으로 다시 건다.
     #[test]
     fn an_idle_without_new_activity_is_skipped() {
-        let v = decide(tail(NoticeEvent::Idle, 5), true, Some("idle"), 4, false);
-        assert_eq!(v, skip_rearm(5, true));
+        let t = tail(NoticeEvent::Idle, 5);
+        assert_eq!(decide(t, Some("idle"), 4, false), keep(t));
     }
 
     /// A2: 문턱에 닿은 턴 종료는 완료다. 그 뒤에는 턴 종료 훅을 다시 걸지 않는다.
     #[test]
     fn an_idle_after_new_activity_is_done_once() {
-        let v = decide(tail(NoticeEvent::Idle, 5), true, Some("idle"), 5, false);
-        assert_eq!(v.decision, Decision::Done);
+        let v = decide(tail(NoticeEvent::Idle, 5), Some("idle"), 5, false);
         assert_eq!(
-            v.rearm,
-            Some(Rearm {
-                done_from: 5,
-                with_idle: false
-            })
+            v,
+            Verdict {
+                decision: Decision::Done,
+                next: Next::Stop
+            }
         );
+    }
+
+    /// 두 번 알리는 무장은 완료 뒤 그때의 다음 순번부터 세는 턴 종료 훅을 한 번만 더 건다.
+    #[test]
+    fn a_twice_arm_keeps_one_more_turn_end_after_done() {
+        let t = Tail {
+            twice: true,
+            ..tail(NoticeEvent::Idle, 5)
+        };
+        let v = decide(t, Some("idle"), 7, false);
+        assert_eq!(v.decision, Decision::Done);
+        let Next::Keep(again) = v.next else {
+            panic!("{v:?}")
+        };
+        assert_eq!(
+            again,
+            Tail {
+                done_from: 8,
+                twice: false,
+                ..t
+            }
+        );
+        // 두 번째 완료 뒤에는 다시 걸지 않는다.
+        assert_eq!(decide(again, Some("idle"), 8, false).next, Next::Stop);
+        // 완료가 아니면 두 번 표시를 그대로 둔 채 다시 건다.
+        assert_eq!(decide(t, Some("active"), 7, false), keep(t));
     }
 
     /// A3: 처리할 때 이미 새 턴이 시작됐으면 줄 없이 다음 턴 끝을 기다린다.
     #[test]
     fn an_idle_seen_after_the_next_turn_started_is_skipped() {
-        let v = decide(tail(NoticeEvent::Idle, 5), true, Some("active"), 5, false);
-        assert_eq!(v, skip_rearm(5, true));
+        let t = tail(NoticeEvent::Idle, 5);
+        assert_eq!(decide(t, Some("active"), 5, false), keep(t));
     }
 
-    /// A4: 입력 대기는 문턱과 관계없이 알리고 같은 문턱으로 다시 건다.
+    /// A4: 입력 대기는 문턱과 관계없이 알리고 같은 문턱으로 자기 훅을 다시 건다.
     #[test]
     fn an_input_wait_is_noticed_and_keeps_the_threshold() {
-        for idle_armed in [true, false] {
-            let v = decide(
-                tail(NoticeEvent::Input, 5),
-                idle_armed,
-                Some("needs_input"),
-                0,
-                false,
-            );
-            assert_eq!(v.decision, Decision::NeedsInput);
-            assert_eq!(
-                v.rearm,
-                Some(Rearm {
-                    done_from: 5,
-                    with_idle: idle_armed
-                })
-            );
-        }
+        let t = tail(NoticeEvent::Input, 5);
+        let v = decide(t, Some("needs_input"), 0, false);
+        assert_eq!(
+            v,
+            Verdict {
+                decision: Decision::NeedsInput,
+                next: Next::Keep(t)
+            }
+        );
     }
 
     /// A5: 처리할 때 대기가 이미 끝났으면 줄을 쓰지 않는다.
     #[test]
     fn an_input_wait_that_already_ended_is_skipped() {
-        let v = decide(tail(NoticeEvent::Input, 5), true, Some("idle"), 9, false);
-        assert_eq!(v, skip_rearm(5, true));
+        let t = tail(NoticeEvent::Input, 5);
+        assert_eq!(decide(t, Some("idle"), 9, false), keep(t));
     }
 
     /// A6: 종료는 활동과 문턱에 관계없이 알린다.
     #[test]
     fn an_exit_is_always_noticed() {
         for (state, seq) in [(Some("exited"), 0), (None, 0), (Some("idle"), 99)] {
-            let v = decide(tail(NoticeEvent::Exit, 5), false, state, seq, false);
+            let v = decide(tail(NoticeEvent::Exit, 5), state, seq, false);
             assert_eq!(v.decision, Decision::Exited);
         }
     }
 
-    /// A7: 그룹에 다른 무장이 있으면 어떤 사건이든 줄을 쓰지 않고 다시 걸지 않는다.
+    /// A7: 그룹에 다른 무장이 있으면 어떤 사건이든 줄을 쓰지 않고 자기 무장을 거둔다.
     #[test]
     fn a_superseded_arm_writes_nothing() {
         for event in [NoticeEvent::Idle, NoticeEvent::Input, NoticeEvent::Exit] {
-            let v = decide(tail(event, 5), true, Some("idle"), 9, true);
+            let v = decide(tail(event, 5), Some("idle"), 9, true);
             assert_eq!(
                 v,
                 Verdict {
                     decision: Decision::Skip,
-                    rearm: None
+                    next: Next::Retire
                 }
             );
         }
@@ -555,6 +675,7 @@ mod tests {
             event: NoticeEvent::Idle,
             done_from: 7,
             arm: 1_700_000_000_000_001,
+            twice: false,
         };
         let command = format!("{PREFIX}tell{}", t.render());
         assert!(command.ends_with("tell --event idle --done-from 7 --arm 1700000000000001"));
@@ -564,6 +685,14 @@ mod tests {
         let params = json!({ "event": "idle", "done_from": 7, "arm": 1_700_000_000_000_001_i64 });
         assert_eq!(Tail::of_params(&params), Some(t));
         assert_eq!(Tail::of_params(&json!({ "command": "tell" })), None);
+
+        let twice = Tail { twice: true, ..t };
+        let command = format!("{PREFIX}tell{}", twice.render());
+        assert!(command.contains("--event idle-twice "), "{command}");
+        assert_eq!(Tail::parse(&command, PREFIX), Some(twice));
+        let params =
+            json!({ "event": "idle-twice", "done_from": 7, "arm": 1_700_000_000_000_001_i64 });
+        assert_eq!(Tail::of_params(&params), Some(twice));
     }
 
     /// A9: 무장 단위 고르기는 다른 무장과 다른 부모의 훅을 고르지 않는다.
@@ -575,7 +704,8 @@ mod tests {
                 Tail {
                     event: NoticeEvent::Idle,
                     done_from: 1,
-                    arm
+                    arm,
+                    twice: false,
                 }
                 .render()
             )
@@ -596,38 +726,79 @@ mod tests {
         assert!(other_arm_present(&hooks[3..], PREFIX, 10));
     }
 
-    /// 문턱: 진행 중인 턴(보류 없음)은 지금 순번, 나머지는 다음 순번.
+    /// 문턱: 진행 중인 턴(보류 없음)과 입력 대기는 지금 순번에 두 번 알림, 나머지는 다음 순번에 한 번.
     #[test]
     fn the_threshold_counts_the_running_turn_only() {
-        assert_eq!(threshold(Some("active"), 4, false), 4);
-        assert_eq!(threshold(Some("active"), 4, true), 5);
-        for state in [Some("idle"), Some("needs_input"), Some("stale"), None] {
-            assert_eq!(threshold(state, 4, false), 5);
+        let running = Threshold {
+            done_from: 4,
+            twice: true,
+        };
+        assert_eq!(threshold(Some("active"), 4, false), running);
+        assert_eq!(threshold(Some("needs_input"), 4, false), running);
+        assert_eq!(threshold(Some("active"), 4, true), Threshold::once(5));
+        for state in [Some("idle"), Some("stale"), None] {
+            assert_eq!(threshold(state, 4, false), Threshold::once(5));
         }
     }
 
-    /// 순번을 n 번째 조회부터 올리는 mock 호스트.
+    /// 상태·순번·훅을 기억하는 mock 호스트. 순번은 `rises_at` 번째 조회부터 5, 그 전에는 4 다.
     struct SeqHost {
         reads: Cell<u32>,
         rises_at: u32,
+        state: RefCell<&'static str>,
         hooks: RefCell<Vec<Value>>,
+        next_id: Cell<u64>,
+    }
+
+    impl SeqHost {
+        fn new(rises_at: u32) -> Self {
+            Self {
+                reads: Cell::new(0),
+                rises_at,
+                state: RefCell::new("idle"),
+                hooks: RefCell::new(Vec::new()),
+                next_id: Cell::new(100),
+            }
+        }
+
+        fn tails(&self) -> Vec<Tail> {
+            self.hooks
+                .borrow()
+                .iter()
+                .filter_map(|h| Tail::parse(h["command"].as_str()?, PREFIX))
+                .collect()
+        }
     }
 
     impl HostCall for SeqHost {
         fn call(
             &self,
             method: &str,
-            _params: Value,
+            params: Value,
         ) -> Result<Value, tasty_plugin_sdk::PluginError> {
             Ok(match method {
-                "terminal.state" => json!({ "state": "idle" }),
+                "terminal.state" => json!({ "state": *self.state.borrow() }),
                 "surface.meta.get" => {
                     let n = self.reads.get() + 1;
                     self.reads.set(n);
                     let seq = if n >= self.rises_at { 5 } else { 4 };
                     json!({ "value": seq.to_string() })
                 }
+                "surface.locate" => json!({ "exists": true }),
                 "hook.list" => Value::Array(self.hooks.borrow().clone()),
+                "hook.set" => {
+                    let id = self.next_id.get() + 1;
+                    self.next_id.set(id);
+                    self.hooks
+                        .borrow_mut()
+                        .push(json!({ "id": id, "command": params["command"] }));
+                    json!({ "hook_id": id })
+                }
+                "hook.unset" => {
+                    let id = params["hook_id"].as_u64();
+                    self.hooks.borrow_mut().retain(|h| h["id"].as_u64() != id);
+                    json!({})
+                }
                 _ => json!({}),
             })
         }
@@ -648,63 +819,104 @@ mod tests {
         }
     }
 
+    fn fresh(event: NoticeEvent, done_from: u64) -> Tail {
+        Tail {
+            arm: new_arm_id(),
+            ..tail(event, done_from)
+        }
+    }
+
     /// A10: 원격 대상에서 순번이 모자라면 정해진 횟수만큼 다시 읽는다. 끝까지 모자라면 Skip, 닿으면 Done.
     #[test]
     fn a_remote_idle_rereads_a_late_sequence() {
-        let host = |rises_at| SeqHost {
-            reads: Cell::new(0),
-            rises_at,
-            hooks: RefCell::new(Vec::new()),
-        };
-        let never = host(u32::MAX);
+        let never = SeqHost::new(u32::MAX);
         let pauses = Cell::new(0);
-        let e = evaluate(&never, &group(), tail(NoticeEvent::Idle, 5), true, || {
-            pauses.set(pauses.get() + 1)
-        });
-        assert_eq!(e.verdict, skip_rearm(5, true));
+        let t = fresh(NoticeEvent::Idle, 5);
+        let e = evaluate(&never, &group(), t, true, || pauses.set(pauses.get() + 1));
+        assert_eq!(e.verdict, keep(t));
         assert_eq!(never.reads.get(), REMOTE_SEQ_RETRIES + 1);
         assert_eq!(pauses.get(), REMOTE_SEQ_RETRIES);
 
-        let late = host(3);
-        let e = evaluate(&late, &group(), tail(NoticeEvent::Idle, 5), true, || {});
+        let late = SeqHost::new(3);
+        let e = evaluate(&late, &group(), fresh(NoticeEvent::Idle, 5), true, || {});
         assert_eq!(e.verdict.decision, Decision::Done);
         assert_eq!(late.reads.get(), 3);
 
         // 로컬 대상은 다시 읽지 않는다.
-        let local = host(3);
-        let e = evaluate(&local, &group(), tail(NoticeEvent::Idle, 5), false, || {});
+        let local = SeqHost::new(3);
+        let e = evaluate(&local, &group(), fresh(NoticeEvent::Idle, 5), false, || {});
         assert_eq!(e.verdict.decision, Decision::Skip);
         assert_eq!(local.reads.get(), 1);
     }
 
-    /// 판정은 그룹의 무장을 보고 덮인 무장과 턴 종료 훅 유무를 정한다.
+    /// 원격 순번을 기다리는 동안 새 턴이 시작되면(상태 active, 순번 5) 그 시점 상태로 판정해 완료를 쓰지 않고
+    /// 턴 종료 훅을 남긴다.
     #[test]
-    fn evaluation_reads_the_arm_from_the_hook_list() {
+    fn a_remote_state_that_changes_while_waiting_for_the_sequence_is_judged_again() {
+        let host = SeqHost::new(2);
         let g = group();
-        let cmd = |event, arm| {
-            g.command(Tail {
-                event,
-                done_from: 5,
-                arm,
-            })
+        let t = fresh(NoticeEvent::Idle, 5);
+        let e = evaluate(&host, &g, t, true, || *host.state.borrow_mut() = "active");
+        assert_eq!(e.verdict, keep(t));
+        assert_eq!(e.state.as_deref(), Some("active"));
+        finish(&host, &g, t, e.verdict);
+        assert_eq!(host.tails(), vec![t]);
+    }
+
+    /// 처리는 자기 이벤트의 훅만 같은 무장으로 다시 건다. 같은 무장의 다른 훅은 그대로고, 이미 있으면 겹쳐 걸지
+    /// 않는다.
+    #[test]
+    fn finishing_keeps_the_arm_and_touches_only_its_own_event() {
+        let host = SeqHost::new(1);
+        let g = group();
+        let first = arm(&host, &g, Threshold::once(5), true);
+        let armed = host.hooks.borrow().clone();
+        let input = Tail {
+            event: NoticeEvent::Input,
+            done_from: 5,
+            arm: first,
+            twice: false,
         };
-        let host = SeqHost {
-            reads: Cell::new(0),
-            rises_at: 1,
-            hooks: RefCell::new(vec![
-                json!({ "id": 1, "command": cmd(NoticeEvent::Input, 1) }),
-                json!({ "id": 2, "command": cmd(NoticeEvent::Idle, 1) }),
-            ]),
-        };
-        let e = evaluate(&host, &g, tail(NoticeEvent::Exit, 5), false, || {});
-        assert_eq!(e.verdict.rearm.map(|r| r.with_idle), Some(true));
-        host.hooks.borrow_mut().pop();
-        let e = evaluate(&host, &g, tail(NoticeEvent::Exit, 5), false, || {});
-        assert_eq!(e.verdict.rearm.map(|r| r.with_idle), Some(false));
+        // 입력 대기 훅이 발화해 목록에서 빠졌다.
         host.hooks
             .borrow_mut()
-            .push(json!({ "id": 3, "command": cmd(NoticeEvent::Idle, 2) }));
-        let e = evaluate(&host, &g, tail(NoticeEvent::Exit, 5), false, || {});
-        assert_eq!(e.verdict.rearm, None);
+            .retain(|h| Tail::parse(h["command"].as_str().unwrap(), PREFIX).unwrap() != input);
+        let e = evaluate(&host, &g, input, false, || {});
+        assert_eq!(e.verdict, keep(input));
+        finish(&host, &g, input, e.verdict);
+        let mut tails = host.tails();
+        tails.sort_by_key(|t| t.event.as_str());
+        assert!(tails.iter().all(|t| t.arm == first), "{tails:?}");
+        assert_eq!(tails.len(), 3, "{tails:?}");
+        // 이미 걸려 있으면 다시 걸지 않는다.
+        finish(&host, &g, input, e.verdict);
+        assert_eq!(host.hooks.borrow().len(), armed.len());
+
+        // 새 무장이 생기면 옛 무장의 처리는 남은 옛 훅을 거둔다.
+        host.hooks.borrow_mut().push(json!({
+            "id": 1,
+            "command": g.command(Tail { arm: first + 1, ..input }),
+        }));
+        let e = evaluate(&host, &g, input, false, || {});
+        assert_eq!(e.verdict.next, Next::Retire);
+        finish(&host, &g, input, e.verdict);
+        assert!(host.tails().iter().all(|t| t.arm == first + 1));
+    }
+
+    /// 같은 턴 종료 명령이 두 번 실행돼도 완료는 한 번이다.
+    #[test]
+    fn the_same_turn_end_command_is_done_once() {
+        let host = SeqHost::new(1);
+        let t = fresh(NoticeEvent::Idle, 5);
+        let first = evaluate(&host, &group(), t, false, || {});
+        assert_eq!(first.verdict.decision, Decision::Done);
+        let second = evaluate(&host, &group(), t, false, || {});
+        assert_eq!(
+            second.verdict,
+            Verdict {
+                decision: Decision::Skip,
+                next: Next::Stop
+            }
+        );
     }
 }

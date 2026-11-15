@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use tasty_plugin_agent_common::children::{join_indices, spawn_census};
+use tasty_plugin_agent_common::completion_gate::Threshold;
 use tasty_plugin_agent_common::host_call::HostCall;
 #[cfg(test)]
 use tasty_plugin_agent_common::host_call::cleanup_sibling_hooks;
@@ -446,7 +447,7 @@ pub(crate) fn handle_tell<H: HostCall>(
         Some(anchor) => match crate::remote::tell(host, anchor, surface_id, message, route, tr) {
             // 원격 자식의 문턱은 서버가 보내기 전에 정해 응답에 싣는다. 없으면 업그레이드 전 서버다.
             Ok(resp) => {
-                let done_from = resp.get(DONE_FROM_KEY).and_then(Value::as_u64);
+                let done_from = Threshold::of_reply(&resp, DONE_FROM_KEY);
                 (resp, done_from)
             }
             Err(e) if e.unknown => return Err(e.error),
@@ -476,13 +477,13 @@ pub(crate) fn handle_tell<H: HostCall>(
 /// 원격 tell·spawn 응답에서 서버가 정한 완료 문턱을 싣는 키.
 pub(crate) const DONE_FROM_KEY: &str = "done_from";
 
-/// tell 의 완료 문턱. 입력을 보내기 전의 상태·활동 순번·보류 Stop 으로 정한다. 진행 중인 턴에 흡수될 수 있으면
-/// 그 턴의 끝도 완료로 센다.
+/// tell 의 완료 문턱. 입력을 보내기 전의 상태·활동 순번·보류 Stop 으로 정한다. 진행 중인 턴에 흡수되거나 입력
+/// 대기를 이어 갈 수 있으면 그 턴의 끝도 완료로 세고, 다음 턴으로 넘어가는 경우를 위해 턴 종료를 두 번 알린다.
 pub(crate) fn tell_threshold<H: HostCall>(
     pairing: &Mutex<StopPairing>,
     host: &H,
     surface_id: u32,
-) -> u64 {
+) -> Threshold {
     let state = tasty_plugin_agent_common::completion_gate::target_state(host, surface_id);
     let seq = crate::notifications::activity_seq(host, surface_id);
     let held = crate::stop_pairing::lock_pairing(pairing).holds_turn_end(surface_id);
@@ -850,7 +851,7 @@ pub(crate) fn handle_child_profile(
         parent_surface_id,
         child_surface_id,
         "child-profile",
-        Some(done_from),
+        Some(Threshold::once(done_from)),
     );
 
     Ok(json!({
@@ -1096,7 +1097,7 @@ pub(crate) fn handle_spawn<H: HostCall>(
             parent_surface_id,
             child_surface_id,
             "spawn",
-            Some(done_from),
+            Some(Threshold::once(done_from)),
         );
     }
 

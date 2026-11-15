@@ -186,7 +186,13 @@ fn bind<H: HostCall>(
         None => {
             ownership::invalidate_route(delivery, child)?;
             if let Some(parent) = parent_surface {
-                register_notify_hooks(host, parent, child, "spawn", done_from);
+                register_notify_hooks(
+                    host,
+                    parent,
+                    child,
+                    "spawn",
+                    done_from.map(completion_gate::Threshold::once),
+                );
             }
             Ok(())
         }
@@ -794,7 +800,11 @@ pub(crate) fn serve_tell<H: HostCall>(
     ) {
         Ok(mut resp) => {
             if let Some(obj) = resp.as_object_mut() {
-                obj.insert(DONE_FROM_KEY.into(), json!(done_from));
+                obj.insert(DONE_FROM_KEY.into(), json!(done_from.done_from));
+                obj.insert(
+                    completion_gate::DONE_TWICE_KEY.into(),
+                    json!(done_from.twice),
+                );
             }
             Ok(resp)
         }

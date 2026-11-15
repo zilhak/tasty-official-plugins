@@ -17,6 +17,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
+use tasty_plugin_agent_common::completion_gate::{DONE_TWICE_KEY, Threshold};
 use tasty_plugin_agent_common::host_call::HostCall;
 use tasty_plugin_agent_common::params::forward;
 use tasty_plugin_agent_common::remote_attach::{
@@ -309,7 +310,13 @@ fn bind<H: HostCall>(
                 ))
             }),
         ParentTarget::Legacy(Some(parent)) => {
-            crate::notifications::register_notify_hooks(host, *parent, child, "spawn", done_from);
+            crate::notifications::register_notify_hooks(
+                host,
+                *parent,
+                child,
+                "spawn",
+                done_from.map(Threshold::once),
+            );
             Ok(())
         }
         ParentTarget::Legacy(None) => Ok(()),
@@ -669,7 +676,11 @@ pub(crate) fn serve_tell<H: HostCall>(
         )
         .map_err(IpcMethodError::from)?;
     if let Some(obj) = resp.as_object_mut() {
-        obj.insert(crate::handlers::DONE_FROM_KEY.into(), json!(done_from));
+        obj.insert(
+            crate::handlers::DONE_FROM_KEY.into(),
+            json!(done_from.done_from),
+        );
+        obj.insert(DONE_TWICE_KEY.into(), json!(done_from.twice));
     }
     Ok(resp)
 }

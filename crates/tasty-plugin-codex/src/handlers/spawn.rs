@@ -72,7 +72,13 @@ pub(crate) fn handle_spawn<H: HostCall>(
         && let Some(parent) = parent.get("surface").and_then(Value::as_u64)
     {
         let done_from = next_activity_threshold(host, child_sid);
-        register_notify_hooks(host, parent as u32, child_sid, "spawn", Some(done_from));
+        register_notify_hooks(
+            host,
+            parent as u32,
+            child_sid,
+            "spawn",
+            Some(completion_gate::Threshold::once(done_from)),
+        );
     }
 
     // 경고 기준을 넘어도 spawn은 성공으로 반환한다. 외부 부모의 자식 목록은 창을 고르도록

@@ -9,6 +9,8 @@ use serde_json::{Value, json};
 use tasty_plugin_agent_common::host_call::HostCall;
 use tasty_plugin_sdk::i18n::Translator;
 
+use tasty_plugin_agent_common::completion_gate;
+
 use crate::error_scan::ErrorScanner;
 use crate::state::ClaudeState;
 use crate::stop_pairing::{HeldStop, StopKind, StopPairing, lock_pairing};
@@ -239,7 +241,13 @@ impl Rig {
 
     fn spawn_hooks(&self) {
         let done_from = super::next_activity_threshold(&self.host, CHILD);
-        super::register_notify_hooks(&self.host, PARENT, CHILD, "spawn", Some(done_from));
+        super::register_notify_hooks(
+            &self.host,
+            PARENT,
+            CHILD,
+            "spawn",
+            Some(completion_gate::Threshold::once(done_from)),
+        );
     }
 
     /// 발화한 훅을 실행하고 이번에 쓴 줄을 돌려준다.
@@ -321,7 +329,7 @@ fn the_tell_threshold_follows_the_state_before_sending() {
     assert_eq!(rig.done_from_of("claude-idle"), 2);
 }
 
-/// B3: tell 뒤 새 활동 없이 온 턴 종료는 줄을 쓰지 않고 새 무장으로 다시 건다.
+/// B3: tell 뒤 새 활동 없이 온 턴 종료는 줄을 쓰지 않고 같은 무장으로 자기 훅만 다시 건다.
 #[test]
 fn an_idle_without_new_activity_writes_nothing_and_rearms() {
     let rig = Rig::new();
@@ -338,7 +346,9 @@ fn an_idle_without_new_activity_writes_nothing_and_rearms() {
         events,
         HashSet::from(["claude-idle", "needs-input", "process-exit"])
     );
-    assert!(again.iter().all(|h| !first.contains(h)), "새 무장 id");
+    let (first, again): (HashSet<_>, HashSet<_>) =
+        (first.into_iter().collect(), again.into_iter().collect());
+    assert_eq!(first, again, "같은 무장 id");
 }
 
 /// B4 와 (나): tell 하나에 턴 종료는 한 번. 그 뒤 스스로 연 턴은 줄이 없고, 다음 tell 은 다시 한 번 알린다.
@@ -417,7 +427,13 @@ fn a_profile_restart_writes_nothing() {
     let rig = Rig::new();
     rig.turn();
     let done_from = super::next_activity_threshold(&rig.host, CHILD);
-    super::register_notify_hooks(&rig.host, PARENT, CHILD, "child-profile", Some(done_from));
+    super::register_notify_hooks(
+        &rig.host,
+        PARENT,
+        CHILD,
+        "child-profile",
+        Some(completion_gate::Threshold::once(done_from)),
+    );
     rig.hook("session-end", json!({ "reason": "other" }));
     rig.hook("session-start", json!({ "source": "resume" }));
     assert!(rig.drain().is_empty());
@@ -556,4 +572,122 @@ fn spawn_notices_its_turn_once_and_an_exit_always() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].starts_with("[error] surface 5:"), "{lines:?}");
     assert!(dead.host.done_hooks().is_empty());
+}
+
+/// 같은 무장의 입력 대기 처리가 이미 발화한 턴 종료를 지우지 않는다. 입력 대기 처리는 상태가 이미 idle 이라
+/// 줄이 없고, 뒤의 턴 종료 처리가 완료 줄 하나를 쓴다.
+#[test]
+fn a_late_input_wait_run_keeps_the_fired_turn_end() {
+    let rig = Rig::new();
+    rig.host.set_state("idle");
+    rig.tell();
+    rig.hook("prompt-submit", json!({}));
+    rig.hook("pre-tool-use", json!({ "tool_name": "AskUserQuestion" }));
+    rig.hook("post-tool-use", json!({}));
+    rig.hook("stop", json!({}));
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("state changed (via tell)"), "{lines:?}");
+}
+
+/// 같은 무장의 늦은 턴 종료 처리가 이미 발화한 입력 대기를 지우지 않는다. 앞 턴의 끝은 처리할 때 이미 다음
+/// 턴이 시작돼 완료로 셀 수 없으므로 줄이 없고, 입력 대기 줄 하나가 나온다. 턴 종료 훅은 같은 문턱으로 남아
+/// 그 턴의 끝에 완료 줄 하나를 쓴다(tell 하나에 완료 한 번).
+#[test]
+fn a_late_turn_end_run_keeps_the_fired_input_wait() {
+    let rig = Rig::new();
+    rig.host.set_state("idle");
+    rig.tell();
+    rig.turn();
+    rig.hook("prompt-submit", json!({}));
+    rig.hook("pre-tool-use", json!({ "tool_name": "AskUserQuestion" }));
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("waiting for input (via tell)"),
+        "{lines:?}"
+    );
+    rig.hook("post-tool-use", json!({}));
+    rig.hook("stop", json!({}));
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("state changed (via tell)"), "{lines:?}");
+    rig.turn();
+    assert!(rig.drain().is_empty(), "완료는 tell 하나에 한 번");
+}
+
+/// 다음 tell 뒤에 늦게 실행된 옛 무장의 입력 대기·턴 종료 처리는 줄을 쓰지 않고 새 무장을 건드리지 않는다.
+#[test]
+fn late_runs_of_a_replaced_arm_stay_superseded() {
+    let rig = Rig::new();
+    rig.host.set_state("idle");
+    rig.tell();
+    rig.hook("prompt-submit", json!({}));
+    rig.hook("pre-tool-use", json!({ "tool_name": "AskUserQuestion" }));
+    rig.hook("post-tool-use", json!({}));
+    rig.hook("stop", json!({}));
+    let late: Vec<String> = rig.host.queued.borrow_mut().drain(..).collect();
+    assert_eq!(late.len(), 2, "{late:?}");
+    rig.tell();
+    let armed = rig.host.done_hooks();
+    rig.host.queued.borrow_mut().extend(late);
+    assert!(rig.drain().is_empty());
+    assert_eq!(rig.host.done_hooks(), armed);
+}
+
+/// 권한 요청에 tell 로 답하면 대기하던 턴이 이어진다. 그 턴의 끝에 완료 줄 하나가 나온다.
+#[test]
+fn a_tell_that_answers_an_input_wait_notices_that_turn_end() {
+    let rig = Rig::new();
+    rig.host.set_state("idle");
+    rig.tell();
+    rig.hook("prompt-submit", json!({}));
+    rig.hook(
+        "notification",
+        json!({ "notification_type": "permission_prompt" }),
+    );
+    let first = rig.drain();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].contains("waiting for input"), "{first:?}");
+    rig.tell();
+    rig.hook("stop", json!({}));
+    let second = rig.drain();
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert!(second[0].contains("state changed (via tell)"), "{second:?}");
+}
+
+/// 진행 중인 child 에 보낸 tell 이 다음 턴으로 넘어가 처리되면, 지금 턴의 끝과 처리한 턴의 끝에 한 줄씩 나온다.
+/// 그 뒤 스스로 연 턴은 줄이 없다.
+#[test]
+fn a_tell_queued_for_the_next_turn_notices_both_turn_ends() {
+    let rig = Rig::new();
+    rig.host.set_state("idle");
+    rig.tell();
+    rig.hook("prompt-submit", json!({}));
+    rig.tell();
+    rig.hook("stop", json!({}));
+    let first = rig.drain();
+    rig.turn();
+    let second = rig.drain();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(second.len(), 1, "{second:?}");
+    rig.turn();
+    assert!(rig.drain().is_empty());
+}
+
+/// 한계: 진행 중인 child 에 보낸 tell 이 지금 턴에 흡수되면, 그 뒤 스스로 연 턴 하나의 끝에도 줄이 나온다. 두 번째
+/// 줄 뒤에는 더 나오지 않는다.
+#[test]
+fn a_tell_absorbed_by_the_running_turn_may_notice_one_more_turn() {
+    let rig = Rig::new();
+    rig.host.set_state("idle");
+    rig.tell();
+    rig.hook("prompt-submit", json!({}));
+    rig.tell();
+    rig.hook("stop", json!({}));
+    assert_eq!(rig.drain().len(), 1);
+    rig.turn();
+    assert_eq!(rig.drain().len(), 1, "스스로 연 턴 하나");
+    rig.turn();
+    assert!(rig.drain().is_empty());
 }

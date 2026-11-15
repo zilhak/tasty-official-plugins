@@ -92,7 +92,7 @@ pub(crate) fn register_notify_hooks<H: HostCall>(
     caller_surface: u32,
     target_surface: u32,
     command_name: &str,
-    done_from: Option<u64>,
+    done_from: Option<completion_gate::Threshold>,
 ) {
     let prefix = notify_done_group_prefix(caller_surface, target_surface);
     match done_from {
@@ -682,7 +682,7 @@ pub(crate) fn rearm_if_still_alive<H: HostCall>(
     completion_gate::arm(
         host,
         &notify_group(target_surface, &prefix, command_name),
-        next_activity_threshold(host, target_surface),
+        completion_gate::Threshold::once(next_activity_threshold(host, target_surface)),
         with_idle,
     );
 }
