@@ -156,6 +156,11 @@ impl HostCall for GateHost {
                 hooks.retain(|h| !(h.surface == s && h.event == event && h.once));
                 json!({})
             }
+            "terminal.spawn" => {
+                // 새 자식 터미널. 셸만 있고 아직 활동이 없다.
+                self.alive.borrow_mut().insert(CHILD);
+                json!({ "child_surface_id": CHILD })
+            }
             "surface.locate" => {
                 let s = surface("surface_id");
                 json!({ "exists": self.alive.borrow().contains(&s) })
@@ -239,15 +244,22 @@ impl Rig {
         .expect("tell");
     }
 
-    fn spawn_hooks(&self) {
-        let done_from = super::next_activity_threshold(&self.host, CHILD);
-        super::register_notify_hooks(
+    /// 실제 spawn 진입점으로 자식을 만든다. 완료 훅은 이 경로가 건다.
+    fn spawn(&self) {
+        crate::handlers::handle_spawn(
+            &self.scanner,
+            &self.returns,
             &self.host,
-            PARENT,
-            CHILD,
-            "spawn",
-            Some(completion_gate::Threshold::once(done_from)),
-        );
+            &json!({
+                "surface": PARENT,
+                "workspace": "2",
+                "prompt": "go",
+                "caller_surface": PARENT,
+            }),
+            None,
+            &tr(),
+        )
+        .expect("spawn");
     }
 
     /// 발화한 훅을 실행하고 이번에 쓴 줄을 돌려준다.
@@ -550,7 +562,7 @@ fn an_old_hook_writes_by_state_and_rearms_in_the_new_form() {
 #[test]
 fn spawn_notices_its_turn_once_and_an_exit_always() {
     let rig = Rig::new();
-    rig.spawn_hooks();
+    rig.spawn();
     rig.hook("session-start", json!({ "source": "startup" }));
     assert!(rig.drain().is_empty());
     rig.turn();
@@ -559,7 +571,7 @@ fn spawn_notices_its_turn_once_and_an_exit_always() {
     assert!(lines[0].contains("(via spawn)"), "{lines:?}");
 
     let dead = Rig::new();
-    dead.spawn_hooks();
+    dead.spawn();
     dead.host.set_state("exited");
     dead.host.alive.borrow_mut().clear();
     dead.host

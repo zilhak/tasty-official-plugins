@@ -128,6 +128,11 @@ impl HostCall for GateHost {
                 hooks.retain(|h| !(h.surface == s && h.event == event && h.once));
                 json!({})
             }
+            "terminal.spawn" => {
+                // 새 자식 터미널. 셸만 있고 아직 활동이 없다.
+                self.alive.borrow_mut().insert(CHILD);
+                json!({ "child_surface_id": CHILD })
+            }
             "surface.locate" => {
                 json!({ "exists": self.alive.borrow().contains(&surface("surface_id")) })
             }
@@ -187,6 +192,14 @@ impl Rig {
         self.fx
             .with(|d| handle_tell(&self.host, &params, &self.fx.tr, d))
             .expect("tell");
+    }
+
+    /// 실제 spawn 진입점으로 자식을 만든다. 완료 훅은 이 경로가 건다.
+    fn spawn(&self) {
+        let params = json!({ "surface": PARENT, "workspace": "1", "prompt": "go" });
+        self.fx
+            .with(|d| handle_spawn(&self.host, &params, &self.fx.tr, d))
+            .expect("spawn");
     }
 
     fn drain(&self) -> Vec<String> {
@@ -315,14 +328,9 @@ fn an_interrupt_ends_the_turn() {
 #[test]
 fn spawn_notices_its_turn_once_and_an_exit_always() {
     let rig = Rig::new();
-    let done_from = next_activity_threshold(&rig.host, CHILD);
-    register_notify_hooks(
-        &rig.host,
-        PARENT,
-        CHILD,
-        "spawn",
-        Some(completion_gate::Threshold::once(done_from)),
-    );
+    rig.spawn();
+    rig.hook("session-start");
+    assert!(rig.drain().is_empty());
     rig.turn("stop");
     let lines = rig.drain();
     assert_eq!(lines.len(), 1, "{lines:?}");
