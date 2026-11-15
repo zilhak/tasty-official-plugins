@@ -4,7 +4,7 @@ Build and release repository for the official plugins of [Tasty](https://github.
 
 The plugin sources live in this repository under `crates/`, and their documents under
 `docs/plugins/`. They were copied from tasty commit
-`5098adbf65c375f84550f003f1522b5e46e79043`. The tasty crates they use (the plugin SDK,
+`e277fce41d9a2db8bf3c14fda8f56dd6415bfcbc`. The tasty crates they use (the plugin SDK,
 protocol, manifest, and shared libraries) come in as git dependencies pinned to a single
 tasty commit.
 
