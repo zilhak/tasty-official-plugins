@@ -324,10 +324,9 @@ impl ImagePlugin {
         }
 
         let result = mesh.paint(&ctx.host, &ctx.params, |egui_ctx| {
-            handle_edit_input(egui_ctx, doc, || {
+            paint_pass(egui_ctx, &theme, tr, doc, || {
                 read_clipboard_image().map_err(|e| e.message)
             });
-            render::draw(egui_ctx, &theme, tr, doc);
         });
         if let Err(e) = result {
             tracing::warn!("image surface {sid} paint failed: {e}");
@@ -413,6 +412,19 @@ fn require_surface(params: &Value) -> Result<u32, IpcMethodError> {
         .and_then(|v| v.as_u64())
         .map(|v| v as u32)
         .ok_or_else(|| IpcMethodError::invalid_params("missing 'surface'"))
+}
+
+/// `paint` 의 egui 패스 하나. 붙여넣기와 편집 요청을 먼저 처리하고 그 결과를 같은 패스에서 그린다.
+#[cfg(any(unix, windows))]
+fn paint_pass(
+    ctx: &egui::Context,
+    theme: &Theme,
+    tr: &Translator,
+    doc: &mut ImageDoc,
+    read: impl FnOnce() -> Result<egui::ColorImage, String>,
+) {
+    handle_edit_input(ctx, doc, read);
+    render::draw(ctx, theme, tr, doc);
 }
 
 /// 이 egui 패스의 붙여넣기와 편집 요청을 처리한다. `render::draw` 앞에서 부른다. 요청 앞 입력(클릭 등)이
