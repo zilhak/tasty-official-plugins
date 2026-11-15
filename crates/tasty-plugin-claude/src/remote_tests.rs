@@ -468,6 +468,79 @@ fn a_mirror_tell_arms_with_the_threshold_of_the_server() {
     }
 }
 
+/// 서버가 "턴 종료 두 번 알림"을 실으면 원격 자식의 턴 종료 훅은 `idle-twice` 로 건다. 키가 없는 응답(업그레이드 전
+/// 서버)은 한 번만 알리는 `idle` 이다.
+#[test]
+fn a_mirror_tell_arms_a_second_turn_end_when_the_server_asks() {
+    fn twice() -> Result<Value, PluginError> {
+        Ok(
+            json!({ "call_id": 8, "result": { "ok": true, "done_from": 4, "done_twice": true }, "children": [] }),
+        )
+    }
+    fn once() -> Result<Value, PluginError> {
+        Ok(json!({ "call_id": 8, "result": { "ok": true, "done_from": 4 }, "children": [] }))
+    }
+    for (reply, event) in [
+        (
+            twice as fn() -> Result<Value, PluginError>,
+            "--event idle-twice ",
+        ),
+        (once, "--event idle "),
+    ] {
+        let (_d, returns) = store();
+        tasty_plugin_agent_common::remote_owner::reset(&returns.owners_dir().unwrap(), 15, None)
+            .unwrap();
+        let host = client_host(true, reply);
+        let params = json!({ "surface": 15, "message": "next", "caller_surface": 3 });
+        crate::handlers::handle_tell(&returns, &Default::default(), &host, &params, &tr()).unwrap();
+        let idle: Vec<String> = host
+            .params_of("hook.set")
+            .iter()
+            .filter(|p| p["event"] == json!("claude-idle"))
+            .filter_map(|p| p["command"].as_str().map(String::from))
+            .filter(|c| c.contains("notify-done"))
+            .collect();
+        assert_eq!(idle.len(), 1, "{idle:?}");
+        assert!(idle[0].contains(event), "{idle:?}");
+        assert!(idle[0].contains("--done-from 4 "), "{idle:?}");
+    }
+}
+
+/// 서버: 진행 중이거나 입력을 기다리는 자식에 보낸 tell 은 응답에 "턴 종료 두 번 알림"을 싣고, idle 자식은 싣지 않는다.
+#[test]
+fn the_server_asks_for_a_second_turn_end_only_for_a_busy_child() {
+    for (state, twice, done_from) in [
+        ("active", true, 0),
+        ("needs_input", true, 0),
+        ("idle", false, 1),
+    ] {
+        let (_d, returns) = store();
+        let base = server_host("pending");
+        let host = Host::new(move |method, params| match method {
+            "terminal.state" => Ok(json!({ "state": state })),
+            _ => (base.answer)(method, params),
+        });
+        let told = crate::handlers::handle_tell(
+            &returns,
+            &Default::default(),
+            &host,
+            &origin_params(json!({ "message": "m", "attach_target_surface": 40 })),
+            &tr(),
+        )
+        .unwrap();
+        assert_eq!(
+            told[tasty_plugin_agent_common::completion_gate::DONE_TWICE_KEY],
+            json!(twice),
+            "{state}: {told}"
+        );
+        assert_eq!(
+            told[crate::handlers::DONE_FROM_KEY],
+            json!(done_from),
+            "{state}: {told}"
+        );
+    }
+}
+
 /// 경로 먼저, 입력 나중. 원격 자식의 입력은 서버로 가고 이 Tasty 의 terminal.tell 은 쓰지 않는다.
 #[test]
 fn a_tell_to_a_mirror_child_goes_to_the_server_after_the_route() {

@@ -703,3 +703,48 @@ fn a_tell_absorbed_by_the_running_turn_may_notice_one_more_turn() {
     rig.turn();
     assert!(rig.drain().is_empty());
 }
+
+/// 원격 tell 응답의 문턱(`done_twice`)으로 건 훅은 두 턴 끝에 한 줄씩 쓰고, 그 뒤 스스로 연 턴은 줄이 없다. 키가
+/// 없는 응답은 한 번만 쓴다.
+#[test]
+fn a_remote_reply_that_asks_twice_notices_two_turn_ends() {
+    for (reply, expected) in [
+        (json!({ "done_from": 1, "done_twice": true }), [1, 1, 0]),
+        (json!({ "done_from": 1 }), [1, 0, 0]),
+    ] {
+        let rig = Rig::new();
+        rig.hook("prompt-submit", json!({}));
+        let threshold =
+            completion_gate::Threshold::of_reply(&reply, crate::handlers::DONE_FROM_KEY);
+        super::register_notify_hooks(&rig.host, PARENT, CHILD, "tell", threshold);
+        rig.hook("stop", json!({}));
+        let mut counts = vec![rig.drain().len()];
+        for _ in 0..2 {
+            rig.turn();
+            counts.push(rig.drain().len());
+        }
+        assert_eq!(counts, expected, "{reply}");
+    }
+}
+
+/// 입력 대기에 tell 로 답하면 그 턴의 끝과 다음 턴의 끝에 한 줄씩 나오고, 그다음 턴은 줄이 없다.
+#[test]
+fn a_tell_that_answers_an_input_wait_notices_one_more_turn_end() {
+    let rig = Rig::new();
+    rig.host.set_state("idle");
+    rig.tell();
+    rig.hook("prompt-submit", json!({}));
+    rig.hook(
+        "notification",
+        json!({ "notification_type": "permission_prompt" }),
+    );
+    assert_eq!(rig.drain().len(), 1);
+    rig.tell();
+    rig.hook("stop", json!({}));
+    let mut counts = vec![rig.drain().len()];
+    for _ in 0..2 {
+        rig.turn();
+        counts.push(rig.drain().len());
+    }
+    assert_eq!(counts, [1, 1, 0]);
+}

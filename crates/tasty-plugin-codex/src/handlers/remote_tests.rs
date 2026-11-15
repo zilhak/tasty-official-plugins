@@ -656,6 +656,77 @@ fn the_server_runs_the_child_and_routes_its_turns_to_the_attach_parent() {
     );
 }
 
+/// 서버: 진행 중이거나 승인을 기다리는 자식에 보낸 tell 은 응답에 "턴 종료 두 번 알림"을 싣고, idle 자식은 싣지 않는다.
+#[test]
+fn the_server_asks_for_a_second_turn_end_only_for_a_busy_child() {
+    for (state, twice, done_from) in [
+        ("active", true, 0),
+        ("needs_input", true, 0),
+        ("idle", false, 1),
+    ] {
+        let fx = Fixture::new();
+        let host = Host::new(&fx, move |m, p| match m {
+            "terminal.state" => Ok(json!({ "state": state })),
+            _ => server(m, p),
+        });
+        let told = fx
+            .with(|d| {
+                super::super::handle_tell(
+                    &host,
+                    &origin(json!({ "message": "go", "attach_target_surface": R })),
+                    &fx.tr,
+                    d,
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            told[completion_gate::DONE_TWICE_KEY],
+            json!(twice),
+            "{state}: {told}"
+        );
+        assert_eq!(told[DONE_FROM_KEY], json!(done_from), "{state}: {told}");
+    }
+}
+
+/// 서버가 "턴 종료 두 번 알림"을 실으면 원격 자식의 턴 종료 훅은 `idle-twice` 로 건다. 키가 없는 응답(업그레이드 전
+/// 서버)은 한 번만 알리는 `idle` 이다.
+#[test]
+fn a_remote_tell_arms_a_second_turn_end_when_the_server_asks() {
+    for (twice, event) in [(Some(true), "--event idle-twice "), (None, "--event idle ")] {
+        let fx = Fixture::new();
+        let host = Host::new(&fx, move |m, p| match m {
+            "attach.agent_call" if p["method"] == json!("tell") => {
+                let mut result = json!({ "ok": true, "done_from": 4 });
+                if let Some(twice) = twice {
+                    result["done_twice"] = json!(twice);
+                }
+                Ok(json!({ "call_id": 8, "result": result, "children": [] }))
+            }
+            _ => surface_parent(m, p),
+        });
+        spawn(&fx, &host, json!({ "workspace": 3, "surface": 5 })).unwrap();
+        host.seen.borrow_mut().clear();
+        fx.with(|d| {
+            super::super::handle_tell(
+                &host,
+                &json!({ "surface": L, "message": "next", "caller_surface": 5 }),
+                &fx.tr,
+                d,
+            )
+        })
+        .unwrap();
+        let idle: Vec<String> = host
+            .params_of("hook.set")
+            .iter()
+            .filter(|p| p["event"] == json!("codex-idle"))
+            .filter_map(|p| p["command"].as_str().map(String::from))
+            .collect();
+        assert_eq!(idle.len(), 1, "{idle:?}");
+        assert!(idle[0].contains(event), "{idle:?}");
+        assert!(idle[0].contains("--done-from 4 "), "{idle:?}");
+    }
+}
+
 /// 서버: tell·kill 은 host 가 지정한 자식에만 간다.
 #[test]
 fn the_server_only_acts_on_the_named_child() {
