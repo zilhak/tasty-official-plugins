@@ -186,6 +186,12 @@ test('queue lines take the queue heading, status lines keep theirs', () => {
   const crlf = delivery(5, 'en', '[queue] surface 7: 1\r\n');
   expect(crlf).toContain(queueHeading('en'));
   expect(crlf).not.toContain(heading('en'));
+  // An empty line is a status line; only the empty piece after the final newline is dropped.
+  for (const body of ['[queue] x\n\n', '\n[queue] x\n', '[queue] x\r\n\r\n']) {
+    expect(delivery(6, 'en', body)).toBe(`[[tasty-notify 6]]\n${heading('en')}\n${queueHeading('en')}\n${body}`);
+  }
+  // Without a final newline the last line still counts.
+  expect(delivery(7, 'en', '[queue] x')).toBe(`[[tasty-notify 7]]\n${queueHeading('en')}\n[queue] x`);
 });
 
 
