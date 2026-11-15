@@ -21,6 +21,7 @@ use tasty_plugin_sdk::{HostHandle, IpcMethodError, i18n::Translator};
 use crate::codex_return::{Binding, ParentTarget, Returns, RouteTo, TerminalParent, parent_target};
 use crate::error_scan::{ErrorScanner, ScanTarget};
 use crate::reboot::reboot_surface;
+use crate::stop_pairing::StopPairing;
 
 /// 경로나 등록 이름 목록을 --settings 파일 하나로 해석한다.
 /// profile_file과 profile을 함께 지정하면 우선순위를 정하지 않고 거절한다.
@@ -380,12 +381,13 @@ pub(crate) fn handle_broadcast<H: HostCall>(
 /// 경로를 먼저 저장한 뒤 보낸다.
 pub(crate) fn handle_tell<H: HostCall>(
     returns: &Returns,
+    pairing: &Mutex<StopPairing>,
     host: &H,
     params: &Value,
     tr: &Translator,
 ) -> Result<Value, IpcMethodError> {
     if let Some(origin) = AttachOrigin::of(params) {
-        return crate::remote::serve_tell(returns, host, params, &origin, tr);
+        return crate::remote::serve_tell(returns, pairing, host, params, &origin, tr);
     }
     let surface_id = require_target_surface(params, tr)?;
     let message = params
@@ -440,26 +442,51 @@ pub(crate) fn handle_tell<H: HostCall>(
         tr,
     )
     .map_err(rollback)?;
-    let resp = match remote {
+    let (resp, done_from) = match remote {
         Some(anchor) => match crate::remote::tell(host, anchor, surface_id, message, route, tr) {
-            Ok(resp) => resp,
+            // 원격 자식의 문턱은 서버가 보내기 전에 정해 응답에 싣는다. 없으면 업그레이드 전 서버다.
+            Ok(resp) => {
+                let done_from = resp.get(DONE_FROM_KEY).and_then(Value::as_u64);
+                (resp, done_from)
+            }
             Err(e) if e.unknown => return Err(e.error),
             Err(e) => return Err(rollback(e.error)),
         },
-        None => host_call(
-            host,
-            "terminal.tell",
-            json!({ "surface": surface_id, "text": message }),
-        )
-        .map_err(rollback)?,
+        None => {
+            // 보내면 호스트가 바로 active 로 바꾸므로 문턱은 보내기 전에 정한다.
+            let done_from = tell_threshold(pairing, host, surface_id);
+            let resp = host_call(
+                host,
+                "terminal.tell",
+                json!({ "surface": surface_id, "text": message }),
+            )
+            .map_err(rollback)?;
+            (resp, Some(done_from))
+        }
     };
 
     // 알림을 받을 caller_surface가 없으면 훅 등록만 생략하고 tell 결과는 유지한다.
     if let Some(caller_surface) = params.get("caller_surface").and_then(|v| v.as_u64()) {
-        register_notify_hooks(host, caller_surface as u32, surface_id, "tell");
+        register_notify_hooks(host, caller_surface as u32, surface_id, "tell", done_from);
     }
 
     Ok(resp)
+}
+
+/// 원격 tell·spawn 응답에서 서버가 정한 완료 문턱을 싣는 키.
+pub(crate) const DONE_FROM_KEY: &str = "done_from";
+
+/// tell 의 완료 문턱. 입력을 보내기 전의 상태·활동 순번·보류 Stop 으로 정한다. 진행 중인 턴에 흡수될 수 있으면
+/// 그 턴의 끝도 완료로 센다.
+pub(crate) fn tell_threshold<H: HostCall>(
+    pairing: &Mutex<StopPairing>,
+    host: &H,
+    surface_id: u32,
+) -> u64 {
+    let state = tasty_plugin_agent_common::completion_gate::target_state(host, surface_id);
+    let seq = crate::notifications::activity_seq(host, surface_id);
+    let held = crate::stop_pairing::lock_pairing(pairing).holds_turn_end(surface_id);
+    tasty_plugin_agent_common::completion_gate::threshold(state.as_deref(), seq, held)
 }
 
 /// 완료 알림을 받을 호출 surface.
@@ -816,7 +843,15 @@ pub(crate) fn handle_child_profile(
 
     let resp = reboot_surface(inflight, host, child_surface_id, params, data_dir, tr)?;
 
-    register_notify_hooks(host, parent_surface_id, child_surface_id, "child-profile");
+    // 재기동의 세션 종료·시작은 활동이 아니므로 다음 활동 뒤의 턴 종료만 완료로 센다.
+    let done_from = crate::notifications::next_activity_threshold(host, child_surface_id);
+    register_notify_hooks(
+        host,
+        parent_surface_id,
+        child_surface_id,
+        "child-profile",
+        Some(done_from),
+    );
 
     Ok(json!({
         "child_surface_id": child_surface_id,
@@ -1055,7 +1090,14 @@ pub(crate) fn handle_spawn<H: HostCall>(
 
     // 부모가 자식 상태 전환을 알 수 있도록 완료 훅을 등록한다. Codex 부모는 확정된 턴 결과를 받으므로 등록하지 않는다.
     if let ParentTarget::Legacy(Some(parent_surface_id)) = target {
-        register_notify_hooks(host, parent_surface_id, child_surface_id, "spawn");
+        let done_from = crate::notifications::next_activity_threshold(host, child_surface_id);
+        register_notify_hooks(
+            host,
+            parent_surface_id,
+            child_surface_id,
+            "spawn",
+            Some(done_from),
+        );
     }
 
     Ok(out)
@@ -1819,7 +1861,7 @@ mod tests {
     fn sibling_cleanup_removes_all_after_one_fires() {
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
-        register_notify_hooks(&host, caller, target, "tell");
+        register_notify_hooks(&host, caller, target, "tell", None);
         assert_eq!(host.done_commands_on(target).len(), 3, "3 형제 등록");
 
         // needs-input 이 fire(once 제거) → 나머지 형제(claude-idle, process-exit) 정리.
@@ -1840,8 +1882,8 @@ mod tests {
         // 완료 줄이 두 줄 남는다.
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
-        register_notify_hooks(&host, caller, target, "spawn");
-        register_notify_hooks(&host, caller, target, "tell");
+        register_notify_hooks(&host, caller, target, "spawn", None);
+        register_notify_hooks(&host, caller, target, "tell", None);
         let tell_cmd = notify_done_command(caller, target, "tell");
         assert_eq!(host.done_commands_on(target), vec![tell_cmd.clone(); 3]);
         // 에러 정지 hook 은 명령 이름이 없어 두 번 등록해도 1 개만 남는다.
@@ -1866,12 +1908,12 @@ mod tests {
         let host = MockHost::new();
         let (caller, other, target) = (7u32, 8u32, 1650u32);
         for _ in 0..3 {
-            register_notify_hooks(&host, caller, target, "tell");
+            register_notify_hooks(&host, caller, target, "tell", None);
         }
         assert_eq!(host.done_commands_on(target).len(), 3);
         assert_eq!(host.fire(target, "claude-idle"), 1);
-        register_notify_hooks(&host, other, target, "tell");
-        register_notify_hooks(&host, caller, target, "tell");
+        register_notify_hooks(&host, other, target, "tell", None);
+        register_notify_hooks(&host, caller, target, "tell", None);
         let commands = host.done_commands_on(target);
         assert_eq!(commands.len(), 6, "{commands:?}");
         assert_eq!(host.fire(target, "needs-input"), 2, "부모마다 한 줄");
@@ -1884,7 +1926,7 @@ mod tests {
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
         host.mark_alive(target);
-        register_notify_hooks(&host, caller, target, "tell");
+        register_notify_hooks(&host, caller, target, "tell", None);
         assert_eq!(host.done_commands_on(target).len(), 3, "최초 3 형제 등록");
 
         let tr = test_translator();
@@ -1924,7 +1966,7 @@ mod tests {
     fn spawn_tell_wiring_subscribes_the_error_axis() {
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
-        register_notify_hooks(&host, caller, target, "spawn");
+        register_notify_hooks(&host, caller, target, "spawn", None);
         assert_eq!(
             host.hooks_for_event(target, crate::error_scan::STALLED_EVENT),
             1,
@@ -1944,7 +1986,7 @@ mod tests {
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
         host.mark_alive(target);
-        register_notify_hooks(&host, caller, target, "spawn");
+        register_notify_hooks(&host, caller, target, "spawn", None);
         let tr = test_translator();
         for _ in 0..2 {
             assert_eq!(
@@ -1975,7 +2017,7 @@ mod tests {
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
         host.mark_alive(target);
-        register_notify_hooks(&host, caller, target, "tell");
+        register_notify_hooks(&host, caller, target, "tell", None);
         let tr = test_translator();
 
         for _ in 0..3 {
@@ -2005,7 +2047,7 @@ mod tests {
         // once=true 였다면 첫 발화 후 사라져 두 번째 정지를 놓친다.
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
-        register_notify_hooks(&host, caller, target, "spawn");
+        register_notify_hooks(&host, caller, target, "spawn", None);
         assert_eq!(host.fire(target, crate::error_scan::STALLED_EVENT), 1);
         assert_eq!(
             host.hooks_for_event(target, crate::error_scan::STALLED_EVENT),
@@ -2189,7 +2231,7 @@ mod tests {
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
         host.mark_alive(target);
-        register_notify_hooks(&host, caller, target, "spawn");
+        register_notify_hooks(&host, caller, target, "spawn", None);
 
         // surface가 없다고 응답하는 상태에서 process-exit 훅을 처리한다.
         assert_eq!(host.fire(target, "process-exit"), 1);
@@ -2530,6 +2572,7 @@ mod tests {
         let tr = test_translator();
         let err = handle_tell(
             &returns,
+            &Default::default(),
             &host,
             &codex_call(json!({ "surface": 77, "message": "hi" })),
             &tr,
@@ -2540,6 +2583,7 @@ mod tests {
 
         handle_tell(
             &returns,
+            &Default::default(),
             &host,
             &codex_call(json!({ "surface": 55, "message": "go" })),
             &tr,
@@ -2596,6 +2640,7 @@ mod tests {
                 "tell" => {
                     handle_tell(
                         &returns,
+                        &Default::default(),
                         &host,
                         &json!({ "surface": 55, "message": "plain" }),
                         &tr,
@@ -2641,6 +2686,7 @@ mod tests {
         let host = CodexParentHost::external(vec![55]);
         let err = handle_tell(
             &returns,
+            &Default::default(),
             &host,
             &json!({ "surface": 55, "message": "plain" }),
             &test_translator(),
@@ -2710,6 +2756,7 @@ mod tests {
         handle_children(&returns, &host, &json!({ "surface": 3 }), &tr).unwrap();
         handle_tell(
             &returns,
+            &Default::default(),
             &host,
             &json!({ "surface": 55, "message": "x" }),
             &tr,

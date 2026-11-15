@@ -66,6 +66,7 @@ limit_body = "Surface {}：连续发生 {} 次 API 错误（{}），已停止恢
 
 [claude.notify]
 done_message = "Surface {}：状态已变更（通过 {}）"
+needs_input_message = "Surface {}：等待输入（通过 {}）"
 remote_result_message = "Surface {0}：已存储本轮结果 {1}（{2}）。读取命令：tasty claude remote-results --id {1}"
 stop_failure_hint = " ——本轮因 API 错误（{}）而结束，正在等待输入"
 stalled_message = "Surface {}：发生错误后无输出——子实例似乎卡住了（仍处于活动状态，无完成信号）"
@@ -181,7 +182,7 @@ claude = "Claude Code"
 description = "在新工作区中启动 Claude Code"
 
 [claude.cli.sub.spawn]
-description = "在工作区中 Spawn 一个子 Claude 实例。立即返回；子实例每次转为 idle/needs_input 时都会向调用方 Surface 发送通知，退出时再发送一次——不限于首次状态转换。"
+description = "在工作区中 Spawn 一个子 Claude 实例。立即返回；子实例结束其开始的轮次时写一行，每次等待输入时写一行（措辞与轮次结束不同），退出时写一行到调用方 Surface。此后子实例自行开启的轮次以及未开始工作的状态变化不写行。"
 
 [claude.cli.sub.children]
 description = "列出指定 Claude 父实例的子实例"
@@ -193,7 +194,7 @@ description = "显示指定 Claude 子实例的父实例"
 description = "查询单个子实例的状态：idle、needs_input、active 或 exited（与实际存续的 Surface 交叉核对）"
 
 [claude.cli.sub.tell]
-description = "向 Claude 实例发送消息（支持多行，在末尾提交）。立即返回；目标每次转为 idle/needs_input 时都会向调用方 Surface 发送通知，退出时再发送一次——不限于首次状态转换。"
+description = "向 Claude 实例发送消息（支持多行，在末尾提交）。立即返回；此消息开始的轮次结束时写一行，每次等待输入时写一行（措辞与轮次结束不同），退出时写一行到调用方 Surface。此后目标自行开启的轮次以及未开始工作的状态变化不写行。"
 
 [claude.cli.sub.broadcast]
 description = "向 Claude 父实例的所有子实例广播文本"
@@ -214,7 +215,7 @@ description = "Respawn 一个 Claude 子实例"
 description = "重新启动 Surface 中的 Claude 实例并恢复同一会话（延迟终止 + claude -r）。将此调用作为一轮的最后一个操作——延迟结束后的所有操作都会被中断。"
 
 [claude.cli.sub.child-profile]
-description = "将持久化 Claude 会话配置档附加到子实例（将 --child 解析为其 Surface，然后在其上执行与 'claude reboot --profile' 相同的操作序列）。与 Reboot 不同，此操作不会中断调用方的当前轮次——仅重新启动子实例。子实例转为 idle/needs_input 时会向调用方 Surface 发送通知，退出时再发送一次。"
+description = "将持久化 Claude 会话配置档附加到子实例（将 --child 解析为其 Surface，然后在其上执行与 'claude reboot --profile' 相同的操作序列）。与 Reboot 不同，此操作不会中断调用方的当前轮次——仅重新启动子实例。重启本身不写行；子实例下次结束其开始的轮次时写一行，每次等待输入时写一行，退出时写一行到调用方 Surface。"
 
 [claude.cli.sub.install]
 description = "安装或更新 Tasty 钩子和受管理的 Claude 通知模组；保留现有用户钩子和插件路径。响应包含 installed 和 updated 钩子事件以及 mod_updated。"
@@ -244,7 +245,7 @@ description = "内部使用：子实例的一轮因 API 错误结束，但仍因
 description = "内部使用：子实例的输出长时间没有变化时，通知调用方该子实例可能已停滞。用作 claude-error-stalled 的 hook.set 命令。不更改子实例状态，也不移除或重新注册完成钩子。"
 
 [claude.cli.sub.notify-done]
-description = "内部使用：向调用方报告 spawn/tell 状态转换，并移除匹配的一次性钩子。如果仍能找到目标 Surface，则重新注册三个完成钩子。用作 claude-idle/needs-input/process-exit 的 hook.set 命令。"
+description = "内部使用：判定一个 spawn/tell 完成钩子，并向调用方通知日志写一行。--event 表示运行的钩子：idle 仅在达到 --done-from 的新活动之后写一次轮次结束行；input 在目标仍在等待时写等待输入行；exit 总是写退出行。删除自身 --arm 的剩余钩子，若仍能找到目标 Surface 则重新注册（通知轮次结束后不再注册 idle 钩子）。被更新注册替换的钩子不写任何内容。没有 --event 的钩子（升级前注册）按目标状态决定行。用作 claude-idle/needs-input/process-exit 的 hook.set 命令。"
 
 [claude.cli.sub.profile-register]
 description = "按名称注册 Claude 会话配置档（将文件复制到插件私有存储；重新注册同名配置档会更新其内容）"
@@ -347,6 +348,15 @@ help = "spawn/tell 刚完成的 Surface"
 
 [claude.cli.arg.notify_done_args.command]
 help = "已完成的命令：spawn 或 tell"
+
+[claude.cli.arg.notify_done_args.event]
+help = "运行的完成钩子：idle、input 或 exit。升级前注册的钩子没有此项"
+
+[claude.cli.arg.notify_done_args.done_from]
+help = "轮次结束被计为完成工作所需达到的活动序号"
+
+[claude.cli.arg.notify_done_args.arm]
+help = "此钩子所属注册的 ID；同一调用方与目标的更新注册会替换它"
 
 [claude.cli.arg.notify_error_args.caller_surface]
 help = "发出 spawn/tell 命令且应接收通知的 Surface"

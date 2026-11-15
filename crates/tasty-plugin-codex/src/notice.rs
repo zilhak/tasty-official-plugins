@@ -6,8 +6,10 @@ use tasty_utils::notify::NoticeType;
 /// 완료 로그에 쓰는 Codex 알림 종류.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
-    /// idle·needs_input 상태 변경.
+    /// 일을 시작한 뒤 턴이 끝났다(idle).
     StateChanged,
+    /// 도구 승인을 기다린다(needs_input). 부모가 답해야 하므로 warning 이다.
+    NeedsInput,
     /// child 프로세스가 끝났다. 부모가 kill 로 끝낸 경우도 구분하지 않는다.
     Exited,
     /// 원격 attach child 의 턴 결과를 저장했다.
@@ -17,10 +19,11 @@ pub(crate) enum NoticeKind {
 }
 
 impl NoticeKind {
-    /// 오류가 섞인 종류는 무조건 `Error` 다.
+    /// 오류가 섞인 종류는 무조건 `Error` 다. 승인 대기는 warning 이다.
     pub(crate) fn notice_type(self) -> NoticeType {
         match self {
             Self::StateChanged | Self::RemoteResult => NoticeType::Info,
+            Self::NeedsInput => NoticeType::Warning,
             Self::Exited | Self::SandboxFailure => NoticeType::Error,
         }
     }
@@ -30,14 +33,16 @@ impl NoticeKind {
     fn message_key(self) -> &'static str {
         match self {
             Self::StateChanged | Self::Exited => "codex.notify.done_message",
+            Self::NeedsInput => "codex.notify.needs_input_message",
             Self::RemoteResult => "codex.notify.remote_result_message",
             Self::SandboxFailure => "codex.notify.sandbox_hint",
         }
     }
 
     #[cfg(test)]
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::StateChanged,
+        Self::NeedsInput,
         Self::Exited,
         Self::RemoteResult,
         Self::SandboxFailure,
@@ -56,8 +61,31 @@ impl NoticeKind {
 }
 
 /// 부모 완료 로그에 종류의 타입 표지를 붙여 한 줄을 쓴다.
+#[cfg(not(test))]
 pub(crate) fn append(caller_surface: u32, kind: NoticeKind, line: &str) -> std::io::Result<()> {
     tasty_utils::notify::append_notice(caller_surface, kind.notice_type(), line)
+}
+
+/// 시험은 실제 완료 로그(`TASTY_PARENT_HOME`)에 쓰지 않고 이 스레드에 모은다. 표지는 실제 쓰기와 같게 붙인다.
+#[cfg(test)]
+pub(crate) fn append(caller_surface: u32, kind: NoticeKind, line: &str) -> std::io::Result<()> {
+    let line = tasty_utils::notify::notice_line(kind.notice_type(), line);
+    test_log::LINES.with(|l| l.borrow_mut().push((caller_surface, line)));
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) mod test_log {
+    use std::cell::RefCell;
+
+    thread_local! {
+        pub(super) static LINES: RefCell<Vec<(u32, String)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// 이 스레드에서 쓴 줄을 꺼낸다.
+    pub(crate) fn take() -> Vec<(u32, String)> {
+        LINES.with(|l| std::mem::take(&mut *l.borrow_mut()))
+    }
 }
 
 #[cfg(test)]
@@ -99,5 +127,6 @@ mod tests {
         assert_eq!(ty(Some("exited"), false), NoticeType::Error);
         assert_eq!(ty(Some("idle"), true), NoticeType::Error);
         assert_eq!(NoticeKind::RemoteResult.notice_type(), NoticeType::Info);
+        assert_eq!(NoticeKind::NeedsInput.notice_type(), NoticeType::Warning);
     }
 }

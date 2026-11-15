@@ -1,5 +1,6 @@
 //! 부모 터미널에 완료·진행 정체 알림을 남긴다.
 use serde_json::{Value, json};
+use tasty_plugin_agent_common::completion_gate::{self, Decision, Tail};
 use tasty_plugin_agent_common::host_call::{HostCall, cleanup_sibling_hooks, surface_is_alive};
 use tasty_plugin_sdk::{IpcMethodError, i18n::Translator};
 
@@ -9,8 +10,8 @@ use crate::error_scan::ErrorScanner;
 use crate::notice::NoticeKind;
 use tasty_utils::notify::NoticeType;
 
-/// 완료 훅 등록과 정리에 같은 명령 문자열을 사용한다.
-/// 대상 터미널과 이 문자열이 모두 같은 훅을 한 그룹으로 찾는다.
+/// 꼬리가 없는 옛 형식의 완료 훅 명령. 업그레이드 전 서버의 원격 자식과 옛 훅의 정리에 쓴다.
+/// 새 형식은 이 명령 뒤에 이벤트·문턱·무장 id 를 붙인다([`completion_gate`]).
 pub(crate) fn notify_done_command(
     caller_surface: u32,
     target_surface: u32,
@@ -29,7 +30,7 @@ fn notify_done_group_prefix(caller_surface: u32, target_surface: u32) -> String 
     )
 }
 
-/// 자식의 상태 변경을 알린다. 입력 대기·종료도 포함하므로 작업 완료를 뜻하지는 않는다.
+/// 턴 종료·종료 줄의 문구. 상태 변경을 알릴 뿐 작업 성공을 뜻하지는 않는다.
 pub(crate) fn notify_done_message(
     tr: &Translator,
     command_name: &str,
@@ -64,7 +65,26 @@ fn last_stop_failure<H: HostCall>(host: &H, target_surface: u32) -> Option<Strin
     .filter(|s| !s.is_empty())
 }
 
-/// claude-idle / needs-input / process-exit 완료 훅을 등록한다.
+/// 완료 그룹의 이벤트별 호스트 훅 이름. 매니페스트에 선언한 이름이다.
+const HOOK_EVENTS: completion_gate::HookEvents = completion_gate::HookEvents {
+    idle: "claude-idle",
+    input: "needs-input",
+    exit: "process-exit",
+};
+
+/// 대상의 지금 활동 순번.
+pub(crate) fn activity_seq<H: HostCall>(host: &H, target_surface: u32) -> u64 {
+    completion_gate::activity_seq(host, target_surface, crate::hook::ACTIVITY_SEQ_META_KEY)
+}
+
+/// 새 활동이 시작된 뒤의 턴 종료만 완료로 세는 문턱. spawn·child-profile 이 쓴다.
+pub(crate) fn next_activity_threshold<H: HostCall>(host: &H, target_surface: u32) -> u64 {
+    activity_seq(host, target_surface) + 1
+}
+
+/// claude-idle / needs-input / process-exit 완료 훅을 이벤트마다 다른 명령으로 등록한다. `done_from` 은
+/// 완료로 셀 활동 순번의 문턱이다. `None` 이면 문턱을 모르는 원격 서버(업그레이드 전)의 자식이므로 예전처럼
+/// 세 이벤트에 같은 명령을 건다.
 /// 등록 실패는 spawn/tell의 성공을 취소하지 않는다.
 /// 반복해서 받는 오류 알림 훅은 완료 훅과 수명이 달라 이 그룹에 넣지 않는다.
 pub(crate) fn register_notify_hooks<H: HostCall>(
@@ -72,20 +92,48 @@ pub(crate) fn register_notify_hooks<H: HostCall>(
     caller_surface: u32,
     target_surface: u32,
     command_name: &str,
+    done_from: Option<u64>,
 ) {
-    let command = notify_done_command(caller_surface, target_surface, command_name);
-    // 플러그인마다 매니페스트에 등록한 이벤트 목록을 넘긴다.
-    tasty_plugin_agent_common::host_call::register_completion_hooks(
-        host,
-        target_surface,
-        &command,
-        &notify_done_group_prefix(caller_surface, target_surface),
-        &["claude-idle", "needs-input", "process-exit"],
-        "claude",
-    );
+    let prefix = notify_done_group_prefix(caller_surface, target_surface);
+    match done_from {
+        Some(done_from) => {
+            completion_gate::arm(
+                host,
+                &notify_group(target_surface, &prefix, command_name),
+                done_from,
+                true,
+            );
+        }
+        None => {
+            let command = notify_done_command(caller_surface, target_surface, command_name);
+            tasty_plugin_agent_common::host_call::register_completion_hooks(
+                host,
+                target_surface,
+                &command,
+                &prefix,
+                &[HOOK_EVENTS.idle, HOOK_EVENTS.input, HOOK_EVENTS.exit],
+                "claude",
+            );
+        }
+    }
     register_error_notify_hook(host, caller_surface, target_surface);
     register_stop_failure_notify_hook(host, caller_surface, target_surface);
     crate::quiet_notice::register_quiet_release_hook(host, caller_surface, target_surface);
+}
+
+fn notify_group<'a>(
+    target_surface: u32,
+    prefix: &'a str,
+    command_name: &'a str,
+) -> completion_gate::Group<'a> {
+    completion_gate::Group {
+        target: target_surface,
+        prefix,
+        kind: command_name,
+        events: HOOK_EVENTS,
+        seq_key: crate::hook::ACTIVITY_SEQ_META_KEY,
+        agent: "claude",
+    }
 }
 
 /// 백그라운드 작업이 남은 StopFailure 를 부모에게 알리는 훅 명령. 완료 그룹과 다른 명령을 쓴다.
@@ -148,8 +196,9 @@ pub(crate) fn register_error_notify_hook<H: HostCall>(
     }
 }
 
-/// 완료 로그를 남기고 같은 대상·명령의 완료 훅을 정리한다.
-/// 대상이 여전히 조회되면 다음 알림을 받도록 다시 등록한다.
+/// 완료 훅 하나의 처리. 명령 꼬리(`--event`·`--done-from`·`--arm`)가 있으면 활동과 무장으로 줄을 정한다.
+/// 턴 종료는 spawn·tell 뒤 새 활동이 있었을 때 한 번만, 입력 대기는 대기마다, 종료는 항상 알린다.
+/// 꼬리가 없는 옛 훅은 예전처럼 상태로 줄을 정하고, 새 형식으로 다시 무장한다.
 pub(crate) fn handle_notify_done<H: HostCall>(
     scanner: &Mutex<ErrorScanner>,
     host: &H,
@@ -173,7 +222,99 @@ pub(crate) fn handle_notify_done<H: HostCall>(
         .and_then(|v| v.as_str())
         .ok_or_else(|| IpcMethodError::invalid_params(tr.t("claude.params.missing_command")))?;
 
-    let (kind, mut message) = notify_done_line(tr, host, command_name, target_surface);
+    let Some(tail) = Tail::of_params(params) else {
+        return legacy_notify_done(
+            scanner,
+            host,
+            caller_surface,
+            target_surface,
+            command_name,
+            tr,
+        );
+    };
+    let _serial = completion_gate::serialize();
+    let prefix = notify_done_group_prefix(caller_surface, target_surface);
+    let group = notify_group(target_surface, &prefix, command_name);
+    let remote = crate::remote::child_anchor(host, target_surface, tr)
+        .ok()
+        .flatten()
+        .is_some();
+    let evaluation = completion_gate::evaluate(host, &group, tail, remote, || {
+        std::thread::sleep(completion_gate::REMOTE_SEQ_PAUSE)
+    });
+    let line = match evaluation.verdict.decision {
+        Decision::Done => Some(finished_turn_line(
+            tr,
+            host,
+            command_name,
+            target_surface,
+            evaluation.state.as_deref(),
+        )),
+        Decision::NeedsInput => Some((
+            NoticeKind::NeedsInput,
+            needs_input_message(tr, command_name, target_surface),
+        )),
+        Decision::Exited => Some((
+            NoticeKind::Exited,
+            notify_done_message(tr, command_name, target_surface),
+        )),
+        Decision::Skip => None,
+    };
+    let written = line.is_some();
+    if let Some((kind, message)) = line {
+        write_done_line(
+            scanner,
+            host,
+            caller_surface,
+            target_surface,
+            kind,
+            message,
+            tr,
+        );
+    }
+    completion_gate::finish(host, &group, tail, evaluation.verdict);
+    Ok(json!({ "written": written }))
+}
+
+/// 꼬리가 없는 옛 훅의 처리. 상태로 줄을 정해 쓰고 같은 명령의 남은 훅을 지운다. 대상이 조회되면 새 형식으로
+/// 다시 무장한다. 이미 idle 이면 그 턴 종료를 알렸으므로 턴 종료 훅은 걸지 않는다.
+fn legacy_notify_done<H: HostCall>(
+    scanner: &Mutex<ErrorScanner>,
+    host: &H,
+    caller_surface: u32,
+    target_surface: u32,
+    command_name: &str,
+    tr: &Translator,
+) -> Result<Value, IpcMethodError> {
+    let (kind, message) = notify_done_line(tr, host, command_name, target_surface);
+    write_done_line(
+        scanner,
+        host,
+        caller_surface,
+        target_surface,
+        kind,
+        message,
+        tr,
+    );
+
+    // 다른 자식의 훅을 지우지 않도록 대상과 명령 문자열을 함께 비교한다.
+    let expected_command = notify_done_command(caller_surface, target_surface, command_name);
+    cleanup_sibling_hooks(host, target_surface, &expected_command);
+
+    rearm_if_still_alive(host, caller_surface, target_surface, command_name);
+    Ok(json!({ "written": true }))
+}
+
+/// 줄 하나를 부모 로그에 쓴다. error 줄에는 오류 묶음을 덧붙인다.
+fn write_done_line<H: HostCall>(
+    scanner: &Mutex<ErrorScanner>,
+    host: &H,
+    caller_surface: u32,
+    target_surface: u32,
+    kind: NoticeKind,
+    mut message: String,
+    tr: &Translator,
+) {
     if kind.notice_type() == NoticeType::Error {
         message.push_str(&crate::quiet_notice::error_bundle(
             scanner,
@@ -186,15 +327,44 @@ pub(crate) fn handle_notify_done<H: HostCall>(
     if let Err(e) = crate::notice::append(caller_surface, kind, &message) {
         tracing::warn!("claude notify-done completion-log append failed: {e}");
     }
+}
 
-    // 다른 자식의 훅을 지우지 않도록 대상과 명령 문자열을 함께 비교한다.
-    let expected_command = notify_done_command(caller_surface, target_surface, command_name);
-    cleanup_sibling_hooks(host, target_surface, &expected_command);
+/// 끝난 턴의 줄. 마지막 턴이 API 오류로 끝났으면 힌트를 붙여 error 로 쓴다.
+fn finished_turn_line<H: HostCall>(
+    tr: &Translator,
+    host: &H,
+    command_name: &str,
+    target_surface: u32,
+    state: Option<&str>,
+) -> (NoticeKind, String) {
+    let error = if state == Some("idle") {
+        last_stop_failure(host, target_surface)
+    } else {
+        None
+    };
+    let kind = if error.is_some() {
+        NoticeKind::StopFailure
+    } else {
+        NoticeKind::StateChanged
+    };
+    let line = with_stop_failure_hint(
+        tr,
+        notify_done_message(tr, command_name, target_surface),
+        error.as_deref(),
+    );
+    (kind, line)
+}
 
-    // 다음 상태 전환도 받을 수 있도록 대상이 조회되면 다시 등록한다.
-    rearm_if_still_alive(host, caller_surface, target_surface, command_name);
-
-    Ok(json!({}))
+/// 자식이 입력을 기다린다는 줄. 턴 종료 줄과 문구가 다르다.
+pub(crate) fn needs_input_message(
+    tr: &Translator,
+    command_name: &str,
+    target_surface: u32,
+) -> String {
+    tr.t_args(
+        "claude.notify.needs_input_message",
+        &[&target_surface.to_string(), command_name],
+    )
 }
 
 /// 진행 정체 알림을 부모 로그에 남긴다.
@@ -234,7 +404,7 @@ pub(crate) fn handle_notify_error<H: HostCall>(
     Ok(json!({}))
 }
 
-/// 완료 줄과 그 종류. 오류 힌트("입력을 기다린다")는 턴이 끝난 idle 줄에만 붙인다. 백그라운드 작업이 남아
+/// 옛 훅의 완료 줄과 그 종류. 오류 힌트("입력을 기다린다")는 턴이 끝난 idle 줄에만 붙인다. 백그라운드 작업이 남아
 /// 대기 중에 기록된 오류가 needs-input·process-exit 줄에 붙지 않게 한다.
 /// 세 완료 훅이 같은 명령을 쓰므로 어느 사건인지 모른다. 대상 상태로 가른다: `exited` 와 힌트가 붙은 idle 은 error 다.
 pub(crate) fn notify_done_line<H: HostCall>(
@@ -496,7 +666,7 @@ fn stall_wording<H: HostCall>(
     Some(crate::error_scan::StallWording { error_line })
 }
 
-/// 대상 터미널이 조회되면 완료 훅 3개를 다시 등록한다. 조회 실패 시 생략한다.
+/// 옛 훅을 처리한 뒤 대상 터미널이 조회되면 새 형식으로 다시 무장한다. 조회 실패 시 생략한다.
 /// 터미널의 존재 여부만 확인하므로 자식 프로세스가 실행 중이라는 뜻은 아니다.
 pub(crate) fn rearm_if_still_alive<H: HostCall>(
     host: &H,
@@ -504,9 +674,17 @@ pub(crate) fn rearm_if_still_alive<H: HostCall>(
     target_surface: u32,
     command_name: &str,
 ) {
-    if surface_is_alive(host, target_surface) {
-        register_notify_hooks(host, caller_surface, target_surface, command_name);
+    if !surface_is_alive(host, target_surface) {
+        return;
     }
+    let prefix = notify_done_group_prefix(caller_surface, target_surface);
+    let with_idle = target_state(host, target_surface).as_deref() != Some("idle");
+    completion_gate::arm(
+        host,
+        &notify_group(target_surface, &prefix, command_name),
+        next_activity_threshold(host, target_surface),
+        with_idle,
+    );
 }
 
 #[cfg(test)]
@@ -671,3 +849,7 @@ mod tests {
         assert_eq!(stop_failure_notice(&tr, &ended, 5), None);
     }
 }
+
+#[cfg(test)]
+#[path = "notifications_gate_tests.rs"]
+mod gate_tests;

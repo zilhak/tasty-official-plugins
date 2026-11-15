@@ -804,7 +804,11 @@ fn the_manifest_declares_remote_attach() {
         ]
     );
     assert_eq!(ra["receive"].as_str(), Some("remote_receive"));
-    assert!(ra.get("relay_meta").is_none());
+    // 부모 쪽 완료 알림이 턴 종료를 셀 때 읽는 활동 순번만 옮긴다.
+    assert_eq!(
+        ra["relay_meta"].as_array().unwrap(),
+        &vec![toml::Value::from(crate::handlers::ACTIVITY_SEQ_META_KEY)]
+    );
 }
 
 #[test]

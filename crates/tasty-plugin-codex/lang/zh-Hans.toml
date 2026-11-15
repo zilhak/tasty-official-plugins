@@ -24,6 +24,7 @@ codex = "Codex"
 
 [codex.notify]
 done_message = "Surface {target} 状态已更改（通过 {kind}）"
+needs_input_message = "Surface {target} 等待批准（通过 {kind}）"
 remote_result_message = "Surface {surface}：轮次结果 {id}（{status}）已存储。读取命令：tasty codex remote-results --id {id}"
 sandbox_hint = "沙箱初始化似乎失败（检测到 RTM_NEWADDR）——此环境可能不支持嵌套沙箱（bwrap）。使用 --full-auto 重试。"
 
@@ -94,7 +95,7 @@ write_failed = "无法写入 Codex 配置文件：{detail}"
 description = "启动新工作区并在其终端中启动 Codex"
 
 [codex.cli.sub.spawn]
-description = "在拆分的 Surface 中创建子 Codex 实例。等待宿主响应后返回，不等待子任务完成。从 Codex 对话中调用时，子实例每轮完成后的结果都会返回该对话；否则，为父 Surface 注册空闲、等待输入和退出通知钩子。"
+description = "在拆分的 Surface 中创建子 Codex 实例。等待宿主响应后返回，不等待子任务完成。从 Codex 对话中调用时，子实例每轮完成后的结果都会返回该对话；否则，子实例结束其开始的轮次时写一行，每次等待批准时写一行（措辞与轮次结束不同），退出时写一行到父 Surface。此后子实例自行开启的轮次不写行。"
 
 [codex.cli.sub.children]
 description = "列出指定 Codex 父实例的子实例"
@@ -106,10 +107,10 @@ description = "返回指定子 Surface 的父 Codex Surface ID"
 description = "查询单个子实例的状态：idle、needs_input、active 或 exited（与实际运行的 Surface 交叉核对）"
 
 [codex.cli.sub.tell]
-description = "保留换行符发送消息并提交。等待宿主响应后返回，不等待任务完成。从 Codex 对话中调用时，目标每轮完成后的结果都会返回该对话；否则，在提供调用方 Surface 时，注册空闲、等待输入和退出通知钩子。"
+description = "保留换行符发送消息并提交。等待宿主响应后返回，不等待任务完成。从 Codex 对话中调用时，目标每轮完成后的结果都会返回该对话；否则，在提供调用方 Surface 时，此消息开始的轮次结束时写一行，目标每次等待批准时写一行（措辞与轮次结束不同），退出时写一行。此后目标自行开启的轮次不写行。"
 
 [codex.cli.sub.notify-caller]
-description = "内部使用：报告子实例状态变化并移除匹配的一次性钩子。如果仍能找到目标 Surface，则重新注册完成钩子。由 spawn/tell 钩子调用，不供直接使用。"
+description = "内部使用：判定一个 spawn/tell 完成钩子，并向调用方通知日志写一行。--event 表示运行的钩子：idle 仅在达到 --done-from 的新活动之后写一次轮次结束行；input 在目标仍在等待时写等待批准行；exit 总是写退出行。删除自身 --arm 的剩余钩子，若仍能找到目标 Surface 则重新注册（通知轮次结束后不再注册 idle 钩子）。被更新注册替换的钩子不写任何内容。没有 --event 的钩子（升级前注册）按目标状态决定行。由 spawn/tell 钩子调用，不供直接使用。"
 
 [codex.cli.sub.broadcast]
 description = "向父 Codex 实例的所有子实例广播文本"
@@ -212,6 +213,15 @@ help = "已完成的 Surface ID"
 
 [codex.cli.arg.notify_caller_args.kind]
 help = "命令：spawn | tell"
+
+[codex.cli.arg.notify_caller_args.event]
+help = "运行的完成钩子：idle、input 或 exit。升级前注册的钩子没有此项"
+
+[codex.cli.arg.notify_caller_args.done_from]
+help = "轮次结束被计为完成工作所需达到的活动序号"
+
+[codex.cli.arg.notify_caller_args.arm]
+help = "此钩子所属注册的 ID；同一调用方与目标的更新注册会替换它"
 
 [codex.cli.arg.broadcast_args.text]
 help = "要广播的文本。使用 \\r 提交（例如 \"hello\\r\"）"

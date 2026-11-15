@@ -225,6 +225,11 @@ pub(crate) fn spawn<H: HostCall>(
     };
     // 경로를 묶은 뒤에만 통지를 풀어야 첫 완료가 수신처 없이 지나가지 않는다. 묶지 못했으면 commit 하지 않고
     // (통지는 서버에 보관된 채 남는다) 받을 곳이 없는 자식을 닫는다.
+    // 서버가 정한 완료 문턱. 없으면 업그레이드 전 서버이므로 예전 완료 훅을 건다.
+    let done_from = reply
+        .result
+        .get(crate::handlers::DONE_FROM_KEY)
+        .and_then(Value::as_u64);
     if let Err(e) = bind(
         returns,
         host,
@@ -232,6 +237,7 @@ pub(crate) fn spawn<H: HostCall>(
         child.surface_id,
         with_prompt,
         owner.as_deref(),
+        done_from,
         tr,
     ) {
         let cleanup = match remote_attach::call(
@@ -276,6 +282,7 @@ pub(crate) fn spawn<H: HostCall>(
 }
 
 /// client: 새 mirror 자식에 부모 경로를 묶는다. Codex 부모는 결과 경로, 물리 부모는 완료 알림 훅이다.
+#[allow(clippy::too_many_arguments)] // reason: 새 자식을 묶는 데 필요한 부모 경로·소유자·완료 문턱을 각각 받는다.
 fn bind<H: HostCall>(
     returns: &Returns,
     host: &H,
@@ -283,6 +290,7 @@ fn bind<H: HostCall>(
     child: u32,
     with_prompt: bool,
     owner: Option<&str>,
+    done_from: Option<u64>,
     tr: &Translator,
 ) -> Result<(), IpcMethodError> {
     // 새 자식이므로 같은 surface id 에 남은 기록과 관계없이 소유자를 새로 쓴다.
@@ -301,7 +309,7 @@ fn bind<H: HostCall>(
                 ))
             }),
         ParentTarget::Legacy(Some(parent)) => {
-            crate::notifications::register_notify_hooks(host, *parent, child, "spawn");
+            crate::notifications::register_notify_hooks(host, *parent, child, "spawn", done_from);
             Ok(())
         }
         ParentTarget::Legacy(None) => Ok(()),
@@ -395,6 +403,8 @@ fn late_spawn<H: HostCall>(
             children[0],
             p.with_prompt,
             p.owner.as_deref(),
+            // 늦은 결과에는 서버 응답이 없어 문턱을 모른다. 예전 완료 훅을 건다.
+            None,
             tr,
         ) {
             Ok(()) => return Received::Recorded,
@@ -603,8 +613,10 @@ pub(crate) fn serve_spawn<H: HostCall>(
         &options,
     )?;
     crate::retrack::enable_and_record(host, scanner, child, ScanTarget::Child);
+    let done_from = crate::notifications::next_activity_threshold(host, child);
     let mut out = resp;
     if let Some(obj) = out.as_object_mut() {
+        obj.insert(crate::handlers::DONE_FROM_KEY.into(), json!(done_from));
         obj.insert("parent_external".into(), json!(origin.parent_key));
         obj.insert("requested_session_options".into(), options.json());
         if !matches!(crate::install::completion_hooks_installed(tr), Ok(true)) {
@@ -627,6 +639,7 @@ fn origin_target<H: HostCall>(
 /// 서버: 원격 출처 부모가 자기 자식에게 보낸 입력. 결과 경로를 먼저 정한 뒤 보낸다.
 pub(crate) fn serve_tell<H: HostCall>(
     returns: &Returns,
+    pairing: &Mutex<crate::stop_pairing::StopPairing>,
     host: &H,
     params: &Value,
     origin: &AttachOrigin,
@@ -647,11 +660,18 @@ pub(crate) fn serve_tell<H: HostCall>(
     } else {
         crate::handlers::release_codex_route(returns, child, tr)?;
     }
-    host.call(
-        "terminal.tell",
-        json!({ "surface": child, "text": message }),
-    )
-    .map_err(IpcMethodError::from)
+    // 부모 쪽 완료 문턱은 이 서버가 보내기 전에 정해 응답에 싣는다. 보낸 뒤에는 상태가 이미 active 다.
+    let done_from = crate::handlers::tell_threshold(pairing, host, child);
+    let mut resp = host
+        .call(
+            "terminal.tell",
+            json!({ "surface": child, "text": message }),
+        )
+        .map_err(IpcMethodError::from)?;
+    if let Some(obj) = resp.as_object_mut() {
+        obj.insert(crate::handlers::DONE_FROM_KEY.into(), json!(done_from));
+    }
+    Ok(resp)
 }
 
 /// 서버: 원격 출처 부모의 자식을 닫는다. 이미 claim 한 결과는 보낼 요청으로 남아 계속 전달된다.

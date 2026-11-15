@@ -230,7 +230,13 @@ impl Plugin for ClaudePlugin {
             "claude.broadcast" => {
                 handle_broadcast(&self.returns, &ctx.host, &ctx.params, &self.translator)
             }
-            "claude.tell" => handle_tell(&self.returns, &ctx.host, &ctx.params, &self.translator),
+            "claude.tell" => handle_tell(
+                &self.returns,
+                &self.pairing,
+                &ctx.host,
+                &ctx.params,
+                &self.translator,
+            ),
             // attach 서버에서 온 원격 자식의 턴 결과. 이 처리 안에서 claude namespace 를 다시 부르지 않는다.
             "claude.remote_receive" => {
                 remote::receive(&self.returns, &ctx.host, &ctx.params, &self.translator)

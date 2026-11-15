@@ -6,8 +6,10 @@ use tasty_utils::notify::NoticeType;
 /// 완료 로그에 쓰는 Claude 알림 종류.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
-    /// idle·needs_input 상태 변경.
+    /// 일을 시작한 뒤 턴이 끝났다(idle).
     StateChanged,
+    /// 입력을 기다린다(needs_input). 부모가 답해야 하므로 warning 이다.
+    NeedsInput,
     /// child 프로세스가 끝났다. 부모가 kill 로 끝낸 경우도 구분하지 않는다.
     Exited,
     /// API 오류로 끝난 턴의 완료 줄(오류 힌트가 붙음).
@@ -29,11 +31,12 @@ pub(crate) enum NoticeKind {
 }
 
 impl NoticeKind {
-    /// 상태 변경·결과 저장은 info, 출력이 없다는 알림은 warning, 오류가 섞이면 무조건 error 다.
+    /// 턴 종료·결과 저장은 info, 입력 대기와 출력이 없다는 알림은 warning, 오류가 섞이면 무조건 error 다.
     pub(crate) fn notice_type(self) -> NoticeType {
         match self {
             Self::StateChanged | Self::RemoteResult => NoticeType::Info,
-            Self::StalledNoError
+            Self::NeedsInput
+            | Self::StalledNoError
             | Self::StalledBackgroundWait
             | Self::StalledBackgroundTaskQuiet
             | Self::QuietReleased => NoticeType::Warning,
@@ -48,6 +51,7 @@ impl NoticeKind {
     fn message_key(self) -> &'static str {
         match self {
             Self::StateChanged | Self::Exited | Self::StopFailure => "claude.notify.done_message",
+            Self::NeedsInput => "claude.notify.needs_input_message",
             Self::StopFailureBackground => "claude.notify.stop_failure_background_message",
             Self::RemoteResult => "claude.notify.remote_result_message",
             Self::Stalled => "claude.notify.stalled_message",
@@ -61,8 +65,9 @@ impl NoticeKind {
     }
 
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::StateChanged,
+        Self::NeedsInput,
         Self::Exited,
         Self::StopFailure,
         Self::StopFailureBackground,
@@ -135,7 +140,7 @@ mod tests {
         }
     }
 
-    /// 대응표: 무출력 3종과 그 묶음만 warning, 오류가 섞인 넷은 error, 나머지 둘은 info 다.
+    /// 대응표: 입력 대기, 무출력 3종과 그 묶음만 warning, 오류가 섞인 넷은 error, 나머지 둘은 info 다.
     #[test]
     fn each_notice_kind_has_the_type_of_the_table() {
         use NoticeKind::*;
@@ -150,6 +155,7 @@ mod tests {
         assert_eq!(
             of(NoticeType::Warning),
             vec![
+                NeedsInput,
                 StalledNoError,
                 StalledBackgroundWait,
                 StalledBackgroundTaskQuiet,

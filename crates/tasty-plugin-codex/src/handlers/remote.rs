@@ -166,6 +166,7 @@ fn parent_of(parent: &Map<String, Value>) -> Option<Parent> {
 }
 
 /// client: 새 mirror 자식에 부모 경로를 묶는다. Codex 부모는 결과 수신처, 물리 부모는 완료 알림 훅이다.
+#[allow(clippy::too_many_arguments)] // reason: 새 자식을 묶는 데 필요한 부모 경로·소유자·완료 문턱을 각각 받는다.
 fn bind<H: HostCall>(
     host: &H,
     delivery: &DeliveryCtx<'_>,
@@ -174,6 +175,7 @@ fn bind<H: HostCall>(
     receiver_id: Option<&str>,
     parent_surface: Option<u32>,
     owner: Option<&str>,
+    done_from: Option<u64>,
 ) -> Result<(), IpcMethodError> {
     // 새 자식이므로 같은 surface id 에 남은 기록과 관계없이 소유자를 새로 쓴다.
     remote_owner::reset(&delivery.root.join(remote_owner::DIR), child, owner)
@@ -184,7 +186,7 @@ fn bind<H: HostCall>(
         None => {
             ownership::invalidate_route(delivery, child)?;
             if let Some(parent) = parent_surface {
-                register_notify_hooks(host, parent, child, "spawn");
+                register_notify_hooks(host, parent, child, "spawn", done_from);
             }
             Ok(())
         }
@@ -274,6 +276,8 @@ pub(crate) fn spawn<H: HostCall>(
             &reply.result.to_string(),
         )));
     };
+    // 서버가 정한 완료 문턱. 없으면 업그레이드 전 서버이므로 예전 완료 훅을 건다.
+    let done_from = reply.result.get(DONE_FROM_KEY).and_then(Value::as_u64);
     if let Err(e) = bind(
         host,
         delivery,
@@ -282,6 +286,7 @@ pub(crate) fn spawn<H: HostCall>(
         receiver_id,
         parent_surface,
         owner.as_deref(),
+        done_from,
     ) {
         let cleanup = match remote_attach::call(
             host,
@@ -647,6 +652,8 @@ fn late_spawn<H: HostCall>(
             p.receiver_id.as_deref(),
             p.parent_surface,
             p.owner.as_deref(),
+            // 늦은 결과에는 서버 응답이 없어 문턱을 모른다. 예전 완료 훅을 건다.
+            None,
         ) {
             Ok(()) => return Received::Recorded,
             Err(e) => e.message,
@@ -737,8 +744,10 @@ pub(crate) fn serve_spawn<H: HostCall>(
         "surface.send",
         json!({ "surface_id": child, "text": cmd }),
     )?;
+    let done_from = next_activity_threshold(host, child);
     let mut out = resp;
     if let Some(obj) = out.as_object_mut() {
+        obj.insert(DONE_FROM_KEY.into(), json!(done_from));
         obj.insert("parent_external".into(), json!(origin.parent_key));
     }
     Ok(out)
@@ -776,12 +785,19 @@ pub(crate) fn serve_tell<H: HostCall>(
     } else {
         ownership::invalidate_route(delivery, child)?;
     }
+    // 부모 쪽 완료 문턱은 이 서버가 보내기 전에 정해 응답에 싣는다. 보낸 뒤에는 상태가 이미 active 다.
+    let done_from = tell_threshold(host, child);
     match host_call(
         host,
         "terminal.tell",
         json!({ "surface": child, "text": message }),
     ) {
-        Ok(resp) => Ok(resp),
+        Ok(mut resp) => {
+            if let Some(obj) = resp.as_object_mut() {
+                obj.insert(DONE_FROM_KEY.into(), json!(done_from));
+            }
+            Ok(resp)
+        }
         Err(e) => {
             if origin.return_route.is_some() {
                 ownership::restore_route(delivery, child, previous);

@@ -24,6 +24,7 @@ codex = "Codex"
 
 [codex.notify]
 done_message = "surface {target} state changed (via {kind})"
+needs_input_message = "surface {target} waiting for approval (via {kind})"
 remote_result_message = "surface {surface}: turn result {id} ({status}) is stored. Read it with: tasty codex remote-results --id {id}"
 sandbox_hint = "⚠ sandbox init appears to have failed (RTM_NEWADDR detected) — this environment may not support a nested sandbox (bwrap). Try again with --full-auto."
 
@@ -94,7 +95,7 @@ write_failed = "could not write the codex config file: {detail}"
 description = "Launch a new workspace and start Codex in its terminal"
 
 [codex.cli.sub.spawn]
-description = "Create a child Codex instance in a split surface. Waits for host responses, then returns without waiting for the child task to finish. When called from a Codex conversation, each finished child turn is returned to that conversation; otherwise registers hooks for idle, input-wait and exit notifications to the parent surface."
+description = "Create a child Codex instance in a split surface. Waits for host responses, then returns without waiting for the child task to finish. When called from a Codex conversation, each finished child turn is returned to that conversation; otherwise the parent surface gets one line when the child finishes the turn it started, one line each time it waits for an approval (worded apart from a finished turn), and one line when it exits. Turns the child opens on its own after that write nothing."
 
 [codex.cli.sub.children]
 description = "List children of the specified Codex parent"
@@ -106,10 +107,10 @@ description = "Return the parent Codex surface id for a given child surface"
 description = "Query a single child's status: idle, needs_input, active, or exited (live-surface cross-checked)"
 
 [codex.cli.sub.tell]
-description = "Send a message with line breaks preserved and submit it. Waits for host responses, then returns without waiting for the task to finish. When called from a Codex conversation, the target's finished turns are returned to that conversation; otherwise, when a caller surface is provided, registers hooks for idle, input-wait and exit notifications."
+description = "Send a message with line breaks preserved and submit it. Waits for host responses, then returns without waiting for the task to finish. When called from a Codex conversation, the target's finished turns are returned to that conversation; otherwise, when a caller surface is provided, it gets one line when the turn this message started finishes, one line each time the target waits for an approval (worded apart from a finished turn), and one line when it exits. Turns the target opens on its own after that write nothing."
 
 [codex.cli.sub.notify-caller]
-description = "Internal: report a child state change and remove matching once-hooks. If the target surface can still be found, register the completion hooks again. Called by spawn/tell hooks; not intended for direct use."
+description = "Internal: decide and write one line of the caller's notification log for a spawn/tell completion hook. --event says which hook ran: idle writes a finished-turn line once, only after new activity at or above --done-from; input writes an approval-wait line while the target still waits; exit always writes an exit line. Removes the remaining hooks of its --arm and, if the target surface can still be found, arms again (without the idle hook once the turn end was noticed). A run whose arm was replaced writes nothing. Without --event (hooks registered before an upgrade) the line follows the target state. Called by spawn/tell hooks; not intended for direct use."
 
 [codex.cli.sub.broadcast]
 description = "Broadcast text to all children of a parent Codex instance"
@@ -212,6 +213,15 @@ help = "Surface ID that completed"
 
 [codex.cli.arg.notify_caller_args.kind]
 help = "spawn | tell"
+
+[codex.cli.arg.notify_caller_args.event]
+help = "Which completion hook ran: idle, input or exit. Hooks registered before an upgrade omit it"
+
+[codex.cli.arg.notify_caller_args.done_from]
+help = "Activity sequence a turn end must reach to count as finished work"
+
+[codex.cli.arg.notify_caller_args.arm]
+help = "Id of the registration this hook belongs to; a newer registration of the same caller and target replaces it"
 
 [codex.cli.arg.broadcast_args.text]
 help = "Text to broadcast. Use \\r to submit (e.g. \"hello\\r\")"

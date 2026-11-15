@@ -24,6 +24,7 @@ codex = "Codex"
 
 [codex.notify]
 done_message = "surface {target} 상태 변경 (호출 방식: {kind})"
+needs_input_message = "surface {target} 승인 대기 (호출 방식: {kind})"
 remote_result_message = "surface {surface}: 턴 결과 {id} ({status})을(를) 저장했습니다. 읽기: tasty codex remote-results --id {id}"
 sandbox_hint = "⚠ 샌드박스 초기화에 실패한 것으로 보입니다(RTM_NEWADDR 감지). 이 환경은 중첩 샌드박스(bwrap)를 지원하지 않을 수 있습니다. --full-auto로 재시도하세요."
 
@@ -94,7 +95,7 @@ write_failed = "Codex 설정 파일을 쓰지 못했습니다: {detail}"
 description = "새 워크스페이스를 만들고 터미널에서 Codex 시작"
 
 [codex.cli.sub.spawn]
-description = "자식 Codex 인스턴스를 분할 surface에 만듭니다. 호스트 응답을 받은 뒤 반환하며 자식 작업 완료까지 기다리지는 않습니다. Codex 대화에서 호출하면 자식의 턴이 끝날 때마다 결과를 그 대화로 돌려보냅니다. 그 밖에는 부모 surface에 idle·입력 대기·종료 알림 훅을 등록합니다."
+description = "자식 Codex 인스턴스를 분할 surface에 만듭니다. 호스트 응답을 받은 뒤 반환하며 자식 작업 완료까지 기다리지는 않습니다. Codex 대화에서 호출하면 자식의 턴이 끝날 때마다 결과를 그 대화로 돌려보냅니다. 그 밖에는 자식이 시작한 턴을 끝내면 한 줄, 승인을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 부모 surface에 남깁니다. 그 뒤 자식이 스스로 연 턴은 줄을 남기지 않습니다."
 
 [codex.cli.sub.children]
 description = "지정한 Codex 부모의 자식 나열"
@@ -106,10 +107,10 @@ description = "지정한 자식 서피스의 부모 Codex 서피스 ID 반환"
 description = "자식 하나의 상태 조회: idle, needs_input, active, exited(실제 서피스와 대조)"
 
 [codex.cli.sub.tell]
-description = "줄바꿈을 유지해 메시지를 보내고 제출합니다. 호스트 응답을 받은 뒤 반환하며 작업 완료까지 기다리지는 않습니다. Codex 대화에서 호출하면 대상의 턴 결과를 그 대화로 돌려보냅니다. 그 밖에는 호출자 surface가 있을 때 idle·입력 대기·종료 알림 훅을 등록합니다."
+description = "줄바꿈을 유지해 메시지를 보내고 제출합니다. 호스트 응답을 받은 뒤 반환하며 작업 완료까지 기다리지는 않습니다. Codex 대화에서 호출하면 대상의 턴 결과를 그 대화로 돌려보냅니다. 그 밖에는 호출자 surface가 있을 때 이 메시지로 시작한 턴이 끝나면 한 줄, 대상이 승인을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 남깁니다. 그 뒤 대상이 스스로 연 턴은 줄을 남기지 않습니다."
 
 [codex.cli.sub.notify-caller]
-description = "내부용: 자식의 상태 변화를 알리고 같은 대상·명령의 일회성 훅을 제거합니다. 대상 surface가 여전히 조회되면 완료 훅을 다시 등록합니다. spawn/tell 훅에서 호출하며 직접 사용하지 않습니다."
+description = "내부용: spawn/tell 완료 훅 하나를 판정해 호출자 알림 로그에 한 줄을 씁니다. --event는 실행된 훅입니다. idle은 --done-from 이상의 새 활동 뒤에 한 번만 턴 종료 줄을, input은 대상이 아직 기다리면 승인 대기 줄을, exit는 항상 종료 줄을 씁니다. 자기 --arm의 남은 훅을 지우고 대상 surface가 조회되면 다시 등록합니다(턴 종료를 알린 뒤에는 idle 훅 없이). 더 새 등록으로 바뀐 훅은 줄을 쓰지 않습니다. --event가 없는 훅(업그레이드 전 등록)은 대상 상태로 줄을 정합니다. spawn/tell 훅에서 호출하며 직접 사용하지 않습니다."
 
 [codex.cli.sub.broadcast]
 description = "부모 Codex 인스턴스의 모든 자식에게 텍스트 일괄 전송"
@@ -212,6 +213,15 @@ help = "완료된 서피스 ID"
 
 [codex.cli.arg.notify_caller_args.kind]
 help = "명령: spawn | tell"
+
+[codex.cli.arg.notify_caller_args.event]
+help = "실행된 완료 훅: idle, input, exit. 업그레이드 전에 등록한 훅에는 없습니다"
+
+[codex.cli.arg.notify_caller_args.done_from]
+help = "턴 종료를 끝난 일로 세는 활동 순번 문턱"
+
+[codex.cli.arg.notify_caller_args.arm]
+help = "이 훅이 속한 등록의 id. 같은 호출자·대상의 더 새 등록이 이를 대체합니다"
 
 [codex.cli.arg.broadcast_args.text]
 help = "일괄 전송할 텍스트. 제출하려면 \\r 사용(예: \"hello\\r\")"

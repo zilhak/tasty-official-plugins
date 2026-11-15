@@ -5,6 +5,7 @@
 
 use serde_json::{Map, Value, json};
 use tasty_plugin_agent_common::children::{join_indices, spawn_census_for};
+use tasty_plugin_agent_common::completion_gate;
 use tasty_plugin_agent_common::host_call::{HostCall, cleanup_sibling_hooks, surface_is_alive};
 use tasty_plugin_agent_common::params::{
     TargetSurfaceError, U32FieldError, forward, target_surface,
@@ -396,6 +397,10 @@ pub(crate) fn handle_tell<H: HostCall>(
         .transpose()
         .map_err(rollback)?;
     // 개행과 제출 처리는 호스트의 terminal.tell에 맡긴다. 원격 자식은 서버의 같은 메서드로 보낸다.
+    // 로컬 자식의 완료 문턱은 보내기 전에 정한다. 보내면 호스트가 바로 active 로 바꾼다.
+    let local_done_from = remote_anchor
+        .is_none()
+        .then(|| tell_threshold(host, surface_id));
     let sent = match remote_anchor {
         Some(anchor) => remote::tell(host, anchor, surface_id, message, route, tr)
             .map_err(|e| (e.error, e.unknown)),
@@ -411,12 +416,14 @@ pub(crate) fn handle_tell<H: HostCall>(
         Err((e, true)) => return Err(e),
         Err((e, false)) => return Err(rollback(e)),
     };
+    // 원격 자식의 문턱은 서버가 보내기 전에 정해 응답에 싣는다. 없으면 업그레이드 전 서버다.
+    let done_from = local_done_from.or_else(|| resp.get(DONE_FROM_KEY).and_then(Value::as_u64));
 
     if caller.is_none()
         && let Ok(caller) = require_u32(params, "caller_surface", tr)
     {
         // CLI는 호출자 ID를 자동으로 채운다. 유효한 값이 없으면 알림을 등록하지 않는다.
-        register_notify_hooks(host, caller, surface_id, "tell");
+        register_notify_hooks(host, caller, surface_id, "tell", done_from);
     }
 
     let mut out = resp;
@@ -480,7 +487,8 @@ pub(crate) mod remote;
 mod spawn;
 pub(crate) use spawn::handle_spawn;
 
-/// 등록과 정리에 같은 명령을 사용해 대상별 완료 훅 그룹을 찾는다.
+/// 꼬리가 없는 옛 형식의 완료 훅 명령. 업그레이드 전 서버의 원격 자식과 옛 훅의 정리에 쓴다.
+/// 새 형식은 이 명령 뒤에 이벤트·문턱·무장 id 를 붙인다([`completion_gate`]).
 fn notify_caller_command(caller_surface: u32, target_surface: u32, kind: &str) -> String {
     format!(
         "{}{kind}",
@@ -493,7 +501,7 @@ fn notify_caller_group_prefix(caller_surface: u32, target_surface: u32) -> Strin
     format!("tasty codex notify-caller --caller {caller_surface} --target {target_surface} --kind ")
 }
 
-/// 자식의 상태 변경을 알린다. 입력 대기·종료도 포함하므로 작업 완료를 뜻하지는 않는다.
+/// 턴 종료·종료 줄의 문구. 상태 변경을 알릴 뿐 작업 성공을 뜻하지는 않는다.
 fn notify_caller_message(tr: &Translator, kind: &str, target: u32) -> String {
     tr.t("codex.notify.done_message")
         .replace("{target}", &target.to_string())
@@ -540,27 +548,82 @@ fn fetch_screen_text_for_hint<H: HostCall>(host: &H, target: u32) -> Option<Stri
     .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_string))
 }
 
-/// codex-idle·needs-input·process-exit 완료 훅을 등록한다.
+/// 원격 tell·spawn 응답에서 서버가 정한 완료 문턱을 싣는 키.
+pub(crate) const DONE_FROM_KEY: &str = "done_from";
+
+/// 완료 그룹의 이벤트별 호스트 훅 이름. 매니페스트에 선언한 이름이다(process-exit 는 내장).
+const NOTIFY_HOOK_EVENTS: completion_gate::HookEvents = completion_gate::HookEvents {
+    idle: "codex-idle",
+    input: "needs-input",
+    exit: "process-exit",
+};
+
+fn notify_group<'a>(target: u32, prefix: &'a str, kind: &'a str) -> completion_gate::Group<'a> {
+    completion_gate::Group {
+        target,
+        prefix,
+        kind,
+        events: NOTIFY_HOOK_EVENTS,
+        seq_key: ACTIVITY_SEQ_META_KEY,
+        agent: "codex",
+    }
+}
+
+/// tell 의 완료 문턱. 보내기 전의 상태와 활동 순번으로 정한다. 진행 중인 턴에 흡수될 수 있으면 그 턴의 끝도
+/// 완료로 센다. Codex 에는 보류하는 Stop 이 없다.
+pub(crate) fn tell_threshold<H: HostCall>(host: &H, target: u32) -> u64 {
+    let state = completion_gate::target_state(host, target);
+    let seq = completion_gate::activity_seq(host, target, ACTIVITY_SEQ_META_KEY);
+    completion_gate::threshold(state.as_deref(), seq, false)
+}
+
+/// 새 활동이 시작된 뒤의 턴 종료만 완료로 세는 문턱. spawn 이 쓴다.
+pub(crate) fn next_activity_threshold<H: HostCall>(host: &H, target: u32) -> u64 {
+    completion_gate::activity_seq(host, target, ACTIVITY_SEQ_META_KEY) + 1
+}
+
+/// codex-idle·needs-input·process-exit 완료 훅을 이벤트마다 다른 명령으로 등록한다. `done_from` 은 완료로 셀
+/// 활동 순번의 문턱이다. `None` 이면 문턱을 모르는 원격 서버(업그레이드 전)의 자식이므로 예전처럼 세 이벤트에
+/// 같은 명령을 건다.
 /// 등록 실패는 경고만 남기며 spawn/tell 성공을 취소하지 않는다.
 fn register_notify_hooks<H: HostCall>(
     host: &H,
     caller_surface: u32,
     target_surface: u32,
     kind: &str,
+    done_from: Option<u64>,
 ) {
-    let cmd = notify_caller_command(caller_surface, target_surface, kind);
-    // 세 이벤트는 플러그인 매니페스트에도 선언돼 있어야 한다.
-    tasty_plugin_agent_common::host_call::register_completion_hooks(
-        host,
-        target_surface,
-        &cmd,
-        &notify_caller_group_prefix(caller_surface, target_surface),
-        &["codex-idle", "needs-input", "process-exit"],
-        "codex",
-    );
+    let prefix = notify_caller_group_prefix(caller_surface, target_surface);
+    match done_from {
+        Some(done_from) => {
+            completion_gate::arm(
+                host,
+                &notify_group(target_surface, &prefix, kind),
+                done_from,
+                true,
+            );
+        }
+        None => {
+            let cmd = notify_caller_command(caller_surface, target_surface, kind);
+            tasty_plugin_agent_common::host_call::register_completion_hooks(
+                host,
+                target_surface,
+                &cmd,
+                &prefix,
+                &[
+                    NOTIFY_HOOK_EVENTS.idle,
+                    NOTIFY_HOOK_EVENTS.input,
+                    NOTIFY_HOOK_EVENTS.exit,
+                ],
+                "codex",
+            );
+        }
+    }
 }
 
-/// 완료 로그를 남기고 같은 대상·명령의 훅을 정리한다. 대상이 조회되면 다시 등록한다.
+/// 완료 훅 하나의 처리. 명령 꼬리(`--event`·`--done-from`·`--arm`)가 있으면 활동과 무장으로 줄을 정한다.
+/// 턴 종료는 spawn·tell 뒤 새 활동이 있었을 때 한 번만, 승인 대기는 대기마다, 종료는 항상 알린다.
+/// 꼬리가 없는 옛 훅은 예전처럼 상태로 줄을 정하고, 새 형식으로 다시 무장한다.
 pub(crate) fn handle_notify_caller<H: HostCall>(
     host: &H,
     params: &Value,
@@ -569,40 +632,119 @@ pub(crate) fn handle_notify_caller<H: HostCall>(
     let caller = require_u32(params, "caller", tr)?;
     let target = require_u32(params, "target", tr)?;
     let kind = optional_str(params, "kind").unwrap_or_else(|| "tell".into());
-    let message = notify_caller_message(tr, &kind, target);
+    let Some(tail) = completion_gate::Tail::of_params(params) else {
+        return legacy_notify_caller(host, caller, target, &kind, tr);
+    };
+    let _serial = completion_gate::serialize();
+    let prefix = notify_caller_group_prefix(caller, target);
+    let group = notify_group(target, &prefix, &kind);
+    let remote = remote::child_anchor(host, target, tr)
+        .ok()
+        .flatten()
+        .is_some();
+    let evaluation = completion_gate::evaluate(host, &group, tail, remote, || {
+        std::thread::sleep(completion_gate::REMOTE_SEQ_PAUSE)
+    });
+    let line = match evaluation.verdict.decision {
+        completion_gate::Decision::Done => Some(done_line(
+            host,
+            tr,
+            &kind,
+            target,
+            evaluation.state.as_deref(),
+        )),
+        completion_gate::Decision::NeedsInput => Some((
+            crate::notice::NoticeKind::NeedsInput,
+            needs_input_message(tr, &kind, target),
+        )),
+        completion_gate::Decision::Exited => Some((
+            crate::notice::NoticeKind::Exited,
+            notify_caller_message(tr, &kind, target),
+        )),
+        completion_gate::Decision::Skip => None,
+    };
+    let written = line.is_some();
+    if let Some((notice, line)) = line
+        && let Err(e) = crate::notice::append(caller, notice, &line)
+    {
+        tracing::warn!("codex notify-caller completion-log append failed: {e}");
+    }
+    completion_gate::finish(host, &group, tail, evaluation.verdict);
+    Ok(json!({ "written": written }))
+}
+
+/// 끝난 턴의 줄. 화면에 샌드박스 실패 표식이 있으면 안내를 붙여 error 로 쓴다.
+fn done_line<H: HostCall>(
+    host: &H,
+    tr: &Translator,
+    kind: &str,
+    target: u32,
+    state: Option<&str>,
+) -> (crate::notice::NoticeKind, String) {
+    let message = notify_caller_message(tr, kind, target);
     let screen_text = fetch_screen_text_for_hint(host, target);
     let with_hint = append_sandbox_hint_if_detected(tr, message.clone(), screen_text.as_deref());
-    let notice = crate::notice::NoticeKind::of_done_line(
+    let notice = crate::notice::NoticeKind::of_done_line(state, with_hint != message);
+    (notice, with_hint)
+}
+
+/// 대상이 승인을 기다린다는 줄. 턴 종료 줄과 문구가 다르다.
+fn needs_input_message(tr: &Translator, kind: &str, target: u32) -> String {
+    tr.t("codex.notify.needs_input_message")
+        .replace("{target}", &target.to_string())
+        .replace("{kind}", kind)
+}
+
+/// 꼬리가 없는 옛 훅의 처리. 상태로 줄을 정해 쓰고 같은 명령의 남은 훅을 지운다. 대상이 조회되면 새 형식으로
+/// 다시 무장한다.
+fn legacy_notify_caller<H: HostCall>(
+    host: &H,
+    caller: u32,
+    target: u32,
+    kind: &str,
+    tr: &Translator,
+) -> Result<Value, IpcMethodError> {
+    let (notice, line) = done_line(
+        host,
+        tr,
+        kind,
+        target,
         target_state(host, target).as_deref(),
-        with_hint != message,
     );
 
     // 로그 쓰기에 실패해도 경고를 남기고 훅 정리를 계속한다.
-    if let Err(e) = crate::notice::append(caller, notice, &with_hint) {
+    if let Err(e) = crate::notice::append(caller, notice, &line) {
         tracing::warn!("codex notify-caller completion-log append failed: {e}");
     }
 
-    let expected_command = notify_caller_command(caller, target, &kind);
+    let expected_command = notify_caller_command(caller, target, kind);
     cleanup_sibling_hooks(host, target, &expected_command);
 
-    rearm_if_still_alive(host, caller, target, &kind);
+    rearm_if_still_alive(host, caller, target, kind);
 
-    Ok(json!({}))
+    Ok(json!({ "written": true }))
 }
 
 /// 대상의 현재 상태(`idle`·`needs_input`·`exited` 등). 조회에 실패하면 `None` 이며 완료 줄은 info 로 남는다.
 fn target_state<H: HostCall>(host: &H, target: u32) -> Option<String> {
-    host.call("terminal.state", json!({ "surface": target }))
-        .ok()
-        .and_then(|r| r.get("state").and_then(|v| v.as_str()).map(str::to_string))
+    completion_gate::target_state(host, target)
 }
 
-/// 대상 터미널이 조회되면 완료 훅을 다시 등록한다. 조회 실패 시 생략한다.
+/// 옛 훅을 처리한 뒤 대상 터미널이 조회되면 새 형식으로 다시 무장한다. 조회 실패 시 생략한다.
+/// 이미 idle 이면 그 턴 종료를 알렸으므로 턴 종료 훅은 걸지 않는다.
 /// 터미널의 존재 여부만 확인하므로 프로세스가 실행 중이라는 뜻은 아니다.
 fn rearm_if_still_alive<H: HostCall>(host: &H, caller: u32, target: u32, kind: &str) {
-    if surface_is_alive(host, target) {
-        register_notify_hooks(host, caller, target, kind);
+    if !surface_is_alive(host, target) {
+        return;
     }
+    let prefix = notify_caller_group_prefix(caller, target);
+    let with_idle = target_state(host, target).as_deref() != Some("idle");
+    completion_gate::arm(
+        host,
+        &notify_group(target, &prefix, kind),
+        next_activity_threshold(host, target),
+        with_idle,
+    );
 }
 
 /// 자식 목록과 상태를 읽어 경고를 만든다. 조회 실패 시 경고를 생략한다.
@@ -970,6 +1112,10 @@ pub(crate) fn handle_hook<H: HostCall>(
     }
     // agent task 의 턴 결과를 idle 상태보다 먼저 보고한다.
     crate::task_turn::report(host, event, surface_id, params);
+    // 새 활동이면 상태보다 먼저 활동 순번을 올린다. 부모 완료 알림은 이 순번이 오른 뒤의 턴 종료만 센다.
+    if new_state == "active" {
+        host_call_failures += count_activity(host, surface_id);
+    }
     // 상태 갱신 실패는 호출자에게 알린다. 뒤의 알림 실패는 집계하고 계속한다.
     host_call(
         host,
@@ -1086,6 +1232,25 @@ fn record_session_meta<H: HostCall>(
         }
     }
     failures
+}
+
+/// surface meta 키 — 새 활동(prompt-submit·session-start·post-tool-use)마다 1 올리는 순번. 부모 완료 알림은
+/// spawn·tell 뒤 이 순번이 오른 다음의 턴 종료만 완료로 센다. 원격 mirror 에도 relay 한다.
+pub(crate) const ACTIVITY_SEQ_META_KEY: &str = "codex-activity-seq";
+
+/// 활동 순번을 1 올려 meta 에 쓴다. 실패한 호출 수를 반환한다.
+fn count_activity<H: HostCall>(host: &H, surface_id: u32) -> usize {
+    let seq = completion_gate::activity_seq(host, surface_id, ACTIVITY_SEQ_META_KEY) + 1;
+    match host.call(
+        "surface.meta.set",
+        json!({ "surface_id": surface_id, "key": ACTIVITY_SEQ_META_KEY, "value": seq.to_string() }),
+    ) {
+        Ok(_) => 0,
+        Err(e) => {
+            tracing::warn!("codex hook: activity sequence of s{surface_id} not recorded: {e}");
+            1
+        }
+    }
 }
 
 /// 턴 종료·승인 대기 알림을 보내고 실패한 호출 수를 반환한다.
@@ -1352,7 +1517,7 @@ mod tests {
         );
     }
 
-    /// session-start의 메타데이터 기록 두 건이 실패하면 응답에 2를 담아야 한다.
+    /// session-start의 메타데이터 기록 두 건과 활동 순번 기록이 실패하면 응답에 3을 담아야 한다.
     #[test]
     fn a_hook_response_reports_the_best_effort_calls_that_failed() {
         let fx = Fixture::new();
@@ -1367,7 +1532,7 @@ mod tests {
 
         assert_eq!(
             out["host_call_failures"],
-            2,
+            3,
             "시도한 호출: {:?}",
             host.seen.borrow()
         );
@@ -1775,7 +1940,7 @@ mod tests {
         );
     }
 
-    /// 도구 실행 후에는 active로만 바꾸고 알림을 추가하지 않는다.
+    /// 도구 실행 후에는 활동 순번을 올리고 active로만 바꾼다. 알림은 추가하지 않는다.
     #[test]
     fn a_post_tool_use_only_returns_to_active() {
         let fx = Fixture::new();
@@ -1791,10 +1956,20 @@ mod tests {
         let seen = host.seen.borrow();
         assert_eq!(
             *seen,
-            vec![(
-                "terminal.set_state".to_string(),
-                json!({ "surface": 42, "state": "active" })
-            )],
+            vec![
+                (
+                    "surface.meta.get".to_string(),
+                    json!({ "surface_id": 42, "key": ACTIVITY_SEQ_META_KEY })
+                ),
+                (
+                    "surface.meta.set".to_string(),
+                    json!({ "surface_id": 42, "key": ACTIVITY_SEQ_META_KEY, "value": "1" })
+                ),
+                (
+                    "terminal.set_state".to_string(),
+                    json!({ "surface": 42, "state": "active" })
+                )
+            ],
             "{seen:?}"
         );
     }
@@ -2587,7 +2762,7 @@ trusted_hash = "sha256:xyz"
     fn sibling_cleanup_removes_all_after_one_fires() {
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
-        register_notify_hooks(&host, caller, target, "tell");
+        register_notify_hooks(&host, caller, target, "tell", None);
         assert_eq!(
             host.commands_on(target).len(),
             3,
@@ -2611,8 +2786,8 @@ trusted_hash = "sha256:xyz"
         // 같은 부모가 spawn 뒤 tell 하면 tell 그룹이 spawn 그룹을 대신한다.
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
-        register_notify_hooks(&host, caller, target, "spawn");
-        register_notify_hooks(&host, caller, target, "tell");
+        register_notify_hooks(&host, caller, target, "spawn", None);
+        register_notify_hooks(&host, caller, target, "tell", None);
         let tell_cmd = notify_caller_command(caller, target, "tell");
         assert_eq!(host.commands_on(target), vec![tell_cmd.clone(); 3]);
 
@@ -2631,10 +2806,10 @@ trusted_hash = "sha256:xyz"
         let host = MockHost::new();
         let (caller, other, target) = (7u32, 8u32, 1650u32);
         for _ in 0..3 {
-            register_notify_hooks(&host, caller, target, "tell");
+            register_notify_hooks(&host, caller, target, "tell", None);
         }
         assert_eq!(host.commands_on(target).len(), 3);
-        register_notify_hooks(&host, other, target, "tell");
+        register_notify_hooks(&host, other, target, "tell", None);
         assert_eq!(host.commands_on(target).len(), 6);
         assert_eq!(host.fire(target, "codex-idle"), 2, "부모마다 한 줄");
     }
@@ -2644,7 +2819,7 @@ trusted_hash = "sha256:xyz"
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
         host.mark_alive(target);
-        register_notify_hooks(&host, caller, target, "tell");
+        register_notify_hooks(&host, caller, target, "tell", None);
         assert_eq!(
             host.commands_on(target).len(),
             3,
@@ -2685,7 +2860,7 @@ trusted_hash = "sha256:xyz"
         let host = MockHost::new();
         let (caller, target) = (7u32, 1650u32);
         host.mark_alive(target);
-        register_notify_hooks(&host, caller, target, "spawn");
+        register_notify_hooks(&host, caller, target, "spawn", None);
 
         // process-exit 알림과 함께 대상 터미널이 조회되지 않는 상황을 재현한다.
         assert_eq!(host.fire(target, "process-exit"), 1);
@@ -2771,3 +2946,7 @@ trusted_hash = "sha256:xyz"
 #[cfg(all(test, unix))]
 #[path = "handlers_shell_tests.rs"]
 mod shell_tests;
+
+#[cfg(test)]
+#[path = "handlers_gate_tests.rs"]
+mod gate_tests;

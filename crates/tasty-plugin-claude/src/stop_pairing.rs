@@ -146,6 +146,13 @@ fn same_prompt(a: &Option<String>, b: &Option<String>) -> bool {
 }
 
 impl StopPairing {
+    /// 이 surface 에 판정을 기다리는 턴 종료 Stop 이 있는가. 있으면 상태는 active 여도 턴은 끝났을 수 있다.
+    pub fn holds_turn_end(&self, surface_id: u32) -> bool {
+        self.pending
+            .values()
+            .any(|p| p.surface_id == surface_id && p.kind == StopKind::Idle)
+    }
+
     /// 게이트가 붙은 세션의 Stop 을 넣는다. 판정이 이미 모였으면 확정 결과를 돌려준다.
     /// 같은 세션에 보류 중인 Stop 이 있으면 그 Stop 은 block 됐던 것이다. 턴이 끝났다면 새 Stop 이
     /// 오기 전에 UserPromptSubmit 이 왔을 것이기 때문이다.

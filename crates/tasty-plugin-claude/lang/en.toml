@@ -66,6 +66,7 @@ limit_body_one = "surface {}: stopped resuming after {} consecutive API error ({
 
 [claude.notify]
 done_message = "surface {}: state changed (via {})"
+needs_input_message = "surface {}: waiting for input (via {})"
 remote_result_message = "surface {0}: turn result {1} ({2}) is stored. Read it with: tasty claude remote-results --id {1}"
 stop_failure_hint = " — the turn ended on an API error ({}) and is waiting for input"
 stalled_message = "surface {}: no output since an error — the child looks stuck (still active, no completion signal)"
@@ -192,7 +193,7 @@ claude = "Claude Code"
 description = "Launch Claude Code in a new workspace"
 
 [claude.cli.sub.spawn]
-description = "Spawn a child Claude instance into a workspace. Returns immediately; a notification is delivered to the caller surface every time the child transitions to idle/needs_input, and once more when it exits — not just the first transition."
+description = "Spawn a child Claude instance into a workspace. Returns immediately; the caller surface gets one line when the child finishes the turn it started, one line each time it waits for input (worded apart from a finished turn), and one line when it exits. Turns the child opens on its own after that and state changes that start no work write nothing."
 
 [claude.cli.sub.children]
 description = "List children of the specified Claude parent"
@@ -204,7 +205,7 @@ description = "Show the parent of the specified Claude child"
 description = "Query a single child's status: idle, needs_input, active, or exited (live-surface cross-checked)"
 
 [claude.cli.sub.tell]
-description = "Send a message to a Claude instance (multi-line, submits at end). Returns immediately; a notification is delivered to the caller surface every time the target transitions to idle/needs_input, and once more when it exits — not just the first transition."
+description = "Send a message to a Claude instance (multi-line, submits at end). Returns immediately; the caller surface gets one line when the target finishes the turn this message started, one line each time it waits for input (worded apart from a finished turn), and one line when it exits. Turns the target opens on its own after that and state changes that start no work write nothing."
 
 [claude.cli.sub.broadcast]
 description = "Broadcast text to all children of a parent Claude instance"
@@ -225,7 +226,7 @@ description = "Respawn a child Claude instance"
 description = "Restart the Claude instance in a surface and resume the same session (delayed kill + claude -r). Call this as the LAST action of a turn — anything after the delay is cut off."
 
 [claude.cli.sub.child-profile]
-description = "Attach a persistent Claude session profile to a CHILD instance (resolves --child to its surface, then runs the same sequence as 'claude reboot --profile' on it). Unlike reboot, this does NOT cut off the caller's turn — only the child restarts. A notification is delivered to the caller surface when the child transitions to idle/needs_input, and once more when it exits."
+description = "Attach a persistent Claude session profile to a CHILD instance (resolves --child to its surface, then runs the same sequence as 'claude reboot --profile' on it). Unlike reboot, this does NOT cut off the caller's turn — only the child restarts. The restart itself writes no line; the caller surface gets one line when the child next finishes a turn it started, one line each time it waits for input, and one line when it exits."
 
 [claude.cli.sub.install]
 description = "Install or update Tasty hooks and the managed Claude notification mod; preserve existing user hooks and plugin paths. The response includes installed and updated hook events and mod_updated."
@@ -261,7 +262,7 @@ description = "Declare how long a child's no-output notices are expected, for th
 description = "Internal: write the held no-output notices of quiet declarations that ended to the caller's notification log, once per caller. Used as the hook.set command for claude-quiet-released."
 
 [claude.cli.sub.notify-done]
-description = "Internal: report a spawn/tell state transition to the caller and remove matching once-hooks. If the target surface can still be found, register the three completion hooks again. Used as the hook.set command for claude-idle/needs-input/process-exit."
+description = "Internal: decide and write one line of the caller's notification log for a spawn/tell completion hook. --event says which hook ran: idle writes a finished-turn line once, only after new activity at or above --done-from; input writes an input-wait line while the target still waits; exit always writes an exit line. Removes the remaining hooks of its --arm and, if the target surface can still be found, arms again (without the idle hook once the turn end was noticed). A run whose arm was replaced writes nothing. Without --event (hooks registered before an upgrade) the line follows the target state. Used as the hook.set command for claude-idle/needs-input/process-exit."
 
 [claude.cli.sub.profile-register]
 description = "Register a Claude session profile under a name (copies the file into plugin-private storage; re-registering the same name updates its content)"
@@ -376,6 +377,15 @@ help = "Surface whose spawn/tell just completed"
 
 [claude.cli.arg.notify_done_args.command]
 help = "Which command completed: spawn or tell"
+
+[claude.cli.arg.notify_done_args.event]
+help = "Which completion hook ran: idle, input or exit. Hooks registered before an upgrade omit it"
+
+[claude.cli.arg.notify_done_args.done_from]
+help = "Activity sequence a turn end must reach to count as finished work"
+
+[claude.cli.arg.notify_done_args.arm]
+help = "Id of the registration this hook belongs to; a newer registration of the same caller and target replaces it"
 
 [claude.cli.arg.notify_error_args.caller_surface]
 help = "Surface that issued the spawn/tell command and should receive the notification"

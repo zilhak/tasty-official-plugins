@@ -429,6 +429,45 @@ fn a_local_workspace_keeps_the_local_spawn() {
     assert!(host.methods().iter().any(|m| m == "terminal.spawn"));
 }
 
+/// 원격 자식의 완료 훅은 서버가 정한 문턱으로 건다. 문턱이 없는 응답(업그레이드 전 서버)은 예전 훅을 건다.
+#[test]
+fn a_mirror_tell_arms_with_the_threshold_of_the_server() {
+    fn with_threshold() -> Result<Value, PluginError> {
+        Ok(json!({ "call_id": 8, "result": { "ok": true, "done_from": 4 }, "children": [] }))
+    }
+    fn without_threshold() -> Result<Value, PluginError> {
+        Ok(json!({ "call_id": 8, "result": { "ok": true }, "children": [] }))
+    }
+    for (reply, expected) in [
+        (
+            with_threshold as fn() -> Result<Value, PluginError>,
+            Some("--done-from 4"),
+        ),
+        (without_threshold, None),
+    ] {
+        let (_d, returns) = store();
+        tasty_plugin_agent_common::remote_owner::reset(&returns.owners_dir().unwrap(), 15, None)
+            .unwrap();
+        let host = client_host(true, reply);
+        let params = json!({ "surface": 15, "message": "next", "caller_surface": 3 });
+        crate::handlers::handle_tell(&returns, &Default::default(), &host, &params, &tr()).unwrap();
+        let commands: Vec<String> = host
+            .params_of("hook.set")
+            .iter()
+            .filter_map(|p| p["command"].as_str().map(String::from))
+            .filter(|c| c.contains("notify-done"))
+            .collect();
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        match expected {
+            Some(tail) => assert!(commands.iter().all(|c| c.contains(tail)), "{commands:?}"),
+            None => assert!(
+                commands.iter().all(|c| !c.contains("--event")),
+                "{commands:?}"
+            ),
+        }
+    }
+}
+
 /// 경로 먼저, 입력 나중. 원격 자식의 입력은 서버로 가고 이 Tasty 의 terminal.tell 은 쓰지 않는다.
 #[test]
 fn a_tell_to_a_mirror_child_goes_to_the_server_after_the_route() {
@@ -443,7 +482,7 @@ fn a_tell_to_a_mirror_child_goes_to_the_server_after_the_route() {
         "surface": 15, "message": "next",
         "_tasty_context": { "provider": "codex", "thread_id": THREAD },
     });
-    crate::handlers::handle_tell(&returns, &host, &params, &tr()).unwrap();
+    crate::handlers::handle_tell(&returns, &Default::default(), &host, &params, &tr()).unwrap();
     let methods = host.methods();
     assert!(!methods.iter().any(|m| m == "terminal.tell"));
     let call = &host.params_of("attach.agent_call")[0];
@@ -660,6 +699,7 @@ fn a_surface_parent_gets_each_turn_body_stored_before_its_notice() {
     // 같은 자식에게 보낸 tell 은 새 토큰이고, 그 턴은 별도 결과다.
     crate::handlers::handle_tell(
         &returns,
+        &Default::default(),
         &host,
         &json!({ "surface": 15, "message": "next", "caller_surface": 3 }),
         &tr(),
@@ -783,6 +823,7 @@ fn a_failed_parent_session_lookup_stops_the_order_and_retries_the_result() {
     *session.borrow_mut() = META_FAILS;
     let told = crate::handlers::handle_tell(
         &returns,
+        &Default::default(),
         &host,
         &json!({ "surface": 15, "message": "next", "caller_surface": 3 }),
         &tr(),
@@ -816,6 +857,7 @@ fn a_physical_parent_cannot_order_another_parents_remote_child() {
     let tell = |caller: u32| {
         crate::handlers::handle_tell(
             &returns,
+            &Default::default(),
             &host,
             &json!({ "surface": 15, "message": "m", "caller_surface": caller }),
             &tr(),
@@ -873,6 +915,7 @@ fn a_remote_child_without_an_owner_record_is_refused() {
     for caller in [json!(3), json!(4), Value::Null] {
         let err = crate::handlers::handle_tell(
             &returns,
+            &Default::default(),
             &host,
             &json!({ "surface": 15, "message": "m", "caller_surface": caller }),
             &tr(),
@@ -1009,14 +1052,16 @@ fn the_server_tells_and_kills_only_the_child_the_host_named() {
     let host = server_host("pending");
     let err = crate::handlers::handle_tell(
         &returns,
+        &Default::default(),
         &host,
         &origin_params(json!({ "message": "m" })),
         &tr(),
     )
     .unwrap_err();
     assert!(err.message.contains("did not name"), "{}", err.message);
-    crate::handlers::handle_tell(
+    let told = crate::handlers::handle_tell(
         &returns,
+        &Default::default(),
         &host,
         &origin_params(json!({ "message": "m", "attach_target_surface": 40 })),
         &tr(),
@@ -1026,6 +1071,8 @@ fn the_server_tells_and_kills_only_the_child_the_host_named() {
         host.params_of("terminal.tell")[0],
         json!({ "surface": 40, "text": "m" })
     );
+    // 부모 쪽 완료 문턱은 서버가 보내기 전에 정해 응답에 싣는다.
+    assert_eq!(told[crate::handlers::DONE_FROM_KEY], json!(1), "{told}");
     assert!(host.params_of("hook.set").is_empty());
 
     let out = crate::handlers::handle_kill(
@@ -1199,7 +1246,8 @@ fn server_local_public_calls_cannot_drive_attach_children() {
     );
 
     let forged = origin_params(json!({ "message": "m", "attach_target_surface": 7 }));
-    let err = crate::handlers::handle_tell(&returns, &host, &forged, &tr()).unwrap_err();
+    let err = crate::handlers::handle_tell(&returns, &Default::default(), &host, &forged, &tr())
+        .unwrap_err();
     assert!(err.message.contains("did not name"), "{}", err.message);
     assert!(host.params_of("terminal.tell").is_empty());
 }
@@ -1236,7 +1284,8 @@ fn a_remote_child_takes_orders_only_from_its_creating_parent() {
     let refused = |p: &Value| {
         let calls = host.params_of("attach.agent_call").len();
         let saved = returns.child_routes(15).unwrap();
-        let err = crate::handlers::handle_tell(&returns, &host, p, &tr()).unwrap_err();
+        let err = crate::handlers::handle_tell(&returns, &Default::default(), &host, p, &tr())
+            .unwrap_err();
         assert!(err.message.contains("15"), "{}", err.message);
         assert_eq!(host.params_of("attach.agent_call").len(), calls);
         assert_eq!(returns.child_routes(15).unwrap(), saved);
@@ -1251,7 +1300,7 @@ fn a_remote_child_takes_orders_only_from_its_creating_parent() {
     refused(&b);
     let a = json!({ "surface": 15, "message": "z",
         "_tasty_context": { "provider": "codex", "thread_id": THREAD } });
-    crate::handlers::handle_tell(&returns, &host, &a, &tr()).unwrap();
+    crate::handlers::handle_tell(&returns, &Default::default(), &host, &a, &tr()).unwrap();
     let route_a2 = last_route(&host);
     assert_ne!(route_a, route_a2);
     returns
@@ -1303,15 +1352,17 @@ fn a_failed_tell_leaves_the_codex_route_as_it_was() {
     let saved = returns.child_routes(15).unwrap();
     *mode.borrow_mut() = "meta";
     let plain = json!({ "surface": 15, "message": "x", "caller_surface": 3 });
-    assert!(crate::handlers::handle_tell(&returns, &host, &plain, &tr()).is_err());
+    assert!(
+        crate::handlers::handle_tell(&returns, &Default::default(), &host, &plain, &tr()).is_err()
+    );
     assert_eq!(returns.child_routes(15).unwrap(), saved);
     let a = json!({ "surface": 15, "message": "y",
         "_tasty_context": { "provider": "codex", "thread_id": THREAD } });
     *mode.borrow_mut() = "refused";
-    assert!(crate::handlers::handle_tell(&returns, &host, &a, &tr()).is_err());
+    assert!(crate::handlers::handle_tell(&returns, &Default::default(), &host, &a, &tr()).is_err());
     assert_eq!(returns.child_routes(15).unwrap(), saved);
     *mode.borrow_mut() = "unknown";
-    assert!(crate::handlers::handle_tell(&returns, &host, &a, &tr()).is_err());
+    assert!(crate::handlers::handle_tell(&returns, &Default::default(), &host, &a, &tr()).is_err());
     assert_ne!(returns.child_routes(15).unwrap(), saved);
 }
 
@@ -1334,6 +1385,7 @@ fn the_server_keeps_the_route_token_of_the_turn() {
     });
     crate::handlers::handle_tell(
         &returns,
+        &Default::default(),
         &host,
         &origin_params(
             json!({ "message": "b", "attach_target_surface": 40, RETURN_ROUTE_KEY: ROUTE_B }),

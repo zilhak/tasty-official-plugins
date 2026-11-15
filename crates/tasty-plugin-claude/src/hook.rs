@@ -28,6 +28,10 @@ pub(crate) const RESTORE_COMMAND_META_KEY: &str = "restore.command";
 /// `session-end` 가 지운다. 부모 완료 알림 문구가 읽는다.
 pub(crate) const STOP_FAILURE_META_KEY: &str = "claude-last-stop-failure";
 
+/// surface meta 키 — 새 활동(턴 시작, 도구 응답 뒤 재개 등)마다 1 올리는 순번. 부모 완료 알림은 spawn·tell 뒤
+/// 이 순번이 오른 다음의 턴 종료만 완료로 센다. 원격 mirror 에도 relay 한다.
+pub(crate) const ACTIVITY_SEQ_META_KEY: &str = "claude-activity-seq";
+
 /// surface meta 키 — 자식이 백그라운드 작업을 기다리는 중일 때 그 대기의 요약(JSON:
 /// `since_ms` 대기 시작 Unix ms · `tasks` 끝나지 않은 작업 수 · `types` 작업 종류 목록).
 /// 대기 Stop 이 쓰고 턴 종료(`stop`·`stop-failure`)·새 턴·`session-end` 가 지운다.
@@ -338,6 +342,7 @@ pub(crate) fn handle_claude_hook<H: HostCallSink>(
         error,
         tr,
     )?;
+    gate_input_waits(&mut lock_state(state), event, surface_id, &mut calls);
     if event == "session-start" {
         session_start_state(
             &mut calls,
@@ -357,6 +362,8 @@ pub(crate) fn handle_claude_hook<H: HostCallSink>(
         data_dir,
         tr,
     );
+
+    count_activity(state, host, event, surface_id, &mut calls);
 
     calls.extend(telemetry_for_hook(
         &mut lock_state(state),
@@ -881,6 +888,80 @@ fn extract_tokens(text: &str) -> Option<u64> {
         i += 1;
     }
     None
+}
+
+/// 새 활동을 알리는 이벤트. 최종 상태가 active 일 때만 순번을 올린다(입력 대기로 시작한 세션은 제외).
+/// 게이트 보류 Stop 과 백그라운드 대기의 active 는 이 경로를 지나지 않으므로 순번을 올리지 않는다.
+fn starts_activity(event: &str) -> bool {
+    matches!(
+        event,
+        "prompt-submit" | "session-start" | "active" | "post-tool-use" | "notification"
+    )
+}
+
+/// 새 활동이면 활동 순번을 올려 호출 목록 맨 앞에 쓴다. 같은 목록의 상태·훅 발화보다 먼저 기록해야 부모 쪽
+/// 판정이 이 활동을 본다.
+fn count_activity<H: HostCallSink>(
+    state: &Mutex<ClaudeState>,
+    host: &H,
+    event: &str,
+    surface_id: u32,
+    calls: &mut Vec<HostCall>,
+) {
+    if !starts_activity(event) {
+        return;
+    }
+    let last_state = calls.iter().rev().find_map(|call| match call {
+        HostCall::SetState { state, .. } => Some(*state),
+        _ => None,
+    });
+    if last_state != Some("active") {
+        return;
+    }
+    let seq = lock_state(state).next_activity(surface_id, || {
+        tasty_plugin_agent_common::completion_gate::activity_seq(
+            host,
+            surface_id,
+            ACTIVITY_SEQ_META_KEY,
+        )
+    });
+    calls.insert(
+        0,
+        HostCall::MetaSet {
+            surface_id,
+            key: ACTIVITY_SEQ_META_KEY,
+            value: seq.to_string(),
+        },
+    );
+}
+
+/// AskUserQuestion 하나에 PreToolUse 와 Notification(`permission_prompt`)이 함께 온다. 질문 대기 중에 온
+/// 입력 대기 Notification 은 상태만 바꾸고 `needs-input` 발화와 화면 알림을 다시 보내지 않는다.
+fn gate_input_waits(
+    state: &mut ClaudeState,
+    event: &str,
+    surface_id: u32,
+    calls: &mut Vec<HostCall>,
+) {
+    match event {
+        "pre-tool-use" => state.set_asking(surface_id, true),
+        "post-tool-use" | "stop" | "stop-failure" | "prompt-submit" | "session-end" => {
+            state.set_asking(surface_id, false)
+        }
+        "notification" if state.is_asking(surface_id) => calls.retain(|call| {
+            !matches!(
+                call,
+                HostCall::FireHook {
+                    event: "needs-input",
+                    ..
+                } | HostCall::SurfaceCompletion {
+                    kind: "needs_input",
+                    ..
+                }
+            )
+        }),
+        _ => {}
+    }
 }
 
 /// `Notification` 한 건이 자식 상태에 주는 효과.

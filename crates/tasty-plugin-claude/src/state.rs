@@ -19,6 +19,10 @@ pub struct ClaudeState {
     wall_time_starts: HashMap<u32, u64>,
     /// 메인 턴이 띄운 백그라운드 작업. `StopFailure` 가 대기인지 가린다.
     pub(crate) background: crate::background_tasks::BackgroundTasks,
+    /// surface → 활동 순번. 처음 올릴 때 meta 에서 읽어 이어 간다.
+    activity: HashMap<u32, u64>,
+    /// AskUserQuestion 으로 입력을 기다리는 surface. 같은 대기의 두 번째 입력 대기 알림을 거른다.
+    asking: std::collections::HashSet<u32>,
 }
 
 impl ClaudeState {
@@ -36,6 +40,26 @@ impl ClaudeState {
         let start = self.wall_time_starts.remove(&surface)?;
         Some(now_ms.saturating_sub(start))
     }
+
+    /// 활동 순번을 1 올려 돌려준다. 이 프로세스에서 처음이면 `stored`(meta 의 값)에서 이어 간다.
+    pub fn next_activity(&mut self, surface: u32, stored: impl FnOnce() -> u64) -> u64 {
+        let seq = self.activity.entry(surface).or_insert_with(stored);
+        *seq += 1;
+        *seq
+    }
+
+    /// 질문 대기 표지를 켜거나 끈다.
+    pub fn set_asking(&mut self, surface: u32, asking: bool) {
+        if asking {
+            self.asking.insert(surface);
+        } else {
+            self.asking.remove(&surface);
+        }
+    }
+
+    pub fn is_asking(&self, surface: u32) -> bool {
+        self.asking.contains(&surface)
+    }
 }
 
 #[cfg(test)]
@@ -49,6 +73,15 @@ mod tests {
         assert_eq!(s.take_wall_time(7, 5_000), Some(4_000));
         // 두 번째 호출은 이미 소비돼 None.
         assert_eq!(s.take_wall_time(7, 9_000), None);
+    }
+
+    /// 활동 순번은 meta 값에서 이어 가고 그 뒤로는 표의 값을 올린다.
+    #[test]
+    fn activity_continues_from_the_stored_value() {
+        let mut s = ClaudeState::default();
+        assert_eq!(s.next_activity(3, || 7), 8);
+        assert_eq!(s.next_activity(3, || unreachable!()), 9);
+        assert_eq!(s.next_activity(4, || 0), 1);
     }
 
     #[test]
