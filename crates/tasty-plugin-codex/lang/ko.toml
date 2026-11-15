@@ -107,10 +107,10 @@ description = "지정한 자식 서피스의 부모 Codex 서피스 ID 반환"
 description = "자식 하나의 상태 조회: idle, needs_input, active, exited(실제 서피스와 대조)"
 
 [codex.cli.sub.tell]
-description = "줄바꿈을 유지해 메시지를 보내고 제출합니다. 호스트 응답을 받은 뒤 반환하며 작업 완료까지 기다리지는 않습니다. Codex 대화에서 호출하면 대상의 턴 결과를 그 대화로 돌려보냅니다. 그 밖에는 호출자 surface가 있을 때 이 메시지로 시작한 턴이 끝나면 한 줄, 대상이 승인을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 남깁니다. 그 뒤 대상이 스스로 연 턴은 줄을 남기지 않습니다."
+description = "줄바꿈을 유지해 메시지를 보내고 제출합니다. 호스트 응답을 받은 뒤 반환하며 작업 완료까지 기다리지는 않습니다. Codex 대화에서 호출하면 대상의 턴 결과를 그 대화로 돌려보냅니다. 그 밖에는 호출자 surface가 있을 때 이 메시지로 시작한 턴이 끝나면 한 줄, 대상이 승인을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 남깁니다. 그 뒤 대상이 스스로 연 턴은 줄을 남기지 않습니다. 진행 중이거나 승인을 기다리는 대상에 보낸 tell은, 메시지가 다음 턴에 처리되는 경우를 놓치지 않으려고 턴 종료 줄이 두 번 나올 수 있습니다."
 
 [codex.cli.sub.notify-caller]
-description = "내부용: spawn/tell 완료 훅 하나를 판정해 호출자 알림 로그에 한 줄을 씁니다. --event는 실행된 훅입니다. idle은 --done-from 이상의 새 활동 뒤에 한 번만 턴 종료 줄을, input은 대상이 아직 기다리면 승인 대기 줄을, exit는 항상 종료 줄을 씁니다. 자기 --arm의 남은 훅을 지우고 대상 surface가 조회되면 다시 등록합니다(턴 종료를 알린 뒤에는 idle 훅 없이). 더 새 등록으로 바뀐 훅은 줄을 쓰지 않습니다. --event가 없는 훅(업그레이드 전 등록)은 대상 상태로 줄을 정합니다. spawn/tell 훅에서 호출하며 직접 사용하지 않습니다."
+description = "내부용: spawn/tell 완료 훅 하나를 판정해 호출자 알림 로그에 한 줄을 씁니다. --event는 실행된 훅입니다. idle은 --done-from 이상의 새 활동 뒤에 한 번만 턴 종료 줄을(진행 중이거나 승인을 기다리는 대상에 보낸 tell이 건 idle-twice는 다음 턴 끝에 한 번 더), input은 대상이 아직 기다리면 승인 대기 줄을, exit는 항상 종료 줄을 씁니다. 대상 surface가 조회되면 자기 이벤트의 훅만 같은 --arm으로 다시 등록합니다(턴 종료를 알린 뒤에는 idle 훅 없이). 같은 --arm의 다른 훅은 그대로 둡니다. 이후 spawn/tell의 새 등록으로 바뀐 훅은 줄을 쓰지 않고 자기 --arm의 남은 훅을 지웁니다. 대상 surface가 사라졌을 때도 남은 훅을 지웁니다. --event가 없는 훅(업그레이드 전 등록)은 대상 상태로 줄을 정합니다. spawn/tell 훅에서 호출하며 직접 사용하지 않습니다."
 
 [codex.cli.sub.broadcast]
 description = "부모 Codex 인스턴스의 모든 자식에게 텍스트 일괄 전송"
@@ -215,7 +215,7 @@ help = "완료된 서피스 ID"
 help = "명령: spawn | tell"
 
 [codex.cli.arg.notify_caller_args.event]
-help = "실행된 완료 훅: idle, input, exit. 업그레이드 전에 등록한 훅에는 없습니다"
+help = "실행된 완료 훅: idle, idle-twice(턴 종료를 두 번 알림), input, exit. 업그레이드 전에 등록한 훅에는 없습니다"
 
 [codex.cli.arg.notify_caller_args.done_from]
 help = "턴 종료를 끝난 일로 세는 활동 순번 문턱"

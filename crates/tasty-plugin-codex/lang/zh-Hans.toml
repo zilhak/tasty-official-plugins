@@ -107,10 +107,10 @@ description = "返回指定子 Surface 的父 Codex Surface ID"
 description = "查询单个子实例的状态：idle、needs_input、active 或 exited（与实际运行的 Surface 交叉核对）"
 
 [codex.cli.sub.tell]
-description = "保留换行符发送消息并提交。等待宿主响应后返回，不等待任务完成。从 Codex 对话中调用时，目标每轮完成后的结果都会返回该对话；否则，在提供调用方 Surface 时，此消息开始的轮次结束时写一行，目标每次等待批准时写一行（措辞与轮次结束不同），退出时写一行。此后目标自行开启的轮次不写行。"
+description = "保留换行符发送消息并提交。等待宿主响应后返回，不等待任务完成。从 Codex 对话中调用时，目标每轮完成后的结果都会返回该对话；否则，在提供调用方 Surface 时，此消息开始的轮次结束时写一行，目标每次等待批准时写一行（措辞与轮次结束不同），退出时写一行。此后目标自行开启的轮次不写行。发送给正在运行或等待批准的目标的 tell，为了不漏掉消息在下一轮处理的情况，轮次结束行可能出现两次。"
 
 [codex.cli.sub.notify-caller]
-description = "内部使用：判定一个 spawn/tell 完成钩子，并向调用方通知日志写一行。--event 表示运行的钩子：idle 仅在达到 --done-from 的新活动之后写一次轮次结束行；input 在目标仍在等待时写等待批准行；exit 总是写退出行。删除自身 --arm 的剩余钩子，若仍能找到目标 Surface 则重新注册（通知轮次结束后不再注册 idle 钩子）。被更新注册替换的钩子不写任何内容。没有 --event 的钩子（升级前注册）按目标状态决定行。由 spawn/tell 钩子调用，不供直接使用。"
+description = "内部使用：判定一个 spawn/tell 完成钩子，并向调用方通知日志写一行。--event 表示运行的钩子：idle 仅在达到 --done-from 的新活动之后写一次轮次结束行（发送给正在运行或等待批准的目标的 tell 注册的 idle-twice 会在下一轮结束时再写一次）；input 在目标仍在等待时写等待批准行；exit 总是写退出行。若仍能找到目标 Surface，则只以同一 --arm 重新注册自身事件的钩子（通知轮次结束后不再注册 idle 钩子），同一 --arm 的其他钩子保持不变。被之后 spawn/tell 的新注册替换的钩子不写任何内容，并删除自身 --arm 的剩余钩子；目标 Surface 不存在时也删除剩余钩子。没有 --event 的钩子（升级前注册）按目标状态决定行。由 spawn/tell 钩子调用，不供直接使用。"
 
 [codex.cli.sub.broadcast]
 description = "向父 Codex 实例的所有子实例广播文本"
@@ -215,7 +215,7 @@ help = "已完成的 Surface ID"
 help = "命令：spawn | tell"
 
 [codex.cli.arg.notify_caller_args.event]
-help = "运行的完成钩子：idle、input 或 exit。升级前注册的钩子没有此项"
+help = "运行的完成钩子：idle、idle-twice（轮次结束通知两次）、input 或 exit。升级前注册的钩子没有此项"
 
 [codex.cli.arg.notify_caller_args.done_from]
 help = "轮次结束被计为完成工作所需达到的活动序号"

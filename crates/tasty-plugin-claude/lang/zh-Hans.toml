@@ -194,7 +194,7 @@ description = "显示指定 Claude 子实例的父实例"
 description = "查询单个子实例的状态：idle、needs_input、active 或 exited（与实际存续的 Surface 交叉核对）"
 
 [claude.cli.sub.tell]
-description = "向 Claude 实例发送消息（支持多行，在末尾提交）。立即返回；此消息开始的轮次结束时写一行，每次等待输入时写一行（措辞与轮次结束不同），退出时写一行到调用方 Surface。此后目标自行开启的轮次以及未开始工作的状态变化不写行。"
+description = "向 Claude 实例发送消息（支持多行，在末尾提交）。立即返回；此消息开始的轮次结束时写一行，每次等待输入时写一行（措辞与轮次结束不同），退出时写一行到调用方 Surface。此后目标自行开启的轮次以及未开始工作的状态变化不写行。发送给正在运行或等待输入的目标的 tell，为了不漏掉消息在下一轮处理的情况，轮次结束行可能出现两次。"
 
 [claude.cli.sub.broadcast]
 description = "向 Claude 父实例的所有子实例广播文本"
@@ -245,7 +245,7 @@ description = "内部使用：子实例的一轮因 API 错误结束，但仍因
 description = "内部使用：子实例的输出长时间没有变化时，通知调用方该子实例可能已停滞。用作 claude-error-stalled 的 hook.set 命令。不更改子实例状态，也不移除或重新注册完成钩子。"
 
 [claude.cli.sub.notify-done]
-description = "内部使用：判定一个 spawn/tell 完成钩子，并向调用方通知日志写一行。--event 表示运行的钩子：idle 仅在达到 --done-from 的新活动之后写一次轮次结束行；input 在目标仍在等待时写等待输入行；exit 总是写退出行。删除自身 --arm 的剩余钩子，若仍能找到目标 Surface 则重新注册（通知轮次结束后不再注册 idle 钩子）。被更新注册替换的钩子不写任何内容。没有 --event 的钩子（升级前注册）按目标状态决定行。用作 claude-idle/needs-input/process-exit 的 hook.set 命令。"
+description = "内部使用：判定一个 spawn/tell 完成钩子，并向调用方通知日志写一行。--event 表示运行的钩子：idle 仅在达到 --done-from 的新活动之后写一次轮次结束行（发送给正在运行或等待输入的目标的 tell 注册的 idle-twice 会在下一轮结束时再写一次）；input 在目标仍在等待时写等待输入行；exit 总是写退出行。若仍能找到目标 Surface，则只以同一 --arm 重新注册自身事件的钩子（通知轮次结束后不再注册 idle 钩子），同一 --arm 的其他钩子保持不变。被之后 spawn/tell 的新注册替换的钩子不写任何内容，并删除自身 --arm 的剩余钩子；目标 Surface 不存在时也删除剩余钩子。没有 --event 的钩子（升级前注册）按目标状态决定行。用作 claude-idle/needs-input/process-exit 的 hook.set 命令。"
 
 [claude.cli.sub.profile-register]
 description = "按名称注册 Claude 会话配置档（将文件复制到插件私有存储；重新注册同名配置档会更新其内容）"
@@ -350,7 +350,7 @@ help = "spawn/tell 刚完成的 Surface"
 help = "已完成的命令：spawn 或 tell"
 
 [claude.cli.arg.notify_done_args.event]
-help = "运行的完成钩子：idle、input 或 exit。升级前注册的钩子没有此项"
+help = "运行的完成钩子：idle、idle-twice（轮次结束通知两次）、input 或 exit。升级前注册的钩子没有此项"
 
 [claude.cli.arg.notify_done_args.done_from]
 help = "轮次结束被计为完成工作所需达到的活动序号"

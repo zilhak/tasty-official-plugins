@@ -193,7 +193,7 @@ description = "지정한 Claude 자식의 부모 표시"
 description = "자식 하나의 상태 조회: idle, needs_input, active, exited(실제 서피스와 대조)"
 
 [claude.cli.sub.tell]
-description = "Claude 인스턴스에 여러 줄 메시지 전송(끝에서 제출). 즉시 반환합니다. 이 메시지로 시작한 턴이 끝나면 한 줄, 입력을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 호출자 서피스에 남깁니다. 그 뒤 대상이 스스로 연 턴과 일을 시작하지 않은 상태 변화는 줄을 남기지 않습니다."
+description = "Claude 인스턴스에 여러 줄 메시지 전송(끝에서 제출). 즉시 반환합니다. 이 메시지로 시작한 턴이 끝나면 한 줄, 입력을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 호출자 서피스에 남깁니다. 그 뒤 대상이 스스로 연 턴과 일을 시작하지 않은 상태 변화는 줄을 남기지 않습니다. 진행 중이거나 입력을 기다리는 대상에 보낸 tell은, 메시지가 다음 턴에 처리되는 경우를 놓치지 않으려고 턴 종료 줄이 두 번 나올 수 있습니다."
 
 [claude.cli.sub.broadcast]
 description = "부모 Claude 인스턴스의 모든 자식에게 텍스트 일괄 전송"
@@ -244,7 +244,7 @@ description = "내부용: 자식의 턴이 API 오류로 끝났지만 백그라�
 description = "내부용: 자식의 출력이 오래 변하지 않아 작업이 멈췄을 가능성을 호출자에게 알립니다. claude-error-stalled의 hook.set 명령으로 사용합니다. 자식 상태를 바꾸거나 완료 훅을 제거·재등록하지 않습니다."
 
 [claude.cli.sub.notify-done]
-description = "내부용: spawn/tell 완료 훅 하나를 판정해 호출자 알림 로그에 한 줄을 씁니다. --event는 실행된 훅입니다. idle은 --done-from 이상의 새 활동 뒤에 한 번만 턴 종료 줄을, input은 대상이 아직 기다리면 입력 대기 줄을, exit는 항상 종료 줄을 씁니다. 자기 --arm의 남은 훅을 지우고 대상 surface가 조회되면 다시 등록합니다(턴 종료를 알린 뒤에는 idle 훅 없이). 더 새 등록으로 바뀐 훅은 줄을 쓰지 않습니다. --event가 없는 훅(업그레이드 전 등록)은 대상 상태로 줄을 정합니다. claude-idle/needs-input/process-exit의 hook.set 명령으로 사용합니다."
+description = "내부용: spawn/tell 완료 훅 하나를 판정해 호출자 알림 로그에 한 줄을 씁니다. --event는 실행된 훅입니다. idle은 --done-from 이상의 새 활동 뒤에 한 번만 턴 종료 줄을(진행 중이거나 입력을 기다리는 대상에 보낸 tell이 건 idle-twice는 다음 턴 끝에 한 번 더), input은 대상이 아직 기다리면 입력 대기 줄을, exit는 항상 종료 줄을 씁니다. 대상 surface가 조회되면 자기 이벤트의 훅만 같은 --arm으로 다시 등록합니다(턴 종료를 알린 뒤에는 idle 훅 없이). 같은 --arm의 다른 훅은 그대로 둡니다. 이후 spawn/tell의 새 등록으로 바뀐 훅은 줄을 쓰지 않고 자기 --arm의 남은 훅을 지웁니다. 대상 surface가 사라졌을 때도 남은 훅을 지웁니다. --event가 없는 훅(업그레이드 전 등록)은 대상 상태로 줄을 정합니다. claude-idle/needs-input/process-exit의 hook.set 명령으로 사용합니다."
 
 [claude.cli.sub.profile-register]
 description = "이름으로 Claude 세션 프로필 등록(plugin 전용 저장소에 파일 복사, 같은 이름 재등록은 내용 갱신)"
@@ -349,7 +349,7 @@ help = "spawn/tell이 방금 완료된 서피스"
 help = "완료된 명령: spawn 또는 tell"
 
 [claude.cli.arg.notify_done_args.event]
-help = "실행된 완료 훅: idle, input, exit. 업그레이드 전에 등록한 훅에는 없습니다"
+help = "실행된 완료 훅: idle, idle-twice(턴 종료를 두 번 알림), input, exit. 업그레이드 전에 등록한 훅에는 없습니다"
 
 [claude.cli.arg.notify_done_args.done_from]
 help = "턴 종료를 끝난 일로 세는 활동 순번 문턱"

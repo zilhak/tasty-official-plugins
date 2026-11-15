@@ -107,10 +107,10 @@ description = "Return the parent Codex surface id for a given child surface"
 description = "Query a single child's status: idle, needs_input, active, or exited (live-surface cross-checked)"
 
 [codex.cli.sub.tell]
-description = "Send a message with line breaks preserved and submit it. Waits for host responses, then returns without waiting for the task to finish. When called from a Codex conversation, the target's finished turns are returned to that conversation; otherwise, when a caller surface is provided, it gets one line when the turn this message started finishes, one line each time the target waits for an approval (worded apart from a finished turn), and one line when it exits. Turns the target opens on its own after that write nothing."
+description = "Send a message with line breaks preserved and submit it. Waits for host responses, then returns without waiting for the task to finish. When called from a Codex conversation, the target's finished turns are returned to that conversation; otherwise, when a caller surface is provided, it gets one line when the turn this message started finishes, one line each time the target waits for an approval (worded apart from a finished turn), and one line when it exits. Turns the target opens on its own after that write nothing. A tell to a target that is running or waiting for an approval may write a second finished-turn line, so a message handled in the next turn is not missed."
 
 [codex.cli.sub.notify-caller]
-description = "Internal: decide and write one line of the caller's notification log for a spawn/tell completion hook. --event says which hook ran: idle writes a finished-turn line once, only after new activity at or above --done-from; input writes an approval-wait line while the target still waits; exit always writes an exit line. Removes the remaining hooks of its --arm and, if the target surface can still be found, arms again (without the idle hook once the turn end was noticed). A run whose arm was replaced writes nothing. Without --event (hooks registered before an upgrade) the line follows the target state. Called by spawn/tell hooks; not intended for direct use."
+description = "Internal: decide and write one line of the caller's notification log for a spawn/tell completion hook. --event says which hook ran: idle writes a finished-turn line once, only after new activity at or above --done-from (idle-twice, armed by a tell to a running target or one waiting for an approval, writes one more at the next turn end); input writes an approval-wait line while the target still waits; exit always writes an exit line. If the target surface can still be found, sets again only the hook of its own event under the same --arm (not the idle hook once the turn end was noticed); the other hooks of the arm stay. A run whose arm was replaced by a later spawn/tell writes nothing and removes the remaining hooks of its arm, as does a run whose target surface is gone. Without --event (hooks registered before an upgrade) the line follows the target state. Called by spawn/tell hooks; not intended for direct use."
 
 [codex.cli.sub.broadcast]
 description = "Broadcast text to all children of a parent Codex instance"
@@ -215,7 +215,7 @@ help = "Surface ID that completed"
 help = "spawn | tell"
 
 [codex.cli.arg.notify_caller_args.event]
-help = "Which completion hook ran: idle, input or exit. Hooks registered before an upgrade omit it"
+help = "Which completion hook ran: idle, idle-twice (a turn end noticed twice), input or exit. Hooks registered before an upgrade omit it"
 
 [codex.cli.arg.notify_caller_args.done_from]
 help = "Activity sequence a turn end must reach to count as finished work"
