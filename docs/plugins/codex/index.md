@@ -11,7 +11,7 @@
 
 ## 부모의 완료 수신 채널
 
-상태 변경은 caller surface의 `<parent_home>/notify/<caller_surface>.log`에 한 줄로 기록한다. 자식 CLI 종류로 경로를 바꾸지 않는다. 훅 설치와 부모의 수신 준비는 별개이며 idle·needs_input·interrupt·exit는 작업 성공을 뜻하지 않는다. [완료 알림 로그](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/external-interaction.md#child-완료-알림--completion-log)를 따른다.
+턴 종료·승인 대기·종료는 caller surface의 `<parent_home>/notify/<caller_surface>.log`에 한 줄로 기록한다(아래 [자식 상태 알림](#자식-상태-알림)). 자식 CLI 종류로 경로를 바꾸지 않는다. 훅 설치와 부모의 수신 준비는 별개이며 idle·needs_input·interrupt·exit는 작업 성공을 뜻하지 않는다. [완료 알림 로그](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/external-interaction.md#child-완료-알림--completion-log)를 따른다.
 
 Codex 대화에서 spawn한 자식의 턴 결과는 완료 로그와 별도로 [부모 대화에 돌아간다](#codex-부모에게-결과-반환).
 
@@ -315,11 +315,11 @@ surface를 추측으로 다른 thread에 연결하지 않는다. CWD, 포커스,
   | Codex config table 키 | tasty hook token | trust state 키 | 산출 상태 | 추가 이벤트·동작 |
   |---|---|---|---|---|
   | `Stop` | `stop` | `stop` | `idle` | `codex-idle`, Codex 부모 반환 후보(턴 상태 확인 뒤 기록) |
-  | `UserPromptSubmit` | `prompt-submit` | `user_prompt_submit` | `active` | — |
-  | `SessionStart` | `session-start` | `session_start` | `active` | — |
+  | `UserPromptSubmit` | `prompt-submit` | `user_prompt_submit` | `active` | `codex-activity-seq` +1 |
+  | `SessionStart` | `session-start` | `session_start` | `active` | `codex-activity-seq` +1 |
   | `SessionEnd` | `session-end` | `session_end` | 변경 없음 | `codex-session-id` meta·thread 경로 삭제, 세대의 thread 비움, 세대가 끝났을 때만 Codex 부모에 `exited` 반환 |
   | `PermissionRequest` | `permission-request` | `permission_request` | `needs_input` | `needs-input` · `surface.completion`(kind=needs_input) |
-  | `PostToolUse` | `post-tool-use` | `post_tool_use` | `active` | — |
+  | `PostToolUse` | `post-tool-use` | `post_tool_use` | `active` | `codex-activity-seq` +1 |
   | `Interrupt` | `interrupt` | `interrupt` | `idle` | `codex-idle`, Codex 부모 반환 후보(턴 상태 확인 뒤 기록) |
 
   `~/.codex/config.toml`의 `[hooks]` 섹션에 심는다(`settings.json`이 아니다 — Codex 의 hook dispatch 경로가 아니다). Codex 는 새 hook entry를 *trust*하기 전엔 fire하지 않는다. 사용자가 Codex의 `/hooks`에서 검토한다.
@@ -347,11 +347,24 @@ surface를 추측으로 다른 thread에 연결하지 않는다. CWD, 포커스,
 
 ### 자식 상태 알림
 
-spawn과 tell은 필요한 호스트 호출의 응답을 받은 뒤 반환하며 자식 작업 완료까지 기다리지 않는다. Codex 대화에서 호출한 경우에는 아래 훅 대신 [결과 반환](#codex-부모에게-결과-반환)을 쓴다. 그 밖의 호출은 `codex-idle`, `needs-input`, `process-exit` once 훅을 등록한다. 같은 부모·대상의 완료 훅 그룹(명령 앞부분 `tasty codex notify-caller --caller <부모> --target <대상> --kind `)이 이미 있으면 먼저 지우고 등록하므로, tell을 반복하거나 spawn 뒤 tell해도 부모마다 그룹은 하나이고 한 번의 상태 변경에 완료 줄은 한 줄이다. 다른 부모의 그룹은 그대로 둔다. 하나가 실행되면 notify-caller가 상태 변경 로그를 쓰고 같은 command의 나머지 훅을 정리한다.
+spawn과 tell은 필요한 호스트 호출의 응답을 받은 뒤 반환하며 자식 작업 완료까지 기다리지 않는다. Codex 대화에서 호출한 경우에는 아래 훅 대신 [결과 반환](#codex-부모에게-결과-반환)을 쓴다. 그 밖의 호출은 `codex-idle`, `needs-input`, `process-exit` once 훅을 이벤트마다 다른 명령으로 등록한다. 같은 부모·대상의 완료 훅 그룹(명령 앞부분 `tasty codex notify-caller --caller <부모> --target <대상> --kind `)이 이미 있으면 먼저 지우고 등록하므로, tell을 반복하거나 spawn 뒤 tell해도 부모마다 그룹은 하나이고 한 번의 턴 종료에 완료 줄은 한 줄이다. 다른 부모의 그룹은 그대로 둔다.
 
-명령 문자열은 caller·target·kind로 구분한다. 이 조합이 같으면 반복 요청도 같은 훅 그룹이므로 요청마다 독립된 구독은 아니다. 이후 `surface.locate`가 성공하면 세 훅을 다시 등록한다. Surface 존재는 프로세스 생존과 다르며, 훅 등록과 로그 쓰기 실패나 재등록 사이의 이벤트 전달까지 보장하지 않는다.
+spawn·tell 하나에 대해 부모 로그에는 다음 줄만 생긴다. 규칙은 Claude 플러그인과 같다([Claude: 부모 알림 줄이 생기는 경우](../claude/index.md#부모-알림-줄이-생기는-경우)).
 
-완료 로그 줄은 타입 표지로 시작한다. 대상 상태가 `exited`면 `[error] `(부모가 kill로 끝낸 경우도 같다), 샌드박스 안내가 붙으면 `[error] `, 그 밖의 상태 변경과 원격 결과 저장은 `[info] `다. 종류와 타입의 대응은 `notice.rs`의 `NoticeKind`가 와일드카드 없는 `match`로 정한다([완료 알림 로그](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/external-interaction.md#child-완료-알림--completion-log)).
+| 사건 | 줄 | 타입 | 횟수 |
+|---|---|---|---|
+| 일을 시작한 뒤 턴이 끝남(`codex-idle`: Stop·Interrupt) | `surface N state changed (via tell)` | `info` (샌드박스 안내가 붙으면 `error`) | spawn·tell 하나에 한 번 |
+| 도구 승인 대기(`needs-input`: PermissionRequest) | `surface N waiting for approval (via tell)` | `warning` | 대기마다 한 번 |
+| 프로세스 종료(`process-exit`) | `surface N state changed (via tell)` | `error` | 항상(활동이 없었어도) |
+
+- 일을 시작하지 않은 idle과 완료 줄 뒤 자식이 스스로 연 턴은 줄을 만들지 않는다. 다음 spawn·tell이 오면 다시 한 번 알린다. 처리할 때 이미 끝난 승인 대기도 줄이 없다.
+- 훅 처리기는 `prompt-submit`·`session-start`·`post-tool-use`마다 상태를 바꾸기 전에 surface meta `codex-activity-seq`를 1 올린다.
+- tell은 입력을 보내기 **전에** 대상 상태와 순번을 읽어 문턱 `N`을 정한다. 대상이 `active`면 `N = 순번`(진행 중인 턴에 흡수돼도 그 턴의 끝을 알린다), 그 밖은 `N = 순번 + 1`이다. spawn은 `N = 순번 + 1`이다.
+- 훅 명령은 `tasty codex notify-caller --caller C --target T --kind tell --event idle|input|exit --done-from N --arm G`다. `G`는 무장마다 새로 받는 id다. notify-caller는 그룹에 다른 무장의 훅이 있으면 줄을 쓰지 않는다. 그렇지 않으면 `idle`은 대상이 `idle`이고 순번이 `N` 이상일 때 완료 줄을 쓰고 그 뒤 턴 종료 훅 없이 승인 대기·종료 훅만 다시 건다. `input`은 대상이 아직 `needs_input`일 때, `exit`는 항상 쓴다. 다시 걸지는 `surface.locate` 성공 여부로 정한다. Surface 존재는 프로세스 생존과 다르며, 훅 등록과 로그 쓰기 실패나 재등록 사이의 이벤트 전달까지 보장하지 않는다.
+- 원격 attach 자식: 서버가 tell·spawn 응답에 `done_from`을 싣고, mirror는 `codex-activity-seq`를 relay(`relay_meta`)로 받는다. relay가 늦을 수 있어 mirror의 `idle`에서 순번이 모자라면 250ms 간격으로 네 번까지 다시 읽는다. `done_from`이 없는 응답(업그레이드 전 서버)과 늦게 도착한 원격 spawn 결과는 예전 형식으로 건다.
+- 업그레이드 전에 등록된 훅(`--event` 없는 명령)은 예전처럼 대상 상태로 줄을 정하고 새 형식으로 다시 건다(대상이 이미 `idle`이면 턴 종료 훅 없이).
+
+완료 로그 줄은 타입 표지로 시작한다. 종료는 `[error] `(부모가 kill로 끝낸 경우도 같다), 샌드박스 안내가 붙으면 `[error] `, 승인 대기는 `[warning] `, 그 밖의 턴 종료와 원격 결과 저장은 `[info] `다. 옛 훅은 대상 상태가 `exited`면 `[error] `다. 종류와 타입의 대응은 `notice.rs`의 `NoticeKind`가 와일드카드 없는 `match`로 정한다([완료 알림 로그](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/external-interaction.md#child-완료-알림--completion-log)).
 
 notify-caller는 최근 화면 800줄에서 RTM_NEWADDR를 찾으면 샌드박스 초기화 실패 가능성을
 힌트로 덧붙인다. 조회 실패나 패턴 미검출은 기존 알림을 막지 않는다.
@@ -678,8 +691,8 @@ tasty codex result <event_id>
 
 - Given 플러그인 활성 When `tasty codex spawn --prompt "…"` Then 자식 Codex 가 페인 분할로 생성되고 CLI는 호스트 응답 후 반환하며 자식 작업 완료는 기다리지 않는다.
 - Given 자식 When `tasty codex tell <msg>` Then 줄바꿈 보존하며 메시지가 전송·제출되고 CLI는 호스트 응답 후 반환하며 자식 작업 완료는 기다리지 않는다.
-- Given 상태 훅과 로그 기록이 정상 동작하는 대상 When 등록된 idle·needs_input·process-exit 훅이 실행 Then caller의 상태 로그를 쓰고 형제 훅을 정리한다. `surface.locate`가 성공하면 다시 등록한다.
-- Given 같은 부모가 같은 자식에 `tasty codex tell`을 여러 번 보낸 상태 When 자식의 상태가 한 번 바뀜 Then 부모의 상태 로그에 완료 줄이 한 줄 남는다. 다른 부모가 등록한 그룹은 지우지 않는다.
+- Given 상태 훅과 로그 기록이 정상 동작하는 대상 When `tell` 뒤 그 턴이 끝남 Then caller의 상태 로그에 `[info]` 완료 줄 한 줄이 남고, 그 뒤 대상이 스스로 연 턴은 줄을 남기지 않는다. 승인 대기는 `[warning] … waiting for approval` 한 줄, 프로세스 종료는 `[error]` 한 줄이다.
+- Given 같은 부모가 같은 자식에 `tasty codex tell`을 여러 번 보낸 상태 When 자식의 턴이 한 번 끝남 Then 부모의 상태 로그에 완료 줄이 한 줄 남는다. 다른 부모가 등록한 그룹은 지우지 않는다.
 - Given 훅이 설치된 Codex When 도구 실행 승인 프롬프트가 뜬다 Then 그 surface 의 상태가 `needs_input` 으로 조회되고 비포커스 대상의 탭·워크스페이스에 기존 노란 표시가 난다.
 - Given 승인 대기 When 사용자가 승인하고 그 도구가 끝난다(`PostToolUse`) 또는 거절·Esc·Ctrl-C 로 중단한다(`Interrupt`) Then 상태가 각각 `active` · `idle` 로 돌아오고 `needs_input` 이 잔류하지 않는다.
 - Given 승인이 필요 없는 실행 When 도구가 오래 걸리거나 출력이 없다 Then `needs_input` 으로 오판하지 않는다.
