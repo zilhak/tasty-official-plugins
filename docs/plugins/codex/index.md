@@ -319,7 +319,7 @@ surface를 추측으로 다른 thread에 연결하지 않는다. CWD, 포커스,
   | `SessionStart` | `session-start` | `session_start` | `active` | `codex-activity-seq` +1 |
   | `SessionEnd` | `session-end` | `session_end` | 변경 없음 | `codex-session-id` meta·thread 경로 삭제, 세대의 thread 비움, 세대가 끝났을 때만 Codex 부모에 `exited` 반환 |
   | `PermissionRequest` | `permission-request` | `permission_request` | `needs_input` | `needs-input` · `surface.completion`(kind=needs_input) |
-  | `PostToolUse` | `post-tool-use` | `post_tool_use` | `active` | `codex-activity-seq` +1 |
+  | `PostToolUse` | `post-tool-use` | `post_tool_use` | `active` | `codex-activity-seq` +1. 도구 결과(`tool_response`)에 샌드박스 초기화 실패 줄이 있으면 순번보다 먼저 `codex-sandbox-fail-seq`에 그 순번을 쓴다 |
   | `Interrupt` | `interrupt` | `interrupt` | `idle` | `codex-idle`, Codex 부모 반환 후보(턴 상태 확인 뒤 기록) |
 
   `~/.codex/config.toml`의 `[hooks]` 섹션에 심는다(`settings.json`이 아니다 — Codex 의 hook dispatch 경로가 아니다). Codex 는 새 hook entry를 *trust*하기 전엔 fire하지 않는다. 사용자가 Codex의 `/hooks`에서 검토한다.
@@ -362,13 +362,22 @@ spawn·tell 하나에 대해 부모 로그에는 다음 줄만 생긴다. 규칙
 - 훅 처리기는 `prompt-submit`·`session-start`·`post-tool-use`마다 상태를 바꾸기 전에 surface meta `codex-activity-seq`를 1 올린다.
 - tell은 입력을 보내기 **전에** 대상 상태와 순번을 읽어 문턱 `N`을 정한다. 대상이 `active`이거나 `needs_input`이면(답이 대기하던 턴을 이어 간다) `N = 순번`이고 턴 종료를 두 번 알린다. 진행 중인 턴에 흡수돼도, 다음 턴으로 넘어가도 그 턴의 끝을 알린다. 그 밖은 `N = 순번 + 1`이고 한 번 알린다. spawn은 `N = 순번 + 1`이다.
 - 훅 명령은 `tasty codex notify-caller --caller C --target T --kind tell --event idle|input|exit --done-from N --arm G`다. 턴 종료를 두 번 알리는 무장의 턴 종료 훅은 `--event idle-twice`다. `G`는 spawn·tell이 무장할 때마다 새로 받는 id이고, 훅 처리는 무장 id를 바꾸지 않는다. notify-caller는 그룹에 다른 무장의 훅이 있으면 줄을 쓰지 않는다. 그렇지 않으면 `idle`은 대상이 `idle`이고 순번이 `N` 이상일 때 완료 줄을 쓰고 턴 종료 훅을 다시 걸지 않는다(`idle-twice`는 그때 순번 + 1을 문턱으로 한 번 더 건다). `input`은 대상이 아직 `needs_input`일 때, `exit`는 항상 쓴다. 처리는 자기 이벤트의 훅만 같은 무장 id로 다시 걸고, 같은 무장의 다른 훅과 이미 발화해 처리를 기다리는 다른 명령은 건드리지 않는다. 다시 걸기는 `surface.locate` 성공 여부로 정한다. Surface 존재는 프로세스 생존과 다르며, 훅 등록과 로그 쓰기 실패나 재등록 사이의 이벤트 전달까지 보장하지 않는다.
-- 원격 attach 자식: 서버가 tell·spawn 응답에 `done_from`을 싣고, mirror는 `codex-activity-seq`를 relay(`relay_meta`)로 받는다. relay가 늦을 수 있어 mirror의 `idle`에서 순번이 모자라면 250ms 간격으로 네 번까지 다시 읽고, 그때의 상태를 다시 읽어 판정한다. tell 응답은 턴 종료를 두 번 알릴지(`done_twice`)도 싣는다. `done_from`이 없는 응답(업그레이드 전 서버)과 늦게 도착한 원격 spawn 결과는 예전 형식으로 건다.
+- 원격 attach 자식: 서버가 tell·spawn 응답에 `done_from`을 싣고, mirror는 `codex-activity-seq`와 `codex-sandbox-fail-seq`를 relay(`relay_meta`)로 받는다. relay가 늦을 수 있어 mirror의 `idle`에서 순번이 모자라면 250ms 간격으로 네 번까지 다시 읽고, 그때의 상태를 다시 읽어 판정한다. tell 응답은 턴 종료를 두 번 알릴지(`done_twice`)도 싣는다. `done_from`이 없는 응답(업그레이드 전 서버)과 늦게 도착한 원격 spawn 결과는 예전 형식으로 건다.
 - 업그레이드 전에 등록된 훅(`--event` 없는 명령)은 예전처럼 대상 상태로 줄을 정하고 새 형식으로 다시 건다(대상이 이미 `idle`이면 턴 종료 훅 없이).
 
 완료 로그 줄은 타입 표지로 시작한다. 종료는 `[error] `(부모가 kill로 끝낸 경우도 같다), 샌드박스 안내가 붙으면 `[error] `, 승인 대기는 `[warning] `, 그 밖의 턴 종료와 원격 결과 저장은 `[info] `다. 옛 훅은 대상 상태가 `exited`면 `[error] `다. 종류와 타입의 대응은 `notice.rs`의 `NoticeKind`가 와일드카드 없는 `match`로 정한다([완료 알림 로그](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/external-interaction.md#child-완료-알림--completion-log)).
 
-notify-caller는 최근 화면 800줄에서 RTM_NEWADDR를 찾으면 샌드박스 초기화 실패 가능성을
-힌트로 덧붙인다. 조회 실패나 패턴 미검출은 기존 알림을 막지 않는다.
+notify-caller는 이번 spawn·tell 이후(문턱 이상의 활동)의 `PostToolUse` 도구 결과에 `bwrap:`로 시작하고
+RTM_NEWADDR를 담은 줄이 있었으면 샌드박스 초기화 실패 가능성을 힌트로 덧붙인다.
+
+- 근거는 surface meta `codex-sandbox-fail-seq`다. 그 값이 무장의 문턱 이상이고 지금 `codex-activity-seq` 이하일 때만 붙인다. 진행 중인 자식에 보낸 tell의 두 번째 완료 줄은 두 번째 턴의 도구만 본다.
+- 화면과 출력은 보지 않는다. Codex TUI가 턴마다 보이는 대화를 다시 그려 지난 턴의 표식과 대화 본문의 같은 문구를 이번 턴과 가릴 수 없기 때문이다.
+- 기록이 없거나 읽지 못하면 붙이지 않는다. 서버 플러그인이 업그레이드 전인 원격 자식에는 붙지 않는다.
+- 업그레이드 전에 등록된 훅(`--event` 없는 명령)의 줄은 최근 화면 800줄로 판정한다.
+- 한계: 도구 출력에 같은 줄을 그대로 찍는 명령(예: `printf 'bwrap: … RTM_NEWADDR …'`)도 실패로 본다. `grep` 결과처럼 줄 앞에 다른 내용이 붙은 줄은 거른다.
+- `tool_response`는 이 판정에만 쓴다. 저장하거나 부모·호스트 보고·로그로 보내지 않고, meta에는 순번 숫자만 쓴다.
+
+조회 실패나 패턴 미검출은 기존 알림을 막지 않는다.
 힌트는 진단용이며 Tasty가 실행 정책을 자동으로 바꾸거나 재시작한다는 뜻은 아니다.
 
 - **훅 호출 실패 집계**: `terminal.set_state` 실패는 오류 응답으로 반환한다. 나머지 정리·알림 호출은 실패해도 계속하고 `host_call_failures`로 실패 수를 알린다. 0이 아니면 `<tasty_home>/hook-failures.log`에도 기록을 시도한다. `ok`만으로 모든 호출이 성공했다고 판단하지 않는다([오류 처리](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/error-handling.md)).
