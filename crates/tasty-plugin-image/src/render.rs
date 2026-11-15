@@ -8,6 +8,7 @@ mod baked_icons {
 
 use egui::emath::GuiRounding as _;
 use tasty_plugin_sdk::Translator;
+use tasty_plugin_sdk::egui_surface::edit::EditProbe;
 use tasty_type_appearance::theme::Theme;
 use tasty_ui_widgets::{
     Button, ButtonVariant, ControlSize, IconButton, Input, StateGlyph, StateScreenView,
@@ -18,6 +19,48 @@ use crate::doc::{
     DragState, EditState, ImageDoc, LoadFailure, MAX_DECODE_ALLOC, MAX_IMAGE_SIDE, ResizeHandle,
 };
 use crate::tiled::TiledTexture;
+
+/// 새 이미지 너비 입력칸의 id.
+pub(crate) fn new_width_id() -> egui::Id {
+    egui::Id::new("image.new_width")
+}
+
+/// 새 이미지 높이 입력칸의 id.
+pub(crate) fn new_height_id() -> egui::Id {
+    egui::Id::new("image.new_height")
+}
+
+/// Save As 저장 경로 입력칸의 id.
+pub(crate) fn save_path_id() -> egui::Id {
+    egui::Id::new("image.save_path")
+}
+
+/// 지금 그려지는 팝업의 입력칸이 포커스를 가졌는지. [`draw`]는 새 이미지 팝업과 Save As 중 하나만 그리므로
+/// 그 팝업의 입력칸만 본다. 팝업을 닫은 직후에는 옛 입력칸 id 의 포커스가 남아 있을 수 있어 id 만 보지 않는다.
+pub(crate) fn field_has_focus(ctx: &egui::Context, doc: &ImageDoc) -> bool {
+    let ids = if doc.new_image_popup {
+        vec![new_width_id(), new_height_id()]
+    } else if doc.save_path_popup {
+        vec![save_path_id()]
+    } else {
+        Vec::new()
+    };
+    ctx.memory(|m| ids.iter().any(|id| m.has_focus(*id)))
+}
+
+/// 입력칸을 [`EditProbe`]로 감싸 그린다. 포커스를 가진 칸이 호스트 편집 요청을 받으면 결과를 정한다.
+fn probed_input(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    input: Input<'_>,
+    id: egui::Id,
+    buf: &mut String,
+) -> egui::Response {
+    let probe = EditProbe::begin(ui.ctx(), id, buf, false);
+    let resp = input.id(id).show(ui, theme, buf);
+    probe.finish(ui.ctx(), buf);
+    resp
+}
 
 /// Render one frame of the image surface into `ctx`.
 pub(crate) fn draw(ctx: &egui::Context, theme: &Theme, tr: &Translator, doc: &mut ImageDoc) {
@@ -641,14 +684,22 @@ fn draw_new_image_popup(ui: &mut egui::Ui, theme: &Theme, tr: &Translator, doc: 
                 ui.spacing_mut().item_spacing.x = theme.image_popup_btn_gap().value();
                 let input_w = theme.image_size_input_width().value();
                 ui.label(body(theme, tr.t("image_viewer.width")));
-                Input::new()
-                    .width(input_w)
-                    .show(ui, theme, &mut doc.new_image_width);
+                probed_input(
+                    ui,
+                    theme,
+                    Input::new().width(input_w),
+                    new_width_id(),
+                    &mut doc.new_image_width,
+                );
                 ui.label(caption(theme, "×"));
                 ui.label(body(theme, tr.t("image_viewer.height")));
-                Input::new()
-                    .width(input_w)
-                    .show(ui, theme, &mut doc.new_image_height);
+                probed_input(
+                    ui,
+                    theme,
+                    Input::new().width(input_w),
+                    new_height_id(),
+                    &mut doc.new_image_height,
+                );
             });
         },
     );
@@ -705,9 +756,13 @@ fn draw_save_path_popup(ui: &mut egui::Ui, theme: &Theme, tr: &Translator, doc: 
                     {
                         doc.browse.queue();
                     }
-                    let resp = Input::new()
-                        .placeholder(tr.t("image_viewer.save_path_placeholder"))
-                        .show(ui, theme, &mut doc.save_path_buffer);
+                    let resp = probed_input(
+                        ui,
+                        theme,
+                        Input::new().placeholder(tr.t("image_viewer.save_path_placeholder")),
+                        save_path_id(),
+                        &mut doc.save_path_buffer,
+                    );
                     if !resp.has_focus() && doc.save_path_buffer.is_empty() {
                         resp.request_focus();
                     }

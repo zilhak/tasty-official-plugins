@@ -17,7 +17,7 @@ use std::sync::mpsc;
 
 use doc::{ImageDoc, SaveFailure, SaveTarget};
 use serde_json::{Value, json};
-use tasty_plugin_protocol::{RawInputEventWire, ThemeWire};
+use tasty_plugin_protocol::ThemeWire;
 use tasty_plugin_sdk::file_watch::{self, StatGatedDigest, WatchCmd};
 use tasty_plugin_sdk::{
     IpcMethodCtx, IpcMethodError, Plugin, PluginEnv, SurfaceCreateCtx, SurfaceResult,
@@ -26,7 +26,11 @@ use tasty_plugin_sdk::{
 use tasty_type_appearance::theme::Theme;
 
 #[cfg(any(unix, windows))]
+use tasty_plugin_protocol::EditRequestWire;
+#[cfg(any(unix, windows))]
 use tasty_plugin_sdk::EguiMeshSurface;
+#[cfg(any(unix, windows))]
+use tasty_plugin_sdk::egui_surface::edit::{edit_request, report_edit};
 
 const PLUGIN_ID: &str = "com.tasty.image";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -67,6 +71,12 @@ impl Plugin for ImagePlugin {
 
     fn version(&self) -> &str {
         PLUGIN_VERSION
+    }
+
+    /// 입력칸은 모두 `EditProbe`로 판정하고, 입력칸 밖 붙여넣기는 요청 패스에서 직접 처리해 알리므로
+    /// 편집 요청마다 결과를 회신한다.
+    fn reports_edit_outcomes(&self) -> bool {
+        true
     }
 
     fn on_start(&mut self, host: HostHandle, _bus: tasty_plugin_sdk::BusHandle) {
@@ -301,9 +311,6 @@ impl ImagePlugin {
         let doc = self.docs.entry(sid).or_insert_with(|| ImageDoc::new(None));
         doc.ensure_loaded();
         doc.ensure_brush_themed(theme.accent_danger().to_egui());
-        apply_paste_events(doc, &ctx.params.raw_input.events, || {
-            read_clipboard_image().map_err(|e| e.message)
-        });
 
         let is_new = !self.meshes.contains_key(&sid);
         let mesh = self
@@ -317,6 +324,9 @@ impl ImagePlugin {
         }
 
         let result = mesh.paint(&ctx.host, &ctx.params, |egui_ctx| {
+            handle_edit_input(egui_ctx, doc, || {
+                read_clipboard_image().map_err(|e| e.message)
+            });
             render::draw(egui_ctx, &theme, tr, doc);
         });
         if let Err(e) = result {
@@ -405,15 +415,44 @@ fn require_surface(params: &Value) -> Result<u32, IpcMethodError> {
         .ok_or_else(|| IpcMethodError::invalid_params("missing 'surface'"))
 }
 
-/// 호스트가 붙여넣기 단축키를 Paste 이벤트로 보낸다. 이번 입력에 Paste 가 있을 때만 클립보드를
-/// 읽어 이미지를 붙인다(이미지는 이 프로세스가 직접 읽는다). 붙였으면 true 다.
+/// 이 egui 패스의 붙여넣기와 편집 요청을 처리한다. `render::draw` 앞에서 부른다. 요청 앞 입력(클릭 등)이
+/// 처리된 뒤의 포커스를 보도록 패스 안에서 판정한다. 이미지는 이 프로세스가 클립보드에서 직접 읽는다.
+///
+/// - 입력칸에 포커스가 있으면 아무것도 하지 않는다. 그 칸의 `EditProbe`가 결과를 정하고, 이미지는 읽지
+///   않는다(입력칸에는 텍스트만 붙인다).
+/// - 붙여넣기(`Paste`·`PasteText`)는 클립보드 이미지를 떠 있는 선택으로 붙이고 붙였는지 알린다. 텍스트와
+///   이미지가 함께 든 클립보드에서도 이미지가 붙도록 `PasteText`도 이미지를 읽는다.
+/// - 잘라내기는 입력칸 밖에서 할 일이 없으므로 실행 안 함으로 알린다. 복사와 모르는 동작은 SDK가 정한다.
+/// - 요청 패스가 아닌데 빈 붙여넣기가 있으면 회신을 모르는 호스트가 보낸 형식 붙여넣기다. 같은 포커스
+///   판정으로 이미지를 붙이고 회신은 하지 않는다.
 #[cfg(any(unix, windows))]
-fn apply_paste_events(
+fn handle_edit_input(
+    ctx: &egui::Context,
     doc: &mut ImageDoc,
-    events: &[RawInputEventWire],
     read: impl FnOnce() -> Result<egui::ColorImage, String>,
-) -> bool {
-    events.contains(&RawInputEventWire::Paste) && doc.paste_from_clipboard(read)
+) {
+    let Some(request) = edit_request(ctx) else {
+        let raw_paste = ctx.input(|i| {
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Paste(text) if text.is_empty()))
+        });
+        if raw_paste && !render::field_has_focus(ctx, doc) {
+            doc.paste_from_clipboard(read);
+        }
+        return;
+    };
+    if render::field_has_focus(ctx, doc) {
+        return;
+    }
+    match request.edit {
+        EditRequestWire::Paste | EditRequestWire::PasteText { .. } => {
+            let pasted = doc.paste_from_clipboard(read);
+            report_edit(ctx, pasted);
+        }
+        EditRequestWire::Cut => report_edit(ctx, false),
+        EditRequestWire::Copy | EditRequestWire::Unknown => {}
+    }
 }
 
 /// Read the system clipboard image into a `ColorImage` (paste → floating selection).
@@ -741,35 +780,357 @@ mod tests {
         let _ = std::fs::remove_file(&png); // best-effort 정리 — 실패 무시.
     }
 
-    /// 이번 입력에 Paste 가 있을 때만 클립보드를 읽어 붙이고, 없으면 읽지도 않는다.
-    #[cfg(any(unix, windows))]
     #[test]
-    fn a_paste_event_in_the_frame_input_pastes_the_clipboard_image() {
-        let (dir, first, _second) = two_image_dir("paste-event");
-        let mut p = plugin_with_file(&first);
-        let doc = p.docs.get_mut(&1).expect("문서가 있어야 한다");
-        let key = RawInputEventWire::Key {
-            key: "V".into(),
-            pressed: true,
-            repeat: false,
-            modifiers: Default::default(),
+    fn the_plugin_promises_edit_outcomes() {
+        assert!(ImagePlugin::new(Translator::default()).reports_edit_outcomes());
+    }
+
+    /// 호스트 편집 요청과 붙여넣기 처리 시험. 실제 paint 와 같은 순서(`handle_edit_input` 뒤 `render::draw`)로
+    /// 프레임을 돌리고 회신을 읽는다.
+    #[cfg(any(unix, windows))]
+    mod edit_input {
+        use super::*;
+        use std::cell::Cell;
+        use tasty_plugin_protocol::{
+            EditResultWire, PointerButtonWire, RawInputEventWire, RawInputWire,
+            SurfaceSetContextParams,
         };
 
-        let pasted = apply_paste_events(doc, std::slice::from_ref(&key), || {
-            panic!("Paste 가 없으면 클립보드를 읽지 않아야 한다")
-        });
-        assert!(!pasted);
-        assert!(!doc.is_editing());
+        type Outcomes = Vec<(u64, EditResultWire, Option<String>)>;
+        type Reader<'a> = &'a mut dyn FnMut() -> Result<egui::ColorImage, String>;
 
-        let pasted = apply_paste_events(doc, &[key, RawInputEventWire::Paste], || {
+        struct Rig {
+            mesh: EguiMeshSurface,
+            theme: Theme,
+            tr: Translator,
+            doc: ImageDoc,
+        }
+
+        impl Rig {
+            fn new(doc: ImageDoc) -> Self {
+                Self {
+                    mesh: EguiMeshSurface::new(1),
+                    theme: Theme::with_colors_and_zoom(
+                        tasty_themes::mocha_fallback_colors(),
+                        false,
+                        1.0,
+                    ),
+                    tr: Translator::default(),
+                    doc,
+                }
+            }
+
+            fn frame(&mut self, events: Vec<RawInputEventWire>, read: Reader<'_>) -> Outcomes {
+                let params = SurfaceSetContextParams {
+                    surface_id: 1,
+                    width_px: 800,
+                    height_px: 600,
+                    pixels_per_point: 1.0,
+                    raw_input: RawInputWire {
+                        events,
+                        ..Default::default()
+                    },
+                    theme: None,
+                    need_full_textures: false,
+                };
+                let Self { theme, tr, doc, .. } = self;
+                let _ = self.mesh.run_frame(&params, |ctx| {
+                    handle_edit_input(ctx, doc, &mut *read);
+                    render::draw(ctx, theme, tr, doc);
+                });
+                self.mesh.take_edit_outcomes()
+            }
+
+            fn ctx(&self) -> &egui::Context {
+                self.mesh.context()
+            }
+
+            fn has_focus(&self, id: egui::Id) -> bool {
+                self.ctx().memory(|m| m.has_focus(id))
+            }
+
+            fn center_of(&self, id: egui::Id) -> egui::Pos2 {
+                self.ctx()
+                    .read_response(id)
+                    .expect("직전 프레임에 그린 위젯이어야 한다")
+                    .rect
+                    .center()
+            }
+        }
+
+        fn no_read() -> Result<egui::ColorImage, String> {
+            panic!("입력칸이 받은 붙여넣기는 클립보드 이미지를 읽지 않아야 한다")
+        }
+
+        fn image() -> Result<egui::ColorImage, String> {
             Ok(egui::ColorImage::new([2, 2], egui::Color32::YELLOW))
-        });
-        assert!(pasted);
-        assert!(
-            doc.is_editing(),
-            "떠 있는 선택으로 편집 모드에 들어가야 한다"
-        );
-        let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
+        }
+
+        fn request(edit_id: u64, edit: EditRequestWire) -> RawInputEventWire {
+            RawInputEventWire::EditRequest { edit_id, edit }
+        }
+
+        fn paste_text(text: &str) -> EditRequestWire {
+            EditRequestWire::PasteText { text: text.into() }
+        }
+
+        fn click_at(pos: egui::Pos2) -> Vec<RawInputEventWire> {
+            let button = |pressed| RawInputEventWire::PointerButton {
+                x: pos.x,
+                y: pos.y,
+                button: PointerButtonWire::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            vec![
+                RawInputEventWire::PointerMoved { x: pos.x, y: pos.y },
+                button(true),
+                button(false),
+            ]
+        }
+
+        fn floating(doc: &ImageDoc) -> bool {
+            matches!(doc.edit_state, doc::EditState::FloatingSelection { .. })
+        }
+
+        /// 이미지를 연 보기 모드 문서. 돌려준 폴더는 시험 끝에 지운다.
+        fn loaded_doc(what: &str) -> (std::path::PathBuf, ImageDoc) {
+            let (dir, first, _second) = two_image_dir(what);
+            let mut doc = ImageDoc::new(Some(first));
+            doc.ensure_loaded();
+            (dir, doc)
+        }
+
+        /// Save As 팝업을 열고 빈 저장 경로 칸이 스스로 포커스를 가진 상태.
+        fn save_as_focused() -> Rig {
+            let mut doc = ImageDoc::new(None);
+            doc.open_save_as();
+            let mut rig = Rig::new(doc);
+            rig.frame(Vec::new(), &mut no_read);
+            rig.frame(Vec::new(), &mut no_read);
+            assert!(rig.has_focus(render::save_path_id()));
+            rig
+        }
+
+        #[test]
+        fn save_path_field_takes_pasted_text_and_skips_the_clipboard_image() {
+            let mut rig = save_as_focused();
+            let out = rig.frame(vec![request(1, paste_text("out.png"))], &mut no_read);
+            assert_eq!(rig.doc.save_path_buffer, "out.png");
+            assert_eq!(out, vec![(1, EditResultWire::Acted, None)]);
+        }
+
+        #[test]
+        fn a_format_paste_into_the_focused_field_does_nothing() {
+            let mut rig = save_as_focused();
+            let out = rig.frame(vec![request(2, EditRequestWire::Paste)], &mut no_read);
+            assert_eq!(rig.doc.save_path_buffer, "");
+            assert_eq!(out, vec![(2, EditResultWire::NotActed, None)]);
+        }
+
+        #[test]
+        fn a_format_paste_on_the_canvas_floats_the_clipboard_image() {
+            let (dir, doc) = loaded_doc("edit-format-paste");
+            let mut rig = Rig::new(doc);
+            rig.frame(Vec::new(), &mut no_read);
+            let out = rig.frame(vec![request(3, EditRequestWire::Paste)], &mut image);
+            assert!(floating(&rig.doc), "떠 있는 선택으로 붙어야 한다");
+            assert_eq!(out, vec![(3, EditResultWire::Acted, None)]);
+            let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
+        }
+
+        #[test]
+        fn a_text_paste_on_the_canvas_still_pastes_the_clipboard_image() {
+            let (dir, doc) = loaded_doc("edit-text-paste");
+            let mut rig = Rig::new(doc);
+            rig.frame(Vec::new(), &mut no_read);
+            let out = rig.frame(vec![request(4, paste_text("/tmp/a.png"))], &mut image);
+            assert!(floating(&rig.doc), "텍스트와 함께 든 이미지도 붙어야 한다");
+            assert_eq!(out, vec![(4, EditResultWire::Acted, None)]);
+            let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
+        }
+
+        #[test]
+        fn a_paste_without_a_clipboard_image_on_the_canvas_is_not_acted() {
+            let (dir, doc) = loaded_doc("edit-no-image");
+            let mut rig = Rig::new(doc);
+            rig.frame(Vec::new(), &mut no_read);
+            let out = rig.frame(vec![request(5, EditRequestWire::Paste)], &mut || {
+                Err("no image".to_string())
+            });
+            assert!(!rig.doc.is_editing(), "문서가 바뀌지 않아야 한다");
+            assert_eq!(out, vec![(5, EditResultWire::NotActed, None)]);
+            let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
+        }
+
+        #[test]
+        fn a_cut_on_the_canvas_is_not_acted() {
+            let (dir, doc) = loaded_doc("edit-cut");
+            let mut rig = Rig::new(doc);
+            rig.frame(Vec::new(), &mut no_read);
+            let out = rig.frame(vec![request(6, EditRequestWire::Cut)], &mut no_read);
+            assert_eq!(out, vec![(6, EditResultWire::NotActed, None)]);
+            let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
+        }
+
+        #[test]
+        fn cut_and_copy_in_the_save_path_field_reply_with_the_text() {
+            let mut rig = save_as_focused();
+            rig.doc.save_path_buffer = "abc".into();
+            let id = render::save_path_id();
+            rig.frame(Vec::new(), &mut no_read);
+            let mut state = egui::TextEdit::load_state(rig.ctx(), id).expect("입력칸 상태");
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(3),
+                )));
+            state.store(rig.ctx(), id);
+
+            let out = rig.frame(vec![request(7, EditRequestWire::Copy)], &mut no_read);
+            assert_eq!(out, vec![(7, EditResultWire::Acted, Some("abc".into()))]);
+            assert_eq!(rig.doc.save_path_buffer, "abc");
+
+            let out = rig.frame(vec![request(8, EditRequestWire::Cut)], &mut no_read);
+            assert_eq!(out, vec![(8, EditResultWire::Acted, Some("abc".into()))]);
+            assert_eq!(rig.doc.save_path_buffer, "");
+        }
+
+        #[test]
+        fn new_image_size_fields_take_pasted_digits() {
+            let mut doc = ImageDoc::new(None);
+            doc.new_image_popup = true;
+            doc.new_image_width = String::new();
+            let mut rig = Rig::new(doc);
+            rig.frame(Vec::new(), &mut no_read);
+            let id = render::new_width_id();
+            rig.ctx().memory_mut(|m| m.request_focus(id));
+            rig.frame(Vec::new(), &mut no_read);
+            assert!(rig.has_focus(id));
+            let out = rig.frame(vec![request(9, paste_text("1024"))], &mut no_read);
+            assert_eq!(rig.doc.new_image_width, "1024");
+            assert_eq!(out, vec![(9, EditResultWire::Acted, None)]);
+        }
+
+        /// 회신을 모르는 호스트는 내용 없는 Paste 를 보낸다. 그 입력에 Paste 가 있을 때만 이미지를 붙인다.
+        #[test]
+        fn a_raw_paste_in_the_frame_input_pastes_the_clipboard_image() {
+            let (dir, doc) = loaded_doc("raw-paste");
+            let mut rig = Rig::new(doc);
+            let key = RawInputEventWire::Key {
+                key: "V".into(),
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            };
+            let out = rig.frame(vec![key.clone()], &mut || {
+                panic!("Paste 가 없으면 클립보드를 읽지 않아야 한다")
+            });
+            assert!(out.is_empty());
+            assert!(!rig.doc.is_editing());
+
+            let out = rig.frame(vec![key, RawInputEventWire::Paste], &mut image);
+            assert!(out.is_empty(), "요청이 아니므로 회신하지 않는다");
+            assert!(
+                floating(&rig.doc),
+                "떠 있는 선택으로 편집 모드에 들어가야 한다"
+            );
+            let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
+        }
+
+        #[test]
+        fn a_raw_paste_with_the_save_path_field_focused_reads_no_image() {
+            let mut rig = save_as_focused();
+            let out = rig.frame(vec![RawInputEventWire::Paste], &mut no_read);
+            assert!(out.is_empty());
+            assert_eq!(rig.doc.save_path_buffer, "");
+            assert!(!rig.doc.is_editing());
+        }
+
+        #[test]
+        fn a_click_then_paste_in_one_input_judges_focus_after_the_click() {
+            let mut doc = ImageDoc::new(None);
+            doc.open_save_as();
+            // 비어 있지 않으면 입력칸이 스스로 포커스를 요청하지 않는다.
+            doc.save_path_buffer = "a.png".into();
+            let mut rig = Rig::new(doc);
+            let id = render::save_path_id();
+            rig.frame(Vec::new(), &mut no_read);
+            rig.ctx().memory_mut(|m| m.surrender_focus(id));
+            rig.frame(Vec::new(), &mut no_read);
+            assert!(!rig.has_focus(id), "클릭 전에는 포커스가 없어야 한다");
+
+            let reads = Cell::new(0);
+            let mut events = click_at(rig.center_of(id));
+            events.push(request(10, paste_text("x")));
+            let out = rig.frame(events, &mut || {
+                reads.set(reads.get() + 1);
+                image()
+            });
+            assert_eq!(
+                reads.get(),
+                0,
+                "클릭으로 포커스를 받은 칸에는 이미지를 읽지 않는다"
+            );
+            assert_eq!(rig.doc.save_path_buffer.len(), "a.png".len() + 1);
+            assert!(rig.doc.save_path_buffer.contains('x'));
+            assert_eq!(out, vec![(10, EditResultWire::Acted, None)]);
+        }
+
+        #[test]
+        fn a_paste_right_after_the_popup_closes_goes_to_the_canvas() {
+            let mut rig = save_as_focused();
+            // 카드 아래 줄의 두 버튼 중 왼쪽이 Cancel 이다.
+            let cancel = rig.ctx().viewport(|v| {
+                let buttons: Vec<egui::Rect> = v
+                    .prev_pass
+                    .widgets
+                    .layers()
+                    .flat_map(|(_, rects)| rects.iter())
+                    .filter(|w| w.sense.senses_click() && w.id != render::save_path_id())
+                    .map(|w| w.rect)
+                    .collect();
+                let bottom = buttons.iter().map(|r| r.min.y).fold(f32::MIN, f32::max);
+                buttons
+                    .into_iter()
+                    .filter(|r| (r.min.y - bottom).abs() < 1.0)
+                    .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
+                    .expect("Cancel 버튼")
+                    .center()
+            });
+            let mut events = click_at(cancel);
+            events.push(request(11, EditRequestWire::Paste));
+            let out = rig.frame(events, &mut image);
+            assert!(!rig.doc.save_path_popup, "Cancel 로 팝업이 닫혀야 한다");
+            assert!(
+                floating(&rig.doc),
+                "닫힌 팝업의 입력칸 대신 캔버스에 붙어야 한다"
+            );
+            assert_eq!(out, vec![(11, EditResultWire::Acted, None)]);
+        }
+
+        #[test]
+        fn a_paste_after_clicking_off_the_field_goes_to_the_canvas() {
+            let mut doc = ImageDoc::new(None);
+            doc.open_save_as();
+            // 빈 칸은 매 프레임 스스로 포커스를 다시 요청하므로 비어 있지 않은 칸으로 본다.
+            doc.save_path_buffer = "a.png".into();
+            let mut rig = Rig::new(doc);
+            let id = render::save_path_id();
+            rig.frame(Vec::new(), &mut no_read);
+            rig.ctx().memory_mut(|m| m.request_focus(id));
+            rig.frame(Vec::new(), &mut no_read);
+            assert!(rig.has_focus(id));
+            // 팝업 카드 밖의 빈 패널.
+            let mut events = click_at(egui::pos2(4.0, 590.0));
+            events.push(request(12, EditRequestWire::Paste));
+            let out = rig.frame(events, &mut image);
+            assert!(!rig.has_focus(id), "입력칸 밖을 누르면 포커스가 풀린다");
+            assert!(rig.doc.save_path_popup);
+            assert!(floating(&rig.doc));
+            assert_eq!(out, vec![(12, EditResultWire::Acted, None)]);
+        }
     }
 
     #[test]
