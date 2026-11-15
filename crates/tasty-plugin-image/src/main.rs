@@ -847,8 +847,7 @@ mod tests {
                 };
                 let Self { theme, tr, doc, .. } = self;
                 let _ = self.mesh.run_frame(&params, |ctx| {
-                    handle_edit_input(ctx, doc, &mut *read);
-                    render::draw(ctx, theme, tr, doc);
+                    paint_pass(ctx, theme, tr, doc, &mut *read);
                 });
                 self.mesh.take_edit_outcomes()
             }
@@ -1011,18 +1010,49 @@ mod tests {
 
         #[test]
         fn new_image_size_fields_take_pasted_digits() {
-            let mut doc = ImageDoc::new(None);
-            doc.new_image_popup = true;
-            doc.new_image_width = String::new();
+            let fields = [
+                (render::new_width_id(), "1024", 9),
+                (render::new_height_id(), "768", 10),
+            ];
+            for (id, digits, edit_id) in fields {
+                let mut doc = ImageDoc::new(None);
+                doc.new_image_popup = true;
+                doc.new_image_width = String::new();
+                doc.new_image_height = String::new();
+                let mut rig = Rig::new(doc);
+                rig.frame(Vec::new(), &mut no_read);
+                rig.ctx().memory_mut(|m| m.request_focus(id));
+                rig.frame(Vec::new(), &mut no_read);
+                assert!(rig.has_focus(id), "{digits}: 그 칸이 포커스를 가져야 한다");
+                let out = rig.frame(vec![request(edit_id, paste_text(digits))], &mut no_read);
+                let (pasted, other) = if id == render::new_width_id() {
+                    (&rig.doc.new_image_width, &rig.doc.new_image_height)
+                } else {
+                    (&rig.doc.new_image_height, &rig.doc.new_image_width)
+                };
+                assert_eq!(pasted, digits);
+                assert_eq!(other, "", "{digits}: 다른 칸은 그대로여야 한다");
+                assert_eq!(out, vec![(edit_id, EditResultWire::Acted, None)]);
+            }
+        }
+
+        /// 요청 패스에서 붙인 이미지는 같은 패스의 그리기에 나온다. 요청이 입력의 마지막이면 그 패스가
+        /// 이 프레임의 화면이므로, 그리기 뒤에 붙이면 붙인 선택이 화면에 없다.
+        #[test]
+        fn a_pasted_image_is_drawn_in_the_frame_of_the_request() {
+            let (dir, doc) = loaded_doc("edit-paste-drawn");
             let mut rig = Rig::new(doc);
             rig.frame(Vec::new(), &mut no_read);
-            let id = render::new_width_id();
-            rig.ctx().memory_mut(|m| m.request_focus(id));
-            rig.frame(Vec::new(), &mut no_read);
-            assert!(rig.has_focus(id));
-            let out = rig.frame(vec![request(9, paste_text("1024"))], &mut no_read);
-            assert_eq!(rig.doc.new_image_width, "1024");
-            assert_eq!(out, vec![(9, EditResultWire::Acted, None)]);
+            let out = rig.frame(vec![request(13, EditRequestWire::Paste)], &mut image);
+            assert_eq!(out, vec![(13, EditResultWire::Acted, None)]);
+            let doc::EditState::FloatingSelection { selection, .. } = &rig.doc.edit_state else {
+                panic!("떠 있는 선택으로 붙어야 한다");
+            };
+            assert!(
+                selection.texture.is_some(),
+                "붙인 선택을 같은 패스에서 그려야 한다"
+            );
+            let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
         }
 
         /// 회신을 모르는 호스트는 내용 없는 Paste 를 보낸다. 그 입력에 Paste 가 있을 때만 이미지를 붙인다.
