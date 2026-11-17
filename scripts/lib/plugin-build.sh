@@ -24,7 +24,22 @@ to_unix_path() {
 # surrogate, fails, as does any other escape. The target name is read from the
 # "target" object, which holds no nested object.
 cargo_executables() {
-  tr -d '\r' | awk '
+  cargo_artifact_files executable
+}
+
+# Reads cargo's JSON messages from stdin and prints "<target name>\t<pdb>" for each
+# .pdb path in the "filenames" list of a compiler-artifact message that has an
+# executable. On an MSVC target the linker writes a PDB next to each executable and
+# cargo lists it there, under the name the executable records (the crate name, with
+# underscores). Other targets list none. The paths are decoded as in
+# cargo_executables.
+cargo_pdbs() {
+  cargo_artifact_files pdb
+}
+
+# The parser behind cargo_executables and cargo_pdbs. $1 is "executable" or "pdb".
+cargo_artifact_files() {
+  tr -d '\r' | awk -v want="$1" '
     # Value of a 4-digit hex string, or -1 if it is not hex.
     function hex4(h,    v, i, d) {
       if (length(h) != 4) return -1
@@ -63,10 +78,20 @@ cargo_executables() {
       if (!match($0, /"executable":"([^"\\]|\\.)*"/)) next
       exe = unescape(substr($0, RSTART + 14, RLENGTH - 15))
       if (bad) { print "unsupported escape in a cargo executable path: " $0 > "/dev/stderr"; exit 1 }
-      if (!match($0, /"target":[{][^}]*[}]/)) next
-      target = substr($0, RSTART, RLENGTH)
+      line = $0
+      if (!match(line, /"target":[{][^}]*[}]/)) next
+      target = substr(line, RSTART, RLENGTH)
       if (!match(target, /"name":"[^"\\]*"/)) next
-      print substr(target, RSTART + 8, RLENGTH - 9) "\t" exe
+      name = substr(target, RSTART + 8, RLENGTH - 9)
+      if (want == "executable") { print name "\t" exe; next }
+      if (!match(line, /"filenames":\[("([^"\\]|\\.)*",?)*\]/)) next
+      list = substr(line, RSTART + 13, RLENGTH - 14)
+      while (match(list, /"([^"\\]|\\.)*"/)) {
+        file = unescape(substr(list, RSTART + 1, RLENGTH - 2))
+        if (bad) { print "unsupported escape in a cargo artifact path: " line > "/dev/stderr"; exit 1 }
+        list = substr(list, RSTART + RLENGTH)
+        if (tolower(substr(file, length(file) - 3)) == ".pdb") print name "\t" file
+      }
     }'
 }
 

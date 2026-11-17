@@ -485,7 +485,9 @@ order:
    `tasty-plugin.toml`, `lang/`, and the notice set of the repository: `LICENSE`,
    `THIRD_PARTY_LICENSES.md`, and every file in `LICENSES/`, kept under `LICENSES/`. A
    crate with an `assets/NOTICE.md` also gets it as `NOTICE.md`; now that is the markdown
-   plugin. `<id>` is the manifest `id`, for example `com.tasty.claude`.
+   plugin. Windows targets also get the PDB that the MSVC linker writes next to the
+   executable, under the name the executable records. `<id>` is the manifest `id`, for
+   example `com.tasty.claude`.
 2. `pack`: one `<id>-<version>-<platform>.tar.gz` per plugin. `<version>` is the
    manifest `version`.
 3. `pack` then writes `SHA256SUMS-<platform>.txt` (the `sha256sum` format) and
@@ -494,10 +496,12 @@ order:
 
 The packages are not signed. `pack` fails if the stage holds a `.sig` file or if an
 archive contains one. It also fails if an archive lacks a file of the notice set, or the
-`NOTICE.md` of a crate that has one.
+`NOTICE.md` of a crate that has one, or if a `windows-*` archive does not hold exactly one
+PDB next to the executable, or another archive holds one.
 
 The script finds each executable through the `executable` field of cargo's
-`compiler-artifact` messages. It copies the manifest and `lang/` from `crates/<crate>/`
+`compiler-artifact` messages, and the PDB through the `.pdb` entry of the same message's
+`filenames` list. It copies the manifest and `lang/` from `crates/<crate>/`
 in this repository.
 
 Example:
@@ -530,7 +534,11 @@ com.tasty.claude/LICENSES/mermaid-MIT.txt
 com.tasty.claude/LICENSES/KaTeX-MIT.txt
 ```
 
-The markdown archive also lists `com.tasty.markdown/NOTICE.md`.
+The markdown archive also lists `com.tasty.markdown/NOTICE.md`. A Windows archive also
+lists the PDB beside the executable, for example `com.tasty.claude/tasty_plugin_claude.pdb`
+next to `com.tasty.claude/tasty-plugin-claude.exe`. The release profile keeps the
+symbol table and strips only debug info, so a plugin crash backtrace shows function
+names on Linux and macOS, and the PDB gives Windows the same.
 
 The archives are tar.gz on every platform, including Windows, so one format and one
 hash list serve all platforms. The script needs bash, tar, awk, and `sha256sum` or

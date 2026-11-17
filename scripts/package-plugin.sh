@@ -13,14 +13,17 @@
 # stage   Builds with `scripts/check.sh build` (profile dist by default) and copies
 #         each plugin into DIR/NAME/stage/<id>/: the executable, tasty-plugin.toml,
 #         lang/, the notice set (LICENSE, THIRD_PARTY_LICENSES.md, LICENSES/), and
-#         the crate's assets/NOTICE.md as NOTICE.md when it has one. Plugins whose
-#         manifest says `bundle = false` are skipped unless --all is given, as in
-#         tasty's own packaging scripts.
+#         the crate's assets/NOTICE.md as NOTICE.md when it has one. For a
+#         *-windows-msvc target it also copies the PDB the linker wrote next to the
+#         executable, under the name the executable records, and fails if cargo
+#         lists none. Plugins whose manifest says `bundle = false` are skipped unless
+#         --all is given, as in tasty's own packaging scripts.
 # pack    Writes DIR/NAME/dist/<id>-<version>-NAME.tar.gz for each staged plugin,
 #         then DIR/NAME/dist/SHA256SUMS-NAME.txt (sha256sum format) and
 #         DIR/NAME/dist/plugins-NAME.tsv (id, version, platform, file, sha256).
 #         Fails if the stage or an archive contains a .sig file, or if an archive
-#         lacks a file of the notice set or the NOTICE.md of its crate.
+#         lacks a file of the notice set or the NOTICE.md of its crate. A windows-*
+#         archive must hold exactly one <id>/*.pdb; any other archive must hold none.
 #
 # NAME is a platform label such as linux-x64 or windows-arm64. The executable path
 # comes from cargo's compiler-artifact messages and the manifest and lang/ from
@@ -38,7 +41,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
@@ -89,11 +92,16 @@ cmd_stage() {
   scripts/check.sh build "${build_args[@]}"
 
   # A second, fresh build prints the artifact messages without rebuilding.
-  local artifacts
-  artifacts=$(
-    scripts/check.sh build "${build_args[@]}" --message-format=json-render-diagnostics |
-      cargo_executables
-  )
+  local messages artifacts pdbs
+  messages=$(scripts/check.sh build "${build_args[@]}" --message-format=json-render-diagnostics)
+  artifacts=$(cargo_executables <<<"$messages")
+  pdbs=$(cargo_pdbs <<<"$messages")
+
+  # The MSVC linker writes a PDB for each executable. Ship it so crash backtraces
+  # can be symbolized. Without --target the build is for the host.
+  local triple="$TARGET" want_pdb=0
+  [[ -n "$triple" ]] || triple=$(rustc -vV | sed -n 's/^host: //p')
+  [[ "$triple" == *-windows-msvc ]] && want_pdb=1
 
   # Read before the loop: a process substitution would hide a failure of
   # list-bins after it printed part of the list.
@@ -103,7 +111,7 @@ cmd_stage() {
   rm -rf "$STAGE_DIR"
   mkdir -p "$STAGE_DIR"
 
-  local crate src manifest id exe count=0
+  local crate src manifest id exe pdb count=0
   while IFS= read -r crate; do
     [[ -n "$crate" ]] || continue
     src="crates/$crate"
@@ -124,6 +132,13 @@ cmd_stage() {
 
     mkdir -p "$STAGE_DIR/$id"
     cp "$exe" "$STAGE_DIR/$id/"
+    if [[ $want_pdb -eq 1 ]]; then
+      pdb=$(awk -F'\t' -v c="$crate" '$1 == c { print $2; exit }' <<<"$pdbs")
+      [[ -n "$pdb" ]] || die "cargo reported no PDB for $crate on $triple"
+      pdb=$(to_unix_path "$pdb")
+      [[ -f "$pdb" ]] || die "PDB missing: $pdb"
+      cp "$pdb" "$STAGE_DIR/$id/"
+    fi
     cp "$manifest" "$STAGE_DIR/$id/tasty-plugin.toml"
     stage_notice "$STAGE_DIR/$id" || die "cannot stage the notice set for $id"
     if [[ -f "$src/$NOTICE_ASSET" ]]; then
@@ -166,7 +181,7 @@ cmd_pack() {
   printf 'id\tversion\tplatform\tfile\tsha256\n' >"$index"
   : >"$sums"
 
-  local dir id version file hash list
+  local dir id version file hash list pdbs
   for dir in "$STAGE_DIR"/*/; do
     id=$(basename "$dir")
     version=$(manifest_string version "$dir/tasty-plugin.toml")
@@ -181,6 +196,12 @@ cmd_pack() {
     verify_notice_listing "$list" "$id/" "$file" || die "$file lacks the notice set"
     if crate_has_notice "$id" && ! listing_has "$list" "$id/NOTICE.md"; then
       die "$id/NOTICE.md not in $file"
+    fi
+    pdbs=$(grep -c "^$id/[^/]*\.pdb\$" <<<"$list" || true)
+    if [[ "$PLATFORM" == windows-* ]]; then
+      [[ "$pdbs" -eq 1 ]] || die "$file holds $pdbs PDB files next to the executable; expected 1"
+    elif [[ "$pdbs" -ne 0 ]]; then
+      die "$file holds a PDB file on $PLATFORM"
     fi
     hash=$(sha256_of "$DIST_DIR/$file")
     printf '%s  %s\n' "$hash" "$file" >>"$sums"
