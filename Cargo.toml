@@ -47,7 +47,9 @@ missing_safety_doc = "deny"
 # Same as tasty so the plugin binaries match what tasty ships.
 [profile.release]
 lto = "thin"
-strip = true
+# Strip only debug info and keep the symbol table, so crash backtraces show function
+# names. Same as tasty.
+strip = "debuginfo"
 opt-level = 3
 
 [profile.dist]
