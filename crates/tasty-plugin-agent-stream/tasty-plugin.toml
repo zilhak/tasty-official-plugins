@@ -7,17 +7,6 @@ api_version = "1"
 # 배포 번들에는 포함하지 않는다(docs/plugins/agent-stream/index.md). 대화 기록을 네트워크로 내보낼 수 있어 재검토가 필요하다.
 # 개발 번들 동기화는 이 플래그와 별개다. 웹훅의 순차 요청 등록은 사용자가 따로 구성한다.
 bundle = false
-permissions = [
-    # surface.meta.get(claude-session-id 조회) · surface.locate(대상 생존 확인).
-    "surface.read",
-    # 대화 기록 파일 읽기. 프로세스의 직접 파일 접근을 호스트 권한 검사가 막지는 않는다.
-    "fs.read",
-    # 재시작 복구를 위한 데이터 디렉터리의 watches.json 저장.
-    "fs.write",
-    # SSE 엔드포인트가 TCP 포트를 연다(`agent_stream.serve`). 기본 bind 는 loopback 이고,
-    # 그보다 넓은 주소는 토큰 없이는 거부한다 — docs/plugins/agent-stream/index.md#sse-엔드포인트.
-    "network",
-]
 lang_dir = "lang"
 
 [entry]

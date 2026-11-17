@@ -4,7 +4,6 @@
 - **주체**: AI Agent / 로컬 사용자 (`tasty claude` CLI · IPC)
 - **배포/통합**: bundled · cli + ipc_namespace + 멀티에이전트 — [plugins 개념](https://github.com/zilhak/tasty/blob/develop/docs/concepts/plugins.md)
 - **코드**: `crates/tasty-plugin-claude/`
-- **권한**: `terminal.spawn` 등 (매니페스트 `permissions`) · `memory.read`(Stop 훅이 실행된 surface의 goal을 읽는다 — 읽기 전용)
 - **화면**: 없음 — CLI/IPC 로 터미널 surface 를 조작하는 실행 관리 플러그인 (headless).
 
 > CLI·IPC, 부모·자식 관계, 훅 설치를 함께 제공하는 예제다. 구현 구조는 [플러그인 개발](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/plugin-development.md#cli--ipc-namespace)을 참고한다.
@@ -203,7 +202,7 @@ attach 로 연결한 원격 워크스페이스(mirror)에 `spawn` 하면 자식�
   | 스칼라(대부분) | `theme`, `effortLevel` | 값이 다르면 경고 로그 남기고 나중 프로필 값으로 last-wins |
   | 스칼라(보안 민감) | `permissions.defaultMode` | 값이 다르면 **거부**(에러) — 권한 모드가 조합으로 조용히 약해지는 것을 last-wins 보다 우선 차단 |
 
-- **저장 위치** — 전부 `TASTY_PLUGIN_DATA_DIR`(`~/.tasty/plugin-data/com.tasty.claude/`) 하위. 호스트가 이 디렉토리를 미리 만들어 주므로 `fs.write` 권한 없이도 쓸 수 있다. 호스트가 이 env 를 주입하지 않은 비정상 기동(`data_dir = None`)이면 등록/부착 모두 명시적 에러로 거부한다 — `~/.claude/` 나 새 경로를 조용히 쓰지 않는다.
+- **저장 위치** — 전부 `TASTY_PLUGIN_DATA_DIR`(`~/.tasty/plugin-data/com.tasty.claude/`) 하위. 호스트가 이 디렉토리를 미리 만들어 주므로 플러그인이 바로 쓸 수 있다. 호스트가 이 env 를 주입하지 않은 비정상 기동(`data_dir = None`)이면 등록/부착 모두 명시적 에러로 거부한다 — `~/.claude/` 나 새 경로를 조용히 쓰지 않는다.
 - IPC: `claude.profile_register`/`claude.profile_unregister`/`claude.profile_list`/`claude.profile_show`/`claude.profile_current` — CLI 서브커맨드와 1:1 대응(IPC·CLI 양면, 에이전트 조작 가능성 — [API 규약](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/api-conventions.md#ipc-메서드를-cli로-제공하는-기준)).
 - spawn 시 조회한 parent의 자식 수가 설정 임계치를 넘으면 응답에 `warning`을 넣는다.
   Settings › Plugin › Claude Code에서 임계치를 조정한다. 후보 목록은 `idle` 보고를 받은

@@ -4,15 +4,6 @@ name = "Image"
 version = "0.2.5"
 description = "Image surface viewer / paint canvas"
 api_version = "1"
-permissions = [
-    "surface.read",
-    "surface.write",
-    "clipboard.read",
-    "fs.read",
-    "fs.write",
-    "file_handler.define",
-    "file_handler.handle:image",
-]
 lang_dir = "lang"
 
 [entry]

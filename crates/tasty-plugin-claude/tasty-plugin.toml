@@ -4,29 +4,6 @@ name = "Claude Code"
 version = "0.3.5"
 description = "Claude Code CLI integration for Tasty"
 api_version = "1"
-permissions = [
-    "surface.read",
-    "surface.write",
-    "terminal.spawn",
-    "terminal.write",
-    "terminal.read",
-    "fs.read",
-    "fs.write",
-    "notification",
-    "telemetry",
-    # 자식의 호스트 IPC 인증에 사용할 세션 토큰을 발급한다.
-    "agent",
-    # agent task 의 턴 시작·끝을 호스트에 보고한다(`agent.task_turn_report`).
-    "agent.turn_report",
-    "ui.settings_page",
-    # `claude.spawn`/`claude.tell` 기본 완료 전략 선언에 필요.
-    "completion_strategy.define",
-    # Stop 훅 게이트의 본문에 넣을 세션 목표를 조회한다.
-    "memory.read",
-    # 자식 토큰으로 Codex namespace를 호출할 수 있도록 전달할 권한이다.
-    # 자기 namespace인 claude의 호출 권한은 소유자이므로 별도 선언 없이 전달한다.
-    "ipc.invoke:codex",
-]
 lang_dir = "lang"
 
 [entry]

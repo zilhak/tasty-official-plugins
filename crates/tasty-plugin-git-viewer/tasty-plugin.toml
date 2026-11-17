@@ -4,7 +4,6 @@ name = "Git Viewer"
 version = "0.2.4"
 description = "Read-only git status / log / diff popup"
 api_version = "1"
-permissions = ["ui.popup", "ui.tool_item", "fs.read"]
 lang_dir = "lang"
 
 [entry]

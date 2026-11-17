@@ -4,20 +4,6 @@ name = "Codex"
 version = "0.3.5"
 description = "Codex CLI integration for Tasty"
 api_version = "1"
-permissions = [
-    "surface.read",
-    "surface.write",
-    "terminal.spawn",
-    "terminal.write",
-    "terminal.read",
-    "fs.write",
-    "notification",
-    "ui.settings_page",
-    # `codex.spawn`/`codex.tell` 기본 완료 전략 선언에 필요.
-    "completion_strategy.define",
-    # agent task 의 턴 시작·끝을 호스트에 보고한다(`agent.task_turn_report`). 다른 agent.* 는 열지 않는다.
-    "agent.turn_report",
-]
 lang_dir = "lang"
 
 [entry]

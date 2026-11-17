@@ -4,14 +4,6 @@ name = "HTML Viewer"
 version = "0.2.3"
 description = "HTML viewer surface. Uses tasty's native WebView overlay toolkit."
 api_version = "1"
-permissions = [
-    "surface.read",
-    "surface.write",
-    "file_handler.define",
-    "file_handler.handle:html",
-    "file_handler.handle:svg",
-    "ui.settings_page",
-]
 lang_dir = "lang"
 
 [entry]

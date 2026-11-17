@@ -5,7 +5,6 @@
 - **배포/통합**: bundled · 도구 메뉴 항목 + popup — [plugins 개념](https://github.com/zilhak/tasty/blob/develop/docs/concepts/plugins.md)
 - **코드**: `crates/tasty-plugin-git-viewer/` · 조회 로직은 host core 와 공유하는
   `crates/tasty-git-core/`
-- **권한**: `ui.popup` · `ui.tool_item` · `fs.read`
 - **화면**: [screens/git-viewer.md](screens/git-viewer.md)
 
 > **예제로서**: **도구 메뉴 항목 + popup** 예제 — main/render 모듈(조회 로직은 `tasty-git-core`)로 분리한 구조의 레퍼런스 → [plugin-development](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/plugin-development.md#도구-메뉴-항목--popup).
@@ -38,7 +37,6 @@ git **status / log / diff 를 읽기 전용**으로 보여주는 popup 을 제�
   가이드 참조). plugin 이 빈 값을 자기 lang 의 `git_viewer.no_message` / `git_viewer.unknown_author` 로 그리므로
   로컬·원격(mirror) 조회 모두 plugin 로케일(`TASTY_LOCALE`)을 따른다.
 - **fs 접근** — git2 가 파일을 직접 읽어(host fs 포트 우회) worktree 가 cwd 밖에 있어도 읽는다.
-  권한 선언은 `fs.read` 유지.
 - **attach mirror 워크스페이스** — 로컬 프로세스에 실제 PTY/파일시스템이 없는 mirror surface
   에서 열리면(`popup.open` context 의 `mirror`/`local_surface_id`), 로컬 `git2::Repository::
   discover` 대신 host 가 attach 채널로 **원격**(mirror 대상) tasty 인스턴스에 조회를 왕복시킨다
