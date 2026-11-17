@@ -8,31 +8,31 @@ resolver = "2"
 # the pin-check tests fail if the entries disagree.
 [workspace.dependencies]
 tasty-plugin-agent-common = { path = "crates/tasty-plugin-agent-common" }
-tasty-doc-guards = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-egui-theme = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-git-core = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-i18n = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-icons = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043", default-features = false }
-tasty-plugin-manifest = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-plugin-protocol = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-plugin-sdk = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-reaper = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-test-support = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-themes = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-type-appearance = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-ui-widgets = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
-tasty-utils = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
+tasty-doc-guards = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-egui-theme = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-git-core = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-i18n = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-icons = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46", default-features = false }
+tasty-plugin-manifest = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-plugin-protocol = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-plugin-sdk = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-reaper = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-test-support = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-themes = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-type-appearance = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-ui-widgets = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
+tasty-utils = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
 serde_json = "1"
 toml = "0.8"
 
 # tasty patches tiny_http (vendor/tiny_http, see its PATCHES.md) and builds the
 # agent-stream SSE server against that copy. Use the same copy here.
 [patch.crates-io]
-tiny_http = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
+tiny_http = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
 # tasty patches epaint (vendor/epaint, see its PATCHES.md): glyphs too big for the
 # font atlas are left blank instead of panicking, and the atlas image stops growing
 # at its width. Use the same copy here.
-epaint = { git = "https://github.com/zilhak/tasty", rev = "5098adbf65c375f84550f003f1522b5e46e79043" }
+epaint = { git = "https://github.com/zilhak/tasty", rev = "d387ba28877f97b6d958b33da3063ff55cd4db46" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

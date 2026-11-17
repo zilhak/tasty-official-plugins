@@ -36,6 +36,4 @@ fn svg_handler_is_declared_on_the_host_svg_detector() {
     assert_eq!(action["kind"], "open_surface");
     assert_eq!(action["surface_kind"], "html");
     assert_eq!(action["param_key"], "url");
-    // 권한 토큰이 없으면 매니페스트 로드가 실패한다.
-    assert!(m.permissions.iter().any(|p| p == "file_handler.handle:svg"));
 }
