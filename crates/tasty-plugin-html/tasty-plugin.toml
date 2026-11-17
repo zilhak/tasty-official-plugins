@@ -23,6 +23,13 @@ kind = "html"
 display_name_i18n_key = "surface.kind.html"
 icon = "html"
 rendering = "webview"
+# 주소 띠·안내 카드·스크립트 게이트·URL 열기·attach 문서 제공과 viewer 표시를 host에 요청한다.
+address_band = true
+inset_notices = true
+script_gate = true
+opens_url = true
+remote_http_serve = true
+mirror_viewer = true
 
 # 프리셋 편집기 필드 — URL 입력. url 은 파일 경로 파생 대상이 아니다(derive_cwd 없음).
 [[surface_kinds.preset_fields]]

@@ -44,6 +44,8 @@ tasty-icons = { workspace = true, default-features = false }
 tasty-i18n.workspace = true
 # 입력칸 시험이 기본 테마로 팝업을 그린다.
 tasty-themes.workspace = true
+# 매니페스트의 kind 능력 선언을 시험에서 읽는다.
+tasty-plugin-manifest.workspace = true
 
 [lints]
 workspace = true

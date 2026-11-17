@@ -42,6 +42,9 @@ records_recent = true
 # 변환 전에 파일 경로를 받도록 파일 열기 팝업을 지정한다.
 convert_requires_input = true
 convert_input_popup = "file-open"
+# attach에서 파일 원문을 제공해 mirror로 다시 그리고, 포커스는 바탕색으로 보인다.
+mirror_content = true
+bed_focus = true
 
 # 문서는 plugin이 정화한 HTML이고 주소창·탐색 스크립트가 실행돼야 하므로 JS를 기본으로 켠다.
 # 설정 페이지에 이 항목은 없다. 사용자가 저장한 sandbox_scripts가 있으면 그 값이 우선한다.

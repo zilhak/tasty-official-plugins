@@ -1,7 +1,7 @@
 //! HTML 매니페스트와 프리셋 필드 선언을 검사한다.
 
 use std::path::PathBuf;
-use tasty_plugin_manifest::{Manifest, PresetFieldInputType};
+use tasty_plugin_manifest::{Manifest, PresetFieldInputType, SurfaceKindCapabilityDecl};
 
 #[test]
 fn manifest_loads_and_validates() {
@@ -36,4 +36,27 @@ fn svg_handler_is_declared_on_the_host_svg_detector() {
     assert_eq!(action["kind"], "open_surface");
     assert_eq!(action["surface_kind"], "html");
     assert_eq!(action["param_key"], "url");
+}
+
+/// html kind 는 host 의 이름 규칙이 주던 능력만 선언한다. mirror_content 는 원문 채널을 처리하지 않아 선언하지 않는다.
+#[test]
+fn html_kind_declares_the_host_capabilities_it_uses() {
+    let m = Manifest::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))).expect("load");
+    let kind = m
+        .surface_kinds
+        .iter()
+        .find(|k| k.kind == "html")
+        .expect("html kind");
+    assert_eq!(
+        kind.capabilities,
+        SurfaceKindCapabilityDecl {
+            address_band: Some(true),
+            inset_notices: Some(true),
+            script_gate: Some(true),
+            opens_url: Some(true),
+            remote_http_serve: Some(true),
+            mirror_viewer: Some(true),
+            ..Default::default()
+        }
+    );
 }

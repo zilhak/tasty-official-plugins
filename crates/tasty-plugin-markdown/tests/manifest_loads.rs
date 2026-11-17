@@ -17,3 +17,25 @@ fn manifest_loads_and_validates() {
         "default_colors block should be preserved (F.H schema demo)"
     );
 }
+
+/// markdown kind 는 원문 mirror 와 바탕 포커스만 선언한다.
+#[test]
+fn markdown_kind_declares_mirror_content_and_bed_focus() {
+    let m = tasty_plugin_manifest::Manifest::load(&std::path::PathBuf::from(env!(
+        "CARGO_MANIFEST_DIR"
+    )))
+    .expect("load");
+    let kind = m
+        .surface_kinds
+        .iter()
+        .find(|k| k.kind == "markdown")
+        .expect("markdown kind");
+    assert_eq!(
+        kind.capabilities,
+        tasty_plugin_manifest::SurfaceKindCapabilityDecl {
+            mirror_content: Some(true),
+            bed_focus: Some(true),
+            ..Default::default()
+        }
+    );
+}

@@ -2426,6 +2426,7 @@ dependencies = [
  "tasty-egui-theme",
  "tasty-i18n",
  "tasty-icons",
+ "tasty-plugin-manifest",
  "tasty-plugin-protocol",
  "tasty-plugin-sdk",
  "tasty-themes",

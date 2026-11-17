@@ -29,6 +29,8 @@ rendering = "egui-mesh"
 egui_paste = true
 # file의 파일명을 탭 이름으로 사용한다.
 name_from_param = "file"
+# 포커스는 띠가 아니라 바탕색으로 보인다.
+bed_focus = true
 
 # 프리셋 편집기 필드 — 파일 경로(+Browse). 적용 시 파일 폴더를 cwd 로 파생.
 [[surface_kinds.preset_fields]]
