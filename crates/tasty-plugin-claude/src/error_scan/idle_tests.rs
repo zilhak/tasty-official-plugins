@@ -1119,3 +1119,44 @@ fn a_next_turn_stop_without_prompt_at_the_same_sequence_keeps_the_check() {
     );
     assert!(tick(&scanner, &host, t + secs(400)).is_empty());
 }
+
+/// 보낼 때 대상이 실행 중이었다는 사실(`running`)은 meta 에 남아 재시작 뒤에도 쓰인다. 되살린 체크도 진행 중이던 앞
+/// 턴의 끝을 건너뛰고, 메시지를 처리한 다음 턴의 끝에서 끝난다.
+#[test]
+fn the_running_flag_survives_a_restart() {
+    test_log::take();
+    let host = FakeHost::new("active");
+    let t = Instant::now();
+    let scanner = Mutex::new(ErrorScanner::new());
+    tell_check(&scanner, &host, t, "active", 1);
+    let meta = host.idle_meta().unwrap();
+    assert!(meta.contains("\"running\":true"), "{meta}");
+
+    let restarted = Mutex::new(ErrorScanner::new());
+    lock_scanner(&restarted).idle.begin_restore(t + secs(1));
+    assert_eq!(
+        lock_scanner(&restarted).idle_restore(&host, TARGET, t + secs(2)),
+        1
+    );
+    lock_scanner(&restarted).idle.end_restore();
+    lock_scanner(&restarted).idle_complete(
+        &host,
+        TARGET,
+        Finish::turn(t + secs(3), 2, Some("old")),
+    );
+    assert_eq!(
+        checks(&restarted).len(),
+        1,
+        "진행 중이던 앞 턴의 끝은 체크를 끝내지 않는다"
+    );
+    lock_scanner(&restarted).idle_complete(
+        &host,
+        TARGET,
+        Finish::turn(t + secs(4), 2, Some("new")),
+    );
+    assert!(
+        checks(&restarted).is_empty(),
+        "메시지를 처리한 다음 턴의 끝"
+    );
+    assert_eq!(host.idle_meta(), None);
+}
