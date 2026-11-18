@@ -608,3 +608,34 @@ fn a_tell_to_a_running_target_keeps_its_check_past_the_running_turn() {
     );
     assert!(checks(&scanner).is_empty(), "다음 턴의 끝");
 }
+
+/// tell 경로가 끝나면(보내기 성공·실패·패닉) 그 대상의 이력 보호가 풀려 대상당 상한이 다시 적용된다.
+#[test]
+fn the_tell_path_returns_the_target_history_to_its_limits() {
+    let tr = tr();
+    let dir = tempfile::tempdir().unwrap();
+    let returns = Returns::new(Some(dir.path()));
+    let pairing = Mutex::new(StopPairing::default());
+    let params = json!({ "surface": CHILD, "caller_surface": PARENT, "message": "work" });
+    for case in ["sent", "failed", "panicked"] {
+        let host = TargetHost {
+            tell_fails: case == "failed",
+            on_tell: (case == "panicked")
+                .then(|| -> Box<dyn Fn()> { Box::new(|| panic!("tell panicked in the test")) }),
+            ..TargetHost::new("idle")
+        };
+        let scanner = Mutex::new(ErrorScanner::new());
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle_tell_with_idle_check(&scanner, &returns, &pairing, &host, &params, &tr)
+        }));
+        let mut s = lock_scanner(&scanner);
+        for _ in 0..20 {
+            s.idle_complete(&host, CHILD, Finish::Remote { issued_ms: None });
+        }
+        assert!(
+            s.idle.history_len(CHILD) <= crate::error_scan::idle::HISTORY_PER_TARGET,
+            "{case}: {}",
+            s.idle.history_len(CHILD)
+        );
+    }
+}

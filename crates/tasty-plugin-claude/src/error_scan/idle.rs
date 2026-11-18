@@ -51,7 +51,7 @@ const HISTORY_KEPT: Duration = Duration::from_secs(5 * 60);
 /// 완료 이력을 두는 대상 수 상한. 넘으면 가장 오래된 대상부터 지운다.
 pub(crate) const HISTORY_TARGETS_MAX: usize = 256;
 /// 대상 하나에 두는 완료 이력 수.
-const HISTORY_PER_TARGET: usize = 8;
+pub(crate) const HISTORY_PER_TARGET: usize = 8;
 /// idle 줄을 쓴 기록 상한. 오류 없는 정지 알림과 겹치는지 가리는 데 쓴다.
 const DELIVERED_MAX: usize = 1024;
 
@@ -559,6 +559,12 @@ impl IdleChecks {
             .collect();
         out.sort_unstable();
         out
+    }
+
+    /// 시험용 — 대상 하나의 완료 이력 수.
+    #[cfg(test)]
+    pub(crate) fn history_len(&self, target: u32) -> usize {
+        self.history.get(&target).map_or(0, VecDeque::len)
     }
 
     /// 시험용 — 완료 이력을 둔 대상 수.

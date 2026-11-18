@@ -112,19 +112,34 @@ pub(crate) fn handle_tell_with_idle_check<H: HostCall>(
 ) -> Result<Value, IpcMethodError> {
     let target = crate::handlers::require_target_surface(params, tr).ok();
     // 보내기와 등록 사이에 온 완료를 이력에서 잃지 않도록 등록할 때까지 그 대상의 이력을 지킨다.
-    if let Some(target) = target {
-        lock_scanner(scanner).idle.expect(target);
-    }
+    let _expecting = target.map(|target| Expecting::new(scanner, target));
     let registered_at = At::now();
-    let result = crate::handlers::handle_tell_with_threshold(returns, pairing, host, params, tr)
-        .map(|(resp, threshold)| {
+    crate::handlers::handle_tell_with_threshold(returns, pairing, host, params, tr).map(
+        |(resp, threshold)| {
             register_after_tell(scanner, host, params, target, registered_at, threshold);
             resp
-        });
-    if let Some(target) = target {
-        lock_scanner(scanner).idle.unexpect(target);
+        },
+    )
+}
+
+/// tell 을 보내고 등록할 때까지 대상의 완료 이력을 지킨다. 버릴 때(조기 반환·패닉 포함) 보호를 풀어 이력이 다시 상한을
+/// 따른다.
+struct Expecting<'a> {
+    scanner: &'a Mutex<ErrorScanner>,
+    target: u32,
+}
+
+impl<'a> Expecting<'a> {
+    fn new(scanner: &'a Mutex<ErrorScanner>, target: u32) -> Self {
+        lock_scanner(scanner).idle.expect(target);
+        Self { scanner, target }
     }
-    result
+}
+
+impl Drop for Expecting<'_> {
+    fn drop(&mut self) {
+        lock_scanner(self.scanner).idle.unexpect(self.target);
+    }
 }
 
 /// 보낸 tell 의 체크를 건다. 원격 출처 호출과 받을 부모가 없는 호출, 자기 자신에게 보낸 호출은 걸지 않는다.
