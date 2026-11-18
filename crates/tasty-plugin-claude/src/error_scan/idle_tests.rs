@@ -542,6 +542,48 @@ fn a_restart_restores_only_the_live_registrations() {
     assert!(parse_meta(r#"{"checks":[{"caller":"x"}]}"#).is_empty());
 }
 
+/// 기대 결과 4 의 시간 비교: 관측이 부족한 근거의 active 를 본 시각이 새 기준이다. active 를 본 뒤 비활동으로 바뀌면
+/// 그 관측 + 119초까지 0건, + 120초에 1건이다. 근거를 골라 갱신을 건너뛰면 등록 + 120초에 쓰게 된다.
+#[test]
+fn an_active_with_little_evidence_moves_the_deadline_like_any_active() {
+    test_log::take();
+    struct EvidenceHost {
+        state: RefCell<&'static str>,
+        evidence: &'static str,
+    }
+    impl HostCall for EvidenceHost {
+        fn call(&self, method: &str, _: Value) -> Result<Value, tasty_plugin_sdk::PluginError> {
+            Ok(match method {
+                "terminal.state" => json!({
+                    "state": *self.state.borrow(),
+                    "evidence": self.evidence,
+                    "confidence": "low",
+                }),
+                _ => json!({}),
+            })
+        }
+    }
+    for evidence in ["pty_not_started", "observation_unavailable"] {
+        let host = EvidenceHost {
+            state: RefCell::new("idle"),
+            evidence,
+        };
+        let scanner = Mutex::new(ErrorScanner::new());
+        let t0 = Instant::now();
+        register(&scanner, &host, PARENT, t0);
+        run_idle_checks(&scanner, &host, TEMPLATE, t0 + secs(30));
+        *host.state.borrow_mut() = "active";
+        run_idle_checks(&scanner, &host, TEMPLATE, t0 + secs(60));
+        *host.state.borrow_mut() = "idle";
+        for s in [120, 150, 179] {
+            run_idle_checks(&scanner, &host, TEMPLATE, t0 + secs(s));
+            assert!(test_log::take().is_empty(), "{evidence} t={s}");
+        }
+        run_idle_checks(&scanner, &host, TEMPLATE, t0 + secs(180));
+        assert_eq!(test_log::take().len(), 1, "{evidence}");
+    }
+}
+
 /// tell 이 정한 완료 문턱을 가진 체크. `state` 는 보내기 전 대상 상태, `seq` 는 그때의 활동 순번이다.
 fn tell_check(
     scanner: &Mutex<ErrorScanner>,

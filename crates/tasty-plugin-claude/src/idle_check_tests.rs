@@ -276,6 +276,140 @@ fn a_child_gets_a_check_only_from_a_surface_parent_that_gave_it_work() {
     }
 }
 
+/// tell 은 보내기 전 시각과 문턱으로 등록한다. 보낸 직후 등록 전에 그 메시지의 턴이 끝나 Stop 이 확정되면 체크는
+/// 바로 끝난다(거짓 idle 이 없다).
+#[test]
+fn a_turn_that_ends_before_the_tell_registers_ends_its_check() {
+    let tr = tr();
+    let dir = tempfile::tempdir().unwrap();
+    let returns = Returns::new(Some(dir.path()));
+    let pairing = Mutex::new(StopPairing::default());
+    let scanner = Mutex::new(ErrorScanner::new());
+    let quiet_host = TargetHost::new("idle");
+    let host = TargetHost {
+        on_tell: Some(Box::new(|| {
+            // 보내기 전 순번 0 → 메시지가 연 턴(순번 1)이 곧바로 끝났다.
+            lock_scanner(&scanner).idle_complete(
+                &quiet_host,
+                CHILD,
+                Finish::Turn {
+                    at: std::time::Instant::now(),
+                    seq: 1,
+                },
+            );
+        })),
+        ..TargetHost::new("idle")
+    };
+    let resp = handle_tell_with_idle_check(
+        &scanner,
+        &returns,
+        &pairing,
+        &host,
+        &json!({ "surface": CHILD, "caller_surface": PARENT, "message": "work" }),
+        &tr,
+    )
+    .expect("sent");
+    assert!(resp.is_object());
+    assert!(
+        checks(&scanner).is_empty(),
+        "이미 끝난 턴의 체크는 남지 않는다"
+    );
+}
+
+/// 자기 자신에게 보낸 tell 에는 체크를 걸지 않는다.
+#[test]
+fn a_tell_to_itself_registers_no_check() {
+    let tr = tr();
+    let dir = tempfile::tempdir().unwrap();
+    let returns = Returns::new(Some(dir.path()));
+    let pairing = Mutex::new(StopPairing::default());
+    let host = TargetHost::new("idle");
+    let scanner = Mutex::new(ErrorScanner::new());
+    handle_tell_with_idle_check(
+        &scanner,
+        &returns,
+        &pairing,
+        &host,
+        &json!({ "surface": CHILD, "caller_surface": CHILD, "message": "note" }),
+        &tr,
+    )
+    .expect("a tell to itself is sent");
+    assert!(host.called("terminal.tell"));
+    assert!(checks(&scanner).is_empty());
+}
+
+/// respawn 은 앞 세션의 체크를 지운다. 프롬프트 없이 다시 띄우면 체크가 없으므로 옛 체크의 거짓 idle 줄도 없다.
+#[test]
+fn a_respawn_drops_the_checks_of_the_old_session() {
+    crate::notice::test_log::take();
+    let host = TargetHost::new("idle");
+    let scanner = Mutex::new(ErrorScanner::new());
+    let t0 = std::time::Instant::now();
+    lock_scanner(&scanner).idle_register(
+        &host,
+        CHILD,
+        PARENT,
+        Origin::Tell,
+        Owner::at(At { instant: t0, ms: 0 }),
+    );
+    after_respawn(
+        &scanner,
+        &host,
+        &ParentTarget::Legacy(Some(PARENT)),
+        CHILD,
+        false,
+        At::now(),
+    );
+    assert!(checks(&scanner).is_empty());
+    assert_eq!(*host.idle_meta.borrow(), None);
+    crate::error_scan::idle::run_idle_checks(
+        &scanner,
+        &host,
+        "{0} {1} {2}",
+        t0 + std::time::Duration::from_secs(600),
+    );
+    assert!(crate::notice::test_log::take().is_empty());
+
+    // 프롬프트를 주면 새 세션의 체크 하나만 남는다.
+    lock_scanner(&scanner).idle_register(
+        &host,
+        CHILD,
+        4,
+        Origin::Manual,
+        Owner::at(At { instant: t0, ms: 0 }),
+    );
+    after_respawn(
+        &scanner,
+        &host,
+        &ParentTarget::Legacy(Some(PARENT)),
+        CHILD,
+        true,
+        At::now(),
+    );
+    assert_eq!(
+        checks(&scanner).iter().map(|c| c.0).collect::<Vec<_>>(),
+        vec![PARENT]
+    );
+}
+
+/// 시작 복원은 끝난 터미널(`exited`)의 남은 체크를 되살리지 않고 meta 도 지운다.
+#[test]
+fn the_start_restore_skips_exited_targets() {
+    let host = TargetHost::new("exited");
+    *host.idle_meta.borrow_mut() =
+        Some(r#"{"checks":[{"caller":3,"id":1,"origin":"tell","registered_ms":1}]}"#.to_string());
+    let scanner = Mutex::new(ErrorScanner::new());
+    assert_eq!(restore_all(&scanner, &host), 0);
+    assert!(checks(&scanner).is_empty());
+    assert_eq!(*host.idle_meta.borrow(), None);
+
+    let host = TargetHost::new("idle");
+    *host.idle_meta.borrow_mut() =
+        Some(r#"{"checks":[{"caller":3,"id":1,"origin":"tell","registered_ms":1}]}"#.to_string());
+    let scanner = Mutex::new(ErrorScanner::new());
+    assert_eq!(restore_all(&scanner, &host), 1);
+}
+
 /// 원격 자식: 기록된 결과는 그 결과의 route 토큰을 발급한 시각이 체크 등록 뒤일 때만 체크를 끝낸다. t=0 에 등록하고
 /// t=130 에 다시 등록한 뒤 t=131 에 앞 지시의 결과가 기록돼도 새 체크는 남는다. 재전송·거절은 끝내지 않고 종료는 끝낸다.
 #[test]
