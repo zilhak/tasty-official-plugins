@@ -125,7 +125,11 @@ fn owner_at(t: Instant, ms: u64) -> Owner {
 
 /// `t` 에 받은 로컬 턴 종료. 활동 순번은 `seq`.
 fn turn(t: Instant, seq: u64) -> Finish {
-    Finish::Turn { at: t, seq }
+    Finish::Turn {
+        at: t,
+        seq,
+        turn: None,
+    }
 }
 
 /// 부모 `caller` 의 체크를 `t` 에 따로 등록한다.
@@ -667,6 +671,32 @@ fn a_tell_queued_behind_a_running_turn_ends_at_the_turn_after_it() {
     host.set_state("idle");
     assert!(tick(&scanner, &host, t0 + secs(120)).is_empty());
     assert_eq!(tick(&scanner, &host, t0 + secs(121)).len(), 1);
+}
+
+/// 앞 턴의 끝으로 건너뛴 확정 완료를 다시 적용해도(같은 수신, 또는 같은 prompt 의 Stop) 다음 턴의 끝으로 세지 않는다.
+#[test]
+fn the_same_finish_applied_again_does_not_end_a_tell_check() {
+    test_log::take();
+    let host = FakeHost::new("active");
+    let t0 = Instant::now();
+    let scanner = Mutex::new(ErrorScanner::new());
+    tell_check(&scanner, &host, t0, "active", 1);
+    let first = turn(t0 + secs(1), 2);
+    lock_scanner(&scanner).idle_complete(&host, TARGET, first);
+    lock_scanner(&scanner).idle_complete(&host, TARGET, first);
+    assert_eq!(checks(&scanner).len(), 1, "같은 완료의 재적용");
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(2), 2));
+    assert!(checks(&scanner).is_empty(), "다음 턴의 끝");
+
+    // 받은 시각이 달라도 같은 prompt 의 Stop 이면 같은 턴이다.
+    let scanner = Mutex::new(ErrorScanner::new());
+    tell_check(&scanner, &host, t0, "active", 1);
+    let stop = |t, p| Finish::turn(t, 2, Some(p));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, stop(t0 + secs(1), "p1"));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, stop(t0 + secs(3), "p1"));
+    assert_eq!(checks(&scanner).len(), 1, "같은 prompt 의 Stop 재전달");
+    lock_scanner(&scanner).idle_complete(&host, TARGET, stop(t0 + secs(4), "p2"));
+    assert!(checks(&scanner).is_empty(), "다른 prompt 의 끝");
 }
 
 /// 입력을 기다리던 대상에 보낸 tell: 답은 대기하던 턴을 이어 가므로 그 턴의 Stop 하나가 체크를 끝낸다. 그 뒤 쉬어도

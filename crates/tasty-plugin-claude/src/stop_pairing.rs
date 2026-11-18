@@ -324,7 +324,7 @@ impl StopPairing {
             turn_ended: true,
             final_answer: e.final_answer,
             turn: e.turn,
-            stopped_at: StopTime(finish(e.since, e.seq)),
+            stopped_at: StopTime(finish(e.since, e.seq, e.prompt_id.as_deref())),
         })
     }
 
@@ -383,13 +383,13 @@ impl StopPairing {
             turn_ended,
             final_answer: entry.final_answer,
             turn: entry.turn,
-            stopped_at: StopTime(finish(entry.since, entry.seq)),
+            stopped_at: StopTime(finish(entry.since, entry.seq, entry.prompt_id.as_deref())),
         }
     }
 }
 
-fn finish(at: Instant, seq: u64) -> crate::error_scan::idle::Finish {
-    crate::error_scan::idle::Finish::Turn { at, seq }
+fn finish(at: Instant, seq: u64, prompt_id: Option<&str>) -> crate::error_scan::idle::Finish {
+    crate::error_scan::idle::Finish::turn(at, seq, prompt_id)
 }
 
 /// 게이트 응답에서 판정을 읽는다. `decision: "block"` 이 아니면 pass 다.
@@ -578,7 +578,7 @@ mod tests {
             turn_ended: true,
             final_answer: None,
             turn: None,
-            stopped_at: StopTime(finish(Instant::now(), 0)),
+            stopped_at: StopTime(finish(Instant::now(), 0, None)),
         }
     }
 
@@ -594,7 +594,7 @@ mod tests {
             turn_ended: false,
             final_answer: None,
             turn: None,
-            stopped_at: StopTime(finish(Instant::now(), 0)),
+            stopped_at: StopTime(finish(Instant::now(), 0, None)),
         }
     }
 

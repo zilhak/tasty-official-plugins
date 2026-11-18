@@ -123,12 +123,65 @@ impl Owner {
 /// 확정된 완료.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Finish {
-    /// 로컬 Claude 의 턴 종료 확정(Stop·StopFailure·세션 종료). Stop 을 받은 시각과 그때의 활동 순번.
-    Turn { at: Instant, seq: u64 },
+    /// 로컬 Claude 의 턴 종료 확정(Stop·StopFailure·세션 종료). Stop 을 받은 시각과 그때의 활동 순번, 그 턴의
+    /// 식별자(Stop 의 `prompt_id`, 없으면 `None`). 같은 턴의 Stop 이 다시 와도 한 턴으로 센다([`Finish::same_turn`]).
+    Turn {
+        at: Instant,
+        seq: u64,
+        turn: Option<TurnKey>,
+    },
     /// 원격 자식의 기록된 턴 결과. 그 결과를 낳은 지시의 route 토큰 발급 시각(Unix ms). 모르면 `None`.
     Remote { issued_ms: Option<u64> },
     /// 원격 자식이 끝났다.
     RemoteExit,
+}
+
+/// 로컬 턴의 식별자. Stop 의 `prompt_id` 를 줄인 값이다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TurnKey(u64);
+
+impl TurnKey {
+    /// `prompt_id` 의 식별자. 비었거나 없으면 `None`.
+    pub(crate) fn of(prompt_id: Option<&str>) -> Option<Self> {
+        use std::hash::{Hash, Hasher};
+        let id = prompt_id.filter(|s| !s.is_empty())?;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut h);
+        Some(Self(h.finish()))
+    }
+}
+
+impl Finish {
+    /// 로컬 턴 종료. `prompt_id` 는 그 Stop 의 것이다.
+    pub(crate) fn turn(at: Instant, seq: u64, prompt_id: Option<&str>) -> Self {
+        Self::Turn {
+            at,
+            seq,
+            turn: TurnKey::of(prompt_id),
+        }
+    }
+
+    /// 같은 턴의 끝인가. 둘 다 턴 식별자가 있으면 그것으로, 없으면 같은 수신(받은 시각·순번)인지로 가른다.
+    fn same_turn(&self, other: &Finish) -> bool {
+        match (self, other) {
+            (
+                Finish::Turn {
+                    at: a,
+                    seq: sa,
+                    turn: ta,
+                },
+                Finish::Turn {
+                    at: b,
+                    seq: sb,
+                    turn: tb,
+                },
+            ) => match (ta, tb) {
+                (Some(x), Some(y)) => x == y,
+                _ => a == b && sa == sb,
+            },
+            _ => false,
+        }
+    }
 }
 
 /// 확정 완료가 체크 하나에 주는 결과.
@@ -144,7 +197,7 @@ enum Effect {
 /// 등록 시각과 비교하지 않는다(등록은 그 전 프로세스에서 했다).
 fn effect(owner: &Owner, finish: Finish, before_restore: bool) -> Effect {
     match finish {
-        Finish::Turn { at, seq } => {
+        Finish::Turn { at, seq, .. } => {
             if !before_restore && at < owner.at.instant {
                 return Effect::Keep;
             }
@@ -186,6 +239,8 @@ struct Check {
     id: u64,
     origin: Origin,
     owner: Owner,
+    /// 진행 중이던 앞 턴의 끝으로 보고 건너뛴 첫 끝. 같은 턴의 끝이 다시 와도 다음 턴의 끝으로 세지 않는다.
+    skipped: Option<Finish>,
     /// 마지막으로 `active` 를 본 시각(처음에는 등록 시각).
     last_active: Instant,
     /// 마지막으로 읽은 상태. 줄에 적는다.
@@ -202,6 +257,7 @@ impl Check {
             id,
             origin,
             owner,
+            skipped: None,
             last_active: now,
             last_state: None,
             retry_at: None,
@@ -212,11 +268,16 @@ impl Check {
 
     /// 완료를 적용한다. 체크가 끝났으면 `true`.
     fn apply(&mut self, finish: Finish, before_restore: bool) -> bool {
+        if self.skipped.is_some_and(|s| s.same_turn(&finish)) {
+            // 건너뛴 앞 턴의 끝을 다시 받았다(같은 Stop 의 재전달). 다음 턴의 끝이 아니다.
+            return false;
+        }
         match effect(&self.owner, finish, before_restore) {
             Effect::End => true,
             Effect::Keep => false,
             Effect::Advance(threshold) => {
                 self.owner.threshold = Some(threshold);
+                self.skipped = Some(finish);
                 false
             }
         }

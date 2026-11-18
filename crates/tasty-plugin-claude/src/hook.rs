@@ -402,10 +402,11 @@ pub(crate) fn handle_claude_hook<H: HostCallSink>(
     // 여기까지 온 stop·stop-failure 는 확정된 턴 종료다(대기·게이트 보류·서브에이전트 실패는 앞에서 돌아갔다).
     // 세션 종료 뒤에는 그 세션의 체크가 남지 않는다.
     if ends_idle_checks(event) {
-        let finish = crate::error_scan::idle::Finish::Turn {
-            at: received_at,
-            seq: activity_now(state, host, surface_id),
-        };
+        let finish = crate::error_scan::idle::Finish::turn(
+            received_at,
+            activity_now(state, host, surface_id),
+            params.get("prompt_id").and_then(Value::as_str),
+        );
         crate::error_scan::lock_scanner(scanner).idle_complete(host, surface_id, finish);
     }
 
@@ -4635,6 +4636,23 @@ mod tests {
             rig.run(hook("prompt-submit"));
             rig.run(hook("post-tool-use"));
             rig.run(hook("stop"));
+            assert!(checks(&rig).is_empty(), "메시지를 처리한 턴의 끝");
+        }
+
+        /// 실행 중인 대상에 보낸 tell 의 prompt-submit 이 앞 턴이 끝나기 전에 와도, 앞 턴 Stop 이 다시 전달되면 그것은
+        /// 다음 턴의 끝이 아니다. 같은 prompt 의 Stop 재수신은 체크를 끝내지 않고, 다른 prompt 의 Stop 이 끝낸다.
+        #[test]
+        fn a_replayed_stop_of_the_running_turn_does_not_end_a_queued_tell() {
+            let mut rig = HookRig::new();
+            rig.run(hook("prompt-submit"));
+            let id = with_tell_check(&rig, "active");
+            // 메시지를 줄에 넣을 때 온 prompt-submit.
+            rig.run(hook("prompt-submit"));
+            rig.run(gated_stop("old-turn"));
+            assert_eq!(checks(&rig), vec![(3, id)], "진행 중이던 앞 턴의 끝");
+            rig.run(gated_stop("old-turn"));
+            assert_eq!(checks(&rig), vec![(3, id)], "같은 턴 Stop 의 재수신");
+            rig.run(gated_stop("new-turn"));
             assert!(checks(&rig).is_empty(), "메시지를 처리한 턴의 끝");
         }
 

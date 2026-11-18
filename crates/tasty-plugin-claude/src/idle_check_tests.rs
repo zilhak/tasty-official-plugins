@@ -295,6 +295,7 @@ fn a_turn_that_ends_before_the_tell_registers_ends_its_check() {
                 Finish::Turn {
                     at: std::time::Instant::now(),
                     seq: 1,
+                    turn: None,
                 },
             );
         })),
@@ -513,6 +514,7 @@ fn a_tell_to_a_running_target_keeps_its_check_past_the_running_turn() {
         Finish::Turn {
             at: std::time::Instant::now(),
             seq: 0,
+            turn: None,
         },
     );
     assert_eq!(checks(&scanner).len(), 1, "진행 중이던 턴의 끝");
@@ -522,6 +524,7 @@ fn a_tell_to_a_running_target_keeps_its_check_past_the_running_turn() {
         Finish::Turn {
             at: std::time::Instant::now(),
             seq: 1,
+            turn: None,
         },
     );
     assert!(checks(&scanner).is_empty(), "다음 턴의 끝");
