@@ -364,7 +364,7 @@ spawn·tell 하나에 대해 부모 로그에는 다음 줄만 생긴다. 규칙
 - 원격 attach 자식: 서버가 tell·spawn 응답에 `done_from`을 싣고, mirror는 `codex-activity-seq`와 `codex-sandbox-fail-seq`를 relay(`relay_meta`)로 받는다. relay가 늦을 수 있어 mirror의 `idle`에서 순번이 모자라면 250ms 간격으로 네 번까지 다시 읽고, 그때의 상태를 다시 읽어 판정한다. tell 응답은 턴 종료를 두 번 알릴지(`done_twice`)도 싣는다. `done_from`이 없는 응답(업그레이드 전 서버)과 늦게 도착한 원격 spawn 결과는 예전 형식으로 건다.
 - 업그레이드 전에 등록된 훅(`--event` 없는 명령)은 예전처럼 대상 상태로 줄을 정하고 새 형식으로 다시 건다(대상이 이미 `idle`이면 턴 종료 훅 없이).
 
-완료 로그 줄은 타입 표지로 시작한다. 종료는 `[error] `(부모가 kill로 끝낸 경우도 같다), 샌드박스 안내가 붙으면 `[error] `, 승인 대기는 `[warning] `, 그 밖의 턴 종료와 원격 결과 저장은 `[info] `다. 옛 훅은 대상 상태가 `exited`면 `[error] `다. 종류와 타입의 대응은 `notice.rs`의 `NoticeKind`가 와일드카드 없는 `match`로 정한다([완료 알림 로그](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/external-interaction.md#child-완료-알림--completion-log)).
+완료 줄은 타입 표지로 시작한다. 같은 notify 로그에 호스트가 쓰는 큐 도착 줄은 `[queue] `로 시작한다. 종료는 `[error] `(부모가 kill로 끝낸 경우도 같다), 샌드박스 안내가 붙으면 `[error] `, 승인 대기는 `[warning] `, 그 밖의 턴 종료와 원격 결과 저장은 `[info] `다. 옛 훅은 대상 상태가 `exited`면 `[error] `다. 종류와 타입의 대응은 `notice.rs`의 `NoticeKind`가 와일드카드 없는 `match`로 정한다([완료 알림 로그](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/external-interaction.md#child-완료-알림--completion-log)).
 
 notify-caller는 이번 spawn·tell 이후(문턱 이상의 활동)의 `PostToolUse` 도구 결과에 `bwrap:`로 시작하고
 RTM_NEWADDR를 담은 줄이 있었으면 샌드박스 초기화 실패 가능성을 힌트로 덧붙인다.

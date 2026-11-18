@@ -686,7 +686,7 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 
 #### 알림 타입 표지
 
-부모 완료 로그의 child 알림 줄은 모두 번역하지 않는 ASCII 표지 `[info] `·`[warning] `·`[error] ` 중 하나로 시작한다. 기계가 읽는 계약이라 언어와 무관하다. 표지는 `tasty-utils::notify::append_notice`가 붙이며 타입 없이 줄을 쓰는 함수는 없다. 종류와 타입의 대응은 `notice.rs`의 `NoticeKind::notice_type`이 와일드카드 없는 `match`로 정하므로, 새 종류는 타입을 정하기 전까지 컴파일되지 않는다. 시험 `every_notify_message_key_belongs_to_a_notice_kind`는 `[claude.notify]`의 `_message` 키가 모두 어떤 종류의 문구인지 확인한다.
+부모 notify 로그의 child 알림 줄은 모두 번역하지 않는 ASCII 표지 `[info] `·`[warning] `·`[error] ` 중 하나로 시작한다. 같은 파일에 호스트가 쓰는 큐 도착 줄은 `[queue] `로 시작한다([큐 도착 줄](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/external-interaction.md#큐-도착-줄--queue)). 파일의 모든 줄은 이 네 표지 중 하나로 시작한다. 기계가 읽는 계약이라 언어와 무관하다. 완료 줄의 표지는 플러그인이 `tasty-utils::notify::append_notice`로, `[queue]` 줄의 표지는 호스트가 `tasty-utils::notify::append_notice_under`로 붙인다. 타입 없이 줄을 쓰는 함수는 없다. 종류와 타입의 대응은 `notice.rs`의 `NoticeKind::notice_type`이 와일드카드 없는 `match`로 정하므로, 새 종류는 타입을 정하기 전까지 컴파일되지 않는다. 시험 `every_notify_message_key_belongs_to_a_notice_kind`는 `[claude.notify]`의 `_message` 키가 모두 어떤 종류의 문구인지 확인한다.
 
 | 타입 | 종류 |
 |---|---|
