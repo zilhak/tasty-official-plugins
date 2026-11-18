@@ -148,15 +148,13 @@ fn same_session_restore_and_reboot_keep_explicit_values() {
 fn actual_shell_helper_argv_is_literal_for_each_child() {
     let _logs =
         tracing::subscriber::set_default(tracing_subscriber::fmt().with_test_writer().finish());
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let program = dir.path().join("mock helper's executable");
-    std::fs::write(
+    tasty_test_support::write_executable(
         &program,
         "#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n",
     )
     .unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
     let fx = Fixture::new();
     for params in [
         json!({"model":"provider/model-a","effort":"medium"}),

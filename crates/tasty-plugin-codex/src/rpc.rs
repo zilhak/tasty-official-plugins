@@ -209,21 +209,17 @@ fn proxy_command(
 #[cfg(all(test, unix))]
 #[test]
 fn a_proxy_uses_the_saved_launcher_and_interpreter_path() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let bin = dir.path().join("caller bin;literal");
     std::fs::create_dir(&bin).unwrap();
     let launcher = bin.join("codex");
     let interpreter = bin.join("tasty-probe-node");
-    std::fs::write(&launcher, "#!/usr/bin/env tasty-probe-node\n").unwrap();
-    std::fs::write(
+    tasty_test_support::write_executable(&launcher, "#!/usr/bin/env tasty-probe-node\n").unwrap();
+    tasty_test_support::write_executable(
         &interpreter,
         "#!/bin/sh\nprintf '%s\\n' \"$2\" \"$3\" \"$CODEX_HOME\"\n",
     )
     .unwrap();
-    for p in [&launcher, &interpreter] {
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
     let execution = crate::execution::CodexExecution {
         executable: launcher.clone(),
         search_path: bin.to_str().unwrap().into(),
