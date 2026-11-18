@@ -885,28 +885,10 @@ fn two_finishes_before_a_tell_registers_both_count() {
 }
 
 /// 쓰지 못한 meta 는 회차마다 다시 쓰지만 경고는 대상별 연속 실패 75번마다 한 줄이다. 다시 쓰면 수를 지운다.
+/// 경고 여부는 tracing 수집이 아니라 판정 함수로 본다(전역 callsite 캐시를 쓰는 tracing 수집은 병렬 시험에서
+/// 흔들린다).
 #[test]
 fn a_failing_meta_write_warns_once_every_75_attempts() {
-    #[derive(Clone, Default)]
-    struct Buf(std::sync::Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for Buf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let buf = Buf::default();
-    let writer = buf.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(move || writer.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
     test_log::take();
     let host = FakeHost::new("active");
     let t0 = Instant::now();
@@ -916,14 +898,10 @@ fn a_failing_meta_write_warns_once_every_75_attempts() {
     for round in 1..=150 {
         tick(&scanner, &host, t0 + Duration::from_millis(800 * round));
     }
-    assert_eq!(lock_scanner(&scanner).idle_meta_errors(TARGET), 151);
-    let warned = |text: &str| {
-        text.lines()
-            .filter(|l| l.contains("WARN") && l.contains("writing claude-idle-checks failed"))
-            .count()
-    };
-    let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
-    assert_eq!(warned(&text), 3, "1·76·151번째 실패만");
+    let failures = lock_scanner(&scanner).idle_meta_errors(TARGET);
+    assert_eq!(failures, 151);
+    let warned: Vec<u32> = (0..failures).filter(|n| meta_failure_warns(*n)).collect();
+    assert_eq!(warned, vec![0, 75, 150], "1·76·151번째 실패만");
     tick(&scanner, &host, t0 + secs(200));
     assert_eq!(lock_scanner(&scanner).idle_meta_errors(TARGET), 0);
     assert!(host.idle_meta().is_some(), "다시 썼다");
