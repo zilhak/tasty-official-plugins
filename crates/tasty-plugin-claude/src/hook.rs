@@ -4656,6 +4656,24 @@ mod tests {
             assert!(checks(&rig).is_empty(), "메시지를 처리한 턴의 끝");
         }
 
+        /// 게이트 판정을 기다리던 앞 턴의 Stop 을 새 프롬프트가 확정해도, 그 Stop 은 받은 때의 순번으로 판정한다.
+        /// 실행 중인 대상에 보낸 tell 이면 앞 턴의 끝이라 체크가 남고, 메시지를 처리한 다음 턴의 끝이 체크를 끝낸다.
+        #[test]
+        fn a_held_stop_settled_by_the_next_prompt_counts_at_its_own_sequence() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut rig = HookRig::with_gates(dir.path(), 1);
+            rig.run(hook("prompt-submit"));
+            let id = with_tell_check(&rig, "active");
+            rig.run(gated_stop("p1"));
+            assert_eq!(checks(&rig), vec![(3, id)], "판정 전");
+            // 판정이 오기 전에 메시지의 턴이 열려 보류 Stop 을 앞 턴의 끝으로 확정한다.
+            rig.run(hook("prompt-submit"));
+            assert_eq!(checks(&rig), vec![(3, id)], "앞 턴의 끝");
+            rig.run(gated_stop("p2"));
+            rig.gate(json!({}), "p2");
+            assert!(checks(&rig).is_empty(), "메시지를 처리한 턴의 끝");
+        }
+
         /// 입력을 기다리던 대상에 보낸 답은 대기하던 턴을 이어 간다. 새 prompt-submit 없이 그 턴의 Stop 하나가
         /// 체크를 끝낸다.
         #[test]

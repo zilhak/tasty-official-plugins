@@ -2038,6 +2038,66 @@ mod tests {
         }
     }
 
+    /// 상태가 active 인 오류 없는 멈춤은 idle 체크가 알리지 않으므로(active 가 기준 시각을 옮긴다) 체크를 건 부모도
+    /// 정지 줄을 받는다.
+    #[test]
+    fn an_active_stall_reaches_a_parent_with_an_idle_check() {
+        use idle::{At, Owner};
+        crate::notice::test_log::take();
+        let host = ScanHost::new("…\n", "active");
+        let t0 = Instant::now();
+        let m = std::sync::Mutex::new(ErrorScanner::new());
+        lock_scanner(&m).idle_register(
+            &host,
+            1,
+            3,
+            idle::Origin::Manual,
+            Owner::at(At { instant: t0, ms: 0 }),
+        );
+        lock_scanner(&m).scan_one_at(&host, 1, t0);
+        lock_scanner(&m).scan_one_at(&host, 1, t0 + NO_OUTPUT_NOTICE_DEFAULT);
+        assert_eq!(host.stalled_count(), 1);
+        assert_eq!(
+            host.stall_notice().expect("판정")["kind"],
+            STALL_KIND_NO_ERROR
+        );
+        notify_error(&m, &host, 3);
+        assert_eq!(lines_of(3), 1);
+    }
+
+    /// stale 인 오류 없는 멈춤을 idle 체크에 맡긴 뒤 같은 surface 에 오류 뒤 멈춤이 오면, 체크를 건 부모도 그 정지
+    /// 줄을 받는다. idle 체크에 맡기는 것은 오류 없는 멈춤뿐이다.
+    #[test]
+    fn an_error_stall_after_a_stale_stall_reaches_a_parent_with_an_idle_check() {
+        use idle::{At, Owner};
+        crate::notice::test_log::take();
+        let host = ScanHost::new("…\n", "stale");
+        let t0 = Instant::now();
+        let m = std::sync::Mutex::new(ErrorScanner::new());
+        lock_scanner(&m).idle_register(
+            &host,
+            1,
+            3,
+            idle::Origin::Manual,
+            Owner::at(At { instant: t0, ms: 0 }),
+        );
+        lock_scanner(&m).scan_one_at(&host, 1, t0);
+        lock_scanner(&m).scan_one_at(&host, 1, t0 + NO_OUTPUT_NOTICE_DEFAULT);
+        assert_eq!(host.stalled_count(), 1);
+        notify_error(&m, &host, 3);
+        assert_eq!(lines_of(3), 0, "오류 없는 멈춤은 idle 체크가 알린다");
+
+        let t1 = t0 + NO_OUTPUT_NOTICE_DEFAULT + STALL_NOTIFY_COOLDOWN;
+        host.set_text(ERR);
+        *host.screen.borrow_mut() = ERR.to_string();
+        lock_scanner(&m).scan_one_at(&host, 1, t1);
+        lock_scanner(&m).scan_one_at(&host, 1, t1 + STALL_QUIET);
+        assert_eq!(host.stalled_count(), 2);
+        assert_eq!(host.stall_notice().expect("판정")["kind"], STALL_KIND_ERROR);
+        notify_error(&m, &host, 3);
+        assert_eq!(lines_of(3), 1, "오류 뒤 멈춤");
+    }
+
     /// 오류 뒤 멈춤은 stale 이어도 지금처럼 알린다. 오류 알림은 idle 체크와 다른 알림이다.
     #[test]
     fn a_stale_state_after_an_error_still_fires_stall() {
