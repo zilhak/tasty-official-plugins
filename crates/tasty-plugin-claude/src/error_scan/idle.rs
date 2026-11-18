@@ -139,18 +139,19 @@ pub(crate) enum Finish {
     RemoteExit,
 }
 
-/// 로컬 턴의 식별자. Stop 의 `prompt_id` 를 줄인 값이다.
+/// 로컬 턴의 식별자. Stop 의 `prompt_id` 를 줄인 값이다. meta 에 남겨 재시작 뒤에도 비교하므로 빌드와 상관없이
+/// 같은 값이 나오는 FNV-1a 로 줄인다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TurnKey(u64);
 
 impl TurnKey {
     /// `prompt_id` 의 식별자. 비었거나 없으면 `None`.
     pub(crate) fn of(prompt_id: Option<&str>) -> Option<Self> {
-        use std::hash::{Hash, Hasher};
         let id = prompt_id.filter(|s| !s.is_empty())?;
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        id.hash(&mut h);
-        Some(Self(h.finish()))
+        let hash = id.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+        Some(Self(hash))
     }
 }
 
@@ -362,6 +363,8 @@ pub(crate) struct Stored {
     pub threshold: Option<Threshold>,
     /// 보낼 때 대상이 턴을 진행 중이었다([`Owner::running`]).
     pub running: bool,
+    /// 앞 턴의 끝으로 보고 건너뛴 첫 끝의 순번과 턴 식별자([`Check::skipped`]).
+    pub skipped: Option<(u64, Option<TurnKey>)>,
 }
 
 impl IdleChecks {
@@ -585,6 +588,12 @@ impl IdleChecks {
                     if c.owner.running {
                         v["running"] = json!(true);
                     }
+                    if let Some(Finish::Turn { seq, turn, .. }) = c.skipped {
+                        v["skipped_seq"] = json!(seq);
+                        if let Some(TurnKey(key)) = turn {
+                            v["skipped_turn"] = json!(key);
+                        }
+                    }
                 }
                 v
             })
@@ -619,12 +628,17 @@ pub(crate) fn parse_meta(raw: &str) -> Vec<Stored> {
                                 twice: c.get("twice").and_then(Value::as_bool).unwrap_or(false),
                             });
                     let running = c.get("running").and_then(Value::as_bool).unwrap_or(false);
+                    let skipped = c.get("skipped_seq").and_then(Value::as_u64).map(|seq| {
+                        let turn = c.get("skipped_turn").and_then(Value::as_u64).map(TurnKey);
+                        (seq, turn)
+                    });
                     Some(Stored {
                         caller,
                         origin,
                         ms,
                         threshold,
                         running,
+                        skipped,
                     })
                 })
                 .collect()
@@ -810,6 +824,11 @@ impl ErrorScanner {
             };
             let id = self.idle.new_id();
             let mut check = Check::new(id, stored.origin, owner, now);
+            // 건너뛴 앞 턴의 끝을 되살린다. 재시작 뒤 같은 턴의 Stop 이 다시 와도 다음 턴의 끝으로 세지 않는다. 받은
+            // 시각은 이전 프로세스의 것이라 남기지 않는다.
+            check.skipped = stored
+                .skipped
+                .map(|(seq, turn)| Finish::Turn { at: now, seq, turn });
             if history.iter().any(|f| check.apply(*f, true)) {
                 ended += 1;
                 continue;

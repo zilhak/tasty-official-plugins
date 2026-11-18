@@ -1039,3 +1039,55 @@ fn a_remote_result_ends_only_checks_registered_before_its_instruction() {
     lock_scanner(&scanner).idle_complete(&host, TARGET, Finish::RemoteExit);
     assert!(checks(&scanner).is_empty());
 }
+
+/// 건너뛴 앞 턴의 끝은 meta 에 남아 정상 재시작 뒤에도 되살아난다. 재시작 뒤 같은 턴의 Stop 을 다시 받아도 체크가
+/// 남고, 다른 턴의 Stop 이 끝낸다.
+#[test]
+fn a_skipped_finish_survives_a_restart() {
+    test_log::take();
+    let host = FakeHost::new("active");
+    let t = Instant::now();
+    let scanner = Mutex::new(ErrorScanner::new());
+    tell_check(&scanner, &host, t, "active", 1);
+    lock_scanner(&scanner).idle_complete(&host, TARGET, Finish::turn(t + secs(1), 2, Some("old")));
+    assert_eq!(checks(&scanner).len(), 1, "앞 턴의 끝은 건너뛴다");
+    let meta = host.idle_meta().unwrap();
+    assert!(
+        meta.contains("\"skipped_seq\":2"),
+        "건너뛴 끝을 남긴다: {meta}"
+    );
+    assert!(
+        meta.contains("\"skipped_turn\":"),
+        "그 턴의 식별자도 남긴다: {meta}"
+    );
+
+    let restarted = Mutex::new(ErrorScanner::new());
+    lock_scanner(&restarted).idle.begin_restore(t + secs(2));
+    assert_eq!(
+        lock_scanner(&restarted).idle_restore(&host, TARGET, t + secs(3)),
+        1
+    );
+    lock_scanner(&restarted).idle.end_restore();
+    lock_scanner(&restarted).idle_complete(
+        &host,
+        TARGET,
+        Finish::turn(t + secs(4), 2, Some("old")),
+    );
+    assert_eq!(
+        checks(&restarted).len(),
+        1,
+        "건너뛴 턴의 Stop 재수신은 체크를 끝내지 않는다"
+    );
+    assert!(
+        host.idle_meta().unwrap().contains("\"skipped_seq\":2"),
+        "되살린 건너뛴 끝을 다시 남긴다: {:?}",
+        host.idle_meta()
+    );
+    lock_scanner(&restarted).idle_complete(
+        &host,
+        TARGET,
+        Finish::turn(t + secs(5), 2, Some("new")),
+    );
+    assert!(checks(&restarted).is_empty(), "다른 턴의 Stop 이 끝낸다");
+    assert_eq!(host.idle_meta(), None);
+}
