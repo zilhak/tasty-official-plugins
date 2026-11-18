@@ -639,8 +639,8 @@ fn a_tell_to_a_running_target_waits_for_the_turn_that_handles_the_message() {
 }
 
 /// 실행 중인 대상에 보낸 tell 의 prompt-submit 이 앞 턴이 끝나기 전에 온 경우(Claude Code 는 실행 중에 받은 메시지를
-/// 줄에 넣을 때 보낸다): 앞 턴의 Stop 과 다음 턴의 Stop 이 같은 순번이다. 앞 턴의 Stop 은 체크를 남기고, 다음 턴의
-/// Stop 이 끝낸다. 다음 턴의 Stop 이 오지 않으면 120초 뒤 idle 1건이다.
+/// 줄에 넣을 때 보낸다): 앞 턴의 Stop 과 다음 턴의 Stop 이 같은 순번이다. 두 Stop 은 prompt_id 로 가른다. 앞 턴의
+/// Stop 은 체크를 남기고, 다음 턴의 Stop 이 끝낸다. 다음 턴의 Stop 이 오지 않으면 120초 뒤 idle 1건이다.
 #[test]
 fn a_tell_queued_behind_a_running_turn_ends_at_the_turn_after_it() {
     test_log::take();
@@ -649,14 +649,14 @@ fn a_tell_queued_behind_a_running_turn_ends_at_the_turn_after_it() {
     let scanner = Mutex::new(ErrorScanner::new());
     tell_check(&scanner, &host, t0, "active", 1);
     // 메시지를 줄에 넣을 때 온 prompt-submit 이 순번을 2로 올린 뒤 앞 턴이 끝났다.
-    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(1), 2));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, Finish::turn(t0 + secs(1), 2, Some("p1")));
     assert_eq!(
         checks(&scanner).len(),
         1,
         "앞 턴의 끝은 이 체크를 끝내지 않는다"
     );
     // 메시지를 처리한 다음 턴의 Stop 도 순번 2다.
-    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(2), 2));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, Finish::turn(t0 + secs(2), 2, Some("p2")));
     assert!(checks(&scanner).is_empty(), "다음 턴의 끝이 체크를 끝낸다");
     assert_eq!(host.idle_meta(), None);
     host.set_state("idle");
@@ -674,6 +674,7 @@ fn a_tell_queued_behind_a_running_turn_ends_at_the_turn_after_it() {
 }
 
 /// 앞 턴의 끝으로 건너뛴 확정 완료를 다시 적용해도(같은 수신, 또는 같은 prompt 의 Stop) 다음 턴의 끝으로 세지 않는다.
+/// prompt_id 가 없으면 순번이 오른 끝이 다음 턴의 끝이다.
 #[test]
 fn the_same_finish_applied_again_does_not_end_a_tell_check() {
     test_log::take();
@@ -685,7 +686,7 @@ fn the_same_finish_applied_again_does_not_end_a_tell_check() {
     lock_scanner(&scanner).idle_complete(&host, TARGET, first);
     lock_scanner(&scanner).idle_complete(&host, TARGET, first);
     assert_eq!(checks(&scanner).len(), 1, "같은 완료의 재적용");
-    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(2), 2));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(2), 3));
     assert!(checks(&scanner).is_empty(), "다음 턴의 끝");
 
     // 받은 시각이 달라도 같은 prompt 의 Stop 이면 같은 턴이다.
@@ -1090,4 +1091,31 @@ fn a_skipped_finish_survives_a_restart() {
     );
     assert!(checks(&restarted).is_empty(), "다른 턴의 Stop 이 끝낸다");
     assert_eq!(host.idle_meta(), None);
+}
+
+/// prompt_id 가 없는 Stop 은 활동 순번으로 턴을 가른다. 실행 중인 대상에 보낸 tell 의 다음 턴이 순번을 더 올리지 못하고
+/// prompt_id 없이 끝나면 건너뛴 앞 턴의 끝과 구별할 수 없어 체크가 남는다. 거짓 해제 대신 마지막 active 에서 120초 뒤
+/// idle 줄 하나를 쓴다.
+#[test]
+fn a_next_turn_stop_without_prompt_at_the_same_sequence_keeps_the_check() {
+    test_log::take();
+    let host = FakeHost::new("active");
+    let t = Instant::now();
+    let scanner = Mutex::new(ErrorScanner::new());
+    tell_check(&scanner, &host, t, "active", 1);
+    // 앞 턴의 끝(줄에 넣은 메시지의 prompt-submit 이 순번을 2로 올린 뒤).
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t + secs(1), 2));
+    assert_eq!(checks(&scanner).len(), 1, "앞 턴의 끝은 건너뛴다");
+    // 메시지를 처리한 다음 턴이 순번을 올리지 못하고 끝났다.
+    assert!(tick(&scanner, &host, t + secs(30)).is_empty());
+    host.set_state("idle");
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t + secs(31), 2));
+    assert_eq!(checks(&scanner).len(), 1, "같은 순번의 끝은 끝내지 않는다");
+    assert!(tick(&scanner, &host, t + secs(149)).is_empty());
+    assert_eq!(
+        tick(&scanner, &host, t + secs(150)).len(),
+        1,
+        "마지막 active 에서 120초 뒤 1줄"
+    );
+    assert!(tick(&scanner, &host, t + secs(400)).is_empty());
 }

@@ -165,23 +165,21 @@ impl Finish {
         }
     }
 
-    /// 같은 턴의 끝인가. 둘 다 턴 식별자가 있으면 그것으로, 없으면 같은 수신(받은 시각·순번)인지로 가른다.
+    /// 같은 턴의 끝인가. 둘 다 턴 식별자가 있으면 그것으로, 없으면 활동 순번으로 가른다. 받은 시각은 같은 Stop 을
+    /// 다시 받으면 달라지므로 쓰지 않는다. 순번이 같으면 같은 턴으로 본다 — 실행 중에 줄에 넣은 메시지의 다음 턴은
+    /// 순번을 더 올리지 못할 수 있어 그 끝도 같은 턴으로 보지만, 거짓 해제 대신 늦은 idle 줄 쪽을 택한다.
     fn same_turn(&self, other: &Finish) -> bool {
         match (self, other) {
             (
                 Finish::Turn {
-                    at: a,
-                    seq: sa,
-                    turn: ta,
+                    seq: sa, turn: ta, ..
                 },
                 Finish::Turn {
-                    at: b,
-                    seq: sb,
-                    turn: tb,
+                    seq: sb, turn: tb, ..
                 },
             ) => match (ta, tb) {
                 (Some(x), Some(y)) => x == y,
-                _ => a == b && sa == sb,
+                _ => sa == sb,
             },
             _ => false,
         }

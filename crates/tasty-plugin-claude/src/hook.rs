@@ -4656,6 +4656,20 @@ mod tests {
             assert!(checks(&rig).is_empty(), "메시지를 처리한 턴의 끝");
         }
 
+        /// prompt_id 가 없는 앞 턴 Stop 이 다시 전달돼도 활동 순번이 같아 같은 턴으로 본다. 줄에 넣은 tell 의 체크가
+        /// 남는다.
+        #[test]
+        fn a_replayed_stop_without_prompt_keeps_a_queued_tell() {
+            let mut rig = HookRig::new();
+            rig.run(hook("prompt-submit"));
+            let id = with_tell_check(&rig, "active");
+            rig.run(hook("prompt-submit"));
+            rig.run(hook("stop"));
+            assert_eq!(checks(&rig), vec![(3, id)], "진행 중이던 앞 턴의 끝");
+            rig.run(hook("stop"));
+            assert_eq!(checks(&rig), vec![(3, id)], "같은 Stop 의 재수신");
+        }
+
         /// 게이트 판정을 기다리던 앞 턴의 Stop 을 새 프롬프트가 확정해도, 그 Stop 은 받은 때의 순번으로 판정한다.
         /// 실행 중인 대상에 보낸 tell 이면 앞 턴의 끝이라 체크가 남고, 메시지를 처리한 다음 턴의 끝이 체크를 끝낸다.
         #[test]
