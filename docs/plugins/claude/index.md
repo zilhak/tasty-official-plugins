@@ -42,7 +42,7 @@
 
 #### 부모 알림 줄이 생기는 경우
 
-`spawn`·`tell`·`child-profile` 하나에 대해 부모 로그에는 다음 줄만 생긴다. 정체 알림(`notify-error`)·백그라운드 StopFailure(`notify-stop-failure`)·무출력 선언 묶음은 별도 훅이며 이 규칙과 무관하다.
+`spawn`·`tell`·`child-profile` 하나에 대해 부모 로그에는 다음 줄만 생긴다. 정체 알림(`notify-error`)·백그라운드 StopFailure(`notify-stop-failure`)·무출력 선언 묶음은 별도 훅이며 이 규칙과 무관하다. `tell`과 프롬프트를 준 `spawn`·`respawn`이 함께 거는 idle 체크의 줄도 이 표와 별개다(아래 "idle 체크").
 
 | 사건 | 줄 | 타입 | 횟수 |
 |---|---|---|---|
@@ -605,16 +605,16 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 
 `claude-error`는 부모 알림에 직접 연결하지 않는다. 자동 재시도 중에도 오류 문구가 나올 수 있기 때문이다. 일정 기간 누적 출력이 바뀌지 않으면 정지를 의심해 `claude-error-stalled`를 발생시키며, 부모 알림은 이 이벤트를 구독한다. 재시도와 실제 멈춤을 확정적으로 구분하는 검사는 아니다.
 
-이벤트 이름에 `error`가 있지만 오류 문구가 없는 장시간 정적 상태와 호스트가 `stale`로 분류한 자식도 대상이다. 기존 등록과 호환되도록 키를 유지한다. 대기가 아닌 정지는 스캐너가 발화 직전 화면에서 오류 문구를 찾아 종류를 정한다. 찾으면 오류 뒤 정지(error)로 보고 그 줄을 힌트로 붙이고, 없으면 출력과 완료 신호가 없다는 안내(warning)를 보낸다([에이전트 상태 설계](https://github.com/zilhak/tasty/blob/develop/docs/features/child-terminal/index.md)).
+이벤트 이름에 `error`가 있지만 오류 문구가 없는 장시간 정적 상태(상태 `active`)와 오류 뒤·대기 중 호스트가 `stale`로 분류한 자식도 대상이다. 기존 등록과 호환되도록 키를 유지한다. 대기가 아닌 정지는 스캐너가 발화 직전 화면에서 오류 문구를 찾아 종류를 정한다. 찾으면 오류 뒤 정지(error)로 보고 그 줄을 힌트로 붙이고, 없으면 출력과 완료 신호가 없다는 안내(warning)를 보낸다([에이전트 상태 설계](https://github.com/zilhak/tasty/blob/develop/docs/features/child-terminal/index.md)).
 
 판정 기준은 두 조건의 **동시** 충족이다(`error_scan.rs`):
 
 | 조건 | 왜 |
 |---|---|
 | 누적 출력의 해시가 기준 시간 동안 같음 | 이번 턴의 마지막 출력 4 KiB에 오류 문구가 있으면 30초, 없으면 설정 `no_output_notice_secs`(기본 600초). 비교 대상은 스캐너가 보관한 크기 제한 안의 누적 텍스트이며 화면 전체나 프로세스 진행 상태가 아니다. 호스트의 `CHILD_OUTPUT_SILENCE`(120초)와 별개의 값이다. 그래서 `tasty claude children`이 이 알림보다 먼저 `stale`을 보여 줄 수 있다 |
-| `terminal.state`가 `active` 또는 `stale` | `idle`·`needs_input`·`exited`는 별도 상태 훅이 다루므로 제외한다. 그 훅이나 알림이 실제 전달됐음을 확인하는 조건은 아니다. `stale`은 `confidence`와 무관하게 포함한다 |
+| `terminal.state`가 `active` 또는 `stale` | `idle`·`needs_input`·`exited`는 별도 상태 훅이 다루므로 제외한다. 그 훅이나 알림이 실제 전달됐음을 확인하는 조건은 아니다. `stale`은 오류 뒤 정지와 백그라운드 작업 대기에서만 포함한다(`confidence` 무관). 대기가 아닌 오류 없는 정지는 `active`일 때만 알린다. `active`가 아닌 조용함은 부모가 건 idle 체크가 알리므로 같은 조용함을 두 알림이 따로 알리지 않는다. `stale`을 본 구간은 출력이 바뀌거나 hook이 올 때까지 다시 묻지 않는다 |
 
-오류 없는 기준은 플러그인 설정 `no_output_notice_secs`(`plugin_settings."com.tasty.claude".no_output_notice_secs`)로 정한다. 설정 › Plugins › Claude Code의 "Seconds without child output before notifying the parent"(`claude.settings.no_output_notice_secs`) 항목이다. 기본 600초, 범위 60~86400초다. 설정 파일을 직접 고친 값도 코드에서 이 범위로 조정하고, 숫자가 아니면 기본값을 쓴다. 끄는 값은 없다. 설정 변경 이벤트가 없어 스캐너가 30초 간격으로 다시 읽으므로 재시작 없이 반영된다. 조회에 실패하면 마지막 값을 유지한다. 오류 직후 30초와 재알림 간격 5분은 설정 대상이 아니다.
+오류 없는 기준은 플러그인 설정 `no_output_notice_secs`(`plugin_settings."com.tasty.claude".no_output_notice_secs`)로 정한다. 설정 › Plugins › Claude Code의 "Seconds without output, while the child is still active or waiting on background work, before notifying the parent"(`claude.settings.no_output_notice_secs`) 항목이다. 이 값은 상태가 `active`인 자식의 오류 없는 정지와 백그라운드 작업 대기에만 쓴다. 0.3.6 전에는 `stale`인 자식에도 썼다. 설정 키·범위·저장 값은 그대로이며 옮길 것은 없다. 기본 600초, 범위 60~86400초다. 설정 파일을 직접 고친 값도 코드에서 이 범위로 조정하고, 숫자가 아니면 기본값을 쓴다. 끄는 값은 없다. 설정 변경 이벤트가 없어 스캐너가 30초 간격으로 다시 읽으므로 재시작 없이 반영된다. 조회에 실패하면 마지막 값을 유지한다. 오류 직후 30초와 재알림 간격 5분은 설정 대상이 아니다.
 
 30초 기준은 조용해지기 직전에 오류를 본 경우만 쓴다. 이번 턴의 마지막 출력 4 KiB로 판단하므로, 앞 턴의 오류나 그 뒤로 4 KiB를 넘게 이어진 출력은 세지 않는다. `claude-error` 이벤트와 중복 생략은 지금처럼 누적 창 전체를 본다.
 
@@ -691,7 +691,7 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 | 타입 | 종류 |
 |---|---|
 | `info` | 턴 종료(`idle`), 원격 결과 저장 |
-| `warning` | 입력 대기(`needs_input`, 문구 `waiting for input`), 무출력 3종(턴 진행 중 오류 없는 정지, 대기 중 화면 무출력, 작업 출력 파일 무출력), 끝난 선언의 묶음 |
+| `warning` | 입력 대기(`needs_input`, 문구 `waiting for input`), 무출력 3종(턴 진행 중 오류 없는 정지, 대기 중 화면 무출력, 작업 출력 파일 무출력), 끝난 선언의 묶음, idle 체크 |
 | `error` | API 오류로 끝난 턴의 완료 줄, 백그라운드 작업이 남은 API 오류(`notify-stop-failure`), 오류 뒤 정지, child `exited` |
 
 세 완료 훅(`claude-idle`·`needs-input`·`process-exit`)은 명령의 `--event`로 사건을 구분한다. 종료는 error(부모가 kill로 끝낸 경우도 구분하지 않는다), 입력 대기는 warning, 턴 종료는 info이고 API 오류 힌트가 붙으면 error다. `--event`가 없는 옛 훅은 대상 상태로 가른다. `exited`면 error, `idle`에 API 오류 힌트가 붙으면 error, 그 밖은 info다. 상태 조회에 실패하면 info로 쓴다.
@@ -710,6 +710,7 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 - 작업 출력 파일 기준: 조용하다고 판정된 작업마다 그 작업의 선언, 없으면 surface 전체 선언을 따른다. 어느 선언에도 걸리지 않은 작업의 이름만 적어 지금처럼 바로 보낸다. 조용한 시간은 파일별이 아니라 찾은 파일 전체의 합산 값이다.
 - 화면 기준 대기(출력 파일을 못 찾음): surface 전체 선언이 있거나, 기다리는 작업 모두에 작업 선언이 있을 때만 보류·버림한다. 아니면 지금처럼 보낸다. 알림 하나는 한 선언에만 쌓는다. surface 전체 선언이 있으면 그 선언, 없으면 걸린 작업 선언 중 끝 시각이 가장 늦은 양수 선언이고, 모두 `-1`이면 버린다.
 - 대기가 아닌 턴의 오류 없는 정지: surface 전체 선언만 맡는다. 작업 선언만 있으면 지금처럼 보낸다.
+- idle 체크: 끝나지 않은 surface 전체 선언이 있는 동안은 `active`처럼 기준 시각을 옮긴다. 보류·묶음에 넣지 않고, 선언이 끝난 뒤부터 120초를 센다. 작업 선언은 idle 체크에 영향이 없다.
 - 보류나 버림을 해도 알린 것과 같은 기록(조용한 구간·대기의 알림 여부, `claude-stall-notice`, 쿨다운 시각)을 남긴다. 같은 대기는 선언이 끝난 뒤에도 다시 알리지 않고, 새 대기는 지금 규칙대로 판정한다.
 - 양수 선언은 쌓고 `-1` 선언은 플러그인 로그에 info로 남기고 버린다. 같은 대상(작업 id, 대기의 작업 집합, 턴)의 반복은 한 항목으로 합쳐 횟수·첫·마지막 시각·가장 긴 조용한 시간을 남긴다. 대기의 작업 집합은 Stop이 알려 준 순서와 관계없이 id를 정렬해 비교한다. 선언 하나는 서로 다른 항목을 64개까지 적고, 그 뒤의 새 대상 알림은 버리지 않고 수와 첫·마지막 시각만 센다. 항목 이름은 묶음 줄과 같은 길이(80자)로 잘라 저장한다. meta는 밖에서 바뀔 수 있으므로 선언과 묶음을 meta에서 되살릴 때도 이름을 같은 길이로 자르고, 64개를 넘는 항목은 수와 첫·마지막 시각만 센다.
 
@@ -733,9 +734,40 @@ surface 전체 선언은 작업 종료나 대기가 아닌 Stop으로 끝나지 
 
 선언과 쌓인 항목은 surface meta `claude-quiet`(`{"decls":[{task, mode, secs, set_at_ms, until_ms, held, overflow}]}`)에 남는다. 끝 시각은 재시작 뒤에도 이어지도록 Unix ms(벽시계)로 재므로, 시스템 시계를 바꾸면 선언 기간도 그만큼 바뀐다. 플러그인만 다시 시작하면 그 surface를 처음 볼 때 meta에서 되살리며, 꺼진 동안 끝 시각이 지났으면 첫 폴링에서 묶음을 낸다. Tasty를 다시 시작하면 복원된 surface가 새 ID를 쓰고 이전 meta를 넘기지 않으므로 선언과 쌓인 항목은 사라지고 보내지 않는다. `claude.quiet`는 `remote_attach.methods`에 없어 attach mirror의 원격 자식에는 쓸 수 없다.
 
+### idle 체크 (`claude.idle_check` → 부모 completion-log)
+
+부모가 자식 Claude의 무응답을 점검하는 체크다. 끝났다는 신호 없이 자식이 일정 시간 `active`로 보이지 않으면 부모 로그에 한 줄을 쓴다. 작업 실패를 확정하거나 자동 복구를 하는 신호가 아니다. 부모는 줄을 받으면 자식을 살펴보고, 필요하면 조치한 뒤 체크를 다시 건다. 플러그인은 자식에 입력을 보내거나 다시 시작하지 않는다.
+
+- 명령: `tasty claude idle-check --surface <자식> [--caller-surface <부모>]`, IPC `claude.idle_check`. `--surface`는 필수이고 `--caller-surface`를 생략하면 호출자 surface(`TASTY_SURFACE_ID`)다. 대상에 아무것도 보내지 않는다.
+- 응답: `{registered, id, replaced, target_surface, caller_surface, wait_secs: 120, state}`. `registered`가 false면 등록 시각 뒤에 이미 끝난 턴이 확정돼 체크를 바로 끝냈다는 뜻이다. `replaced`는 같은 부모·대상에서 바꾼 앞 체크의 id(없으면 null), `state`는 등록 때 읽은 `terminal.state`다.
+- 거절(아무것도 기록하지 않음): `--caller-surface` 없음·대상과 같음은 `invalid params`(-32602), 대상 상태를 읽지 못함은 일반 오류, 대상이 `exited`이거나 상태가 없음·Claude surface가 아님(오류 감시 대상, `claude-session-id` meta, 원격 자식 연결이 모두 없음)은 `invalid params`.
+- 자동 등록: `tell`은 메시지를 보낸 뒤 보내기 **전** 시각으로 건다(보내기 실패면 걸지 않고, 받을 부모가 없으면 걸지 않는다). `spawn`·`respawn`은 `--prompt`로 일을 준 물리 surface 부모에게만 건다. Codex 부모, 부모 없는 자식, 프롬프트 없이 띄운 자식, `child-profile`·`reboot`, 결과불명으로 늦게 묶인 원격 spawn에는 걸지 않는다. 서버 쪽(원격 출처) 호출은 걸지 않고 client가 건다.
+
+**시간.** 등록 시각을 기준으로 감시 회차(약 0.8초)마다 `terminal.state`를 묻는다. `active`면 근거(`evidence`)와 관계없이 기준 시각을 그때로 옮긴다. `pty_not_started`·`observation_unavailable`(원격 mirror 포함)도 같다. 마지막 기준 시각 뒤 120초가 지나고 그 회차의 상태가 `active`·`exited`가 아니면(`idle`·`needs_input`·`stale` 등) 줄을 쓴다. 120초는 고정값이며 설정이 없다. 호스트의 `CHILD_OUTPUT_SILENCE`(120초 무출력)·훅 침묵(300초)과 다른 값이므로, 마지막 출력부터 줄까지의 시간은 120초보다 길 수 있다. 백그라운드 작업 대기(대기 Stop 기록)와 끝나지 않은 surface 전체 무출력 선언이 있는 동안은 `active`처럼 기준 시각을 옮긴다. 그 조용함은 위 무출력 알림 규칙이 맡는다(Monitor 예외 포함).
+
+**줄.** `[warning] surface <N>: idle check — no active state for <초>s and no finished-turn signal (state now: <상태>). The check has ended; look into the child, and if it should keep working, register a new check with: tasty claude idle-check --surface <N>`. 입력 대기·턴 종료·오류 줄과 문구와 종류(`IdleCheck`)가 다르다.
+
+**생명주기.** 체크는 (대상, 부모) 한 쌍에 하나이고 등록마다 새 id를 받는다.
+
+| 사건 | 체크 |
+|---|---|
+| 줄을 썼다 | 끝난다. 다시 등록하기 전에는 더 쓰지 않는다 |
+| 같은 부모·대상을 다시 등록 | 새 id로 바뀌고 그 시각부터 120초를 센다. 앞 체크의 진행 중인 만기 판정은 id가 달라 버린다. 쿨다운이 없어 앞 줄 때문에 밀리지 않는다 |
+| 확정된 턴 종료: 턴을 끝내는 `stop`·`stop-failure`, 게이트가 모두 pass하거나 판정 시간 초과로 확정된 Stop(`run_idle_stop`), 새 프롬프트가 확정한 보류 Stop, `session-end`, 원격 자식의 턴 결과 기록(`turn_ended`·`turn_failed`·`exited`) | 그 Stop을 받은 시각 이전에 등록한 체크를 줄 없이 끝내고 meta에서 지운다. 그 뒤에 등록한 체크는 남는다. 다른 부모의 체크도 같은 규칙이다 |
+| 백그라운드 작업을 기다리는 Stop·StopFailure, 게이트가 block한 Stop, 판정을 기다리는 Stop, `subagent-stop`, 서브에이전트의 StopFailure | 끝내지 않는다 |
+| 대상 `exited`, surface 없음, `kill`·release로 추적 끝남, `respawn` | 줄 없이 지운다 |
+| `terminal.state` 조회 실패 | 비활동으로 세지 않는다. 그 회차는 쓰지 않고 다음 회차에 다시 묻는다. 실패가 이어지면 플러그인 로그에 약 1분마다 warn을 남긴다 |
+| 부모 로그 쓰기 실패 | 전달로 보지 않는다. 체크를 남기고 30초 뒤 조건(여전히 120초 동안 `active` 없음)을 다시 확인해 쓴다. 그 사이 `active`가 오면 처음부터 센다. 성공한 한 번만 끝낸다. 실패마다 플러그인 로그에 warn을 남긴다 |
+
+`tell` 직후 진행 중이던 앞 턴이 끝나면 그 Stop이 체크를 끝낼 수 있다. 이때 완료 줄은 `tell`의 턴 종료 두 번 알림이 맡는다. 원격 자식의 턴 결과는 client가 받은 시각으로 비교하므로, 다시 등록한 직후 도착한 앞 턴의 결과가 새 체크를 끝낼 수 있다. 원격 결과의 재전송(`duplicate`)과 거절은 체크를 끝내지 않는다.
+
+**재시작.** 체크는 대상 surface meta `claude-idle-checks`(`{"checks":[{caller, id, origin, registered_ms}]}`)에 남긴다. 플러그인이 다시 시작되면 모든 surface의 이 meta로 체크를 되살리고 되살린 시각부터 120초를 다시 센다. 대상이 `exited`면 버린다. 끝난 체크는 meta에서 지우므로 되살아나지 않는다. 확정 완료의 시각 기록은 메모리에만 두므로 재시작 전에 받은 완료는 되살린 체크를 끝내지 않는다. Tasty를 다시 시작하면 복원된 surface가 새 ID를 쓰고 meta를 넘기지 않으므로 체크는 사라진다.
+
+**0.3.6 전 등록과의 관계.** 이 meta는 0.3.6에서 생겼으므로 옮길 옛 기록이 없다. 옛 버전이 건 `claude-error-stalled` 훅(`notify-error`)은 그대로 남아 오류 뒤 정지와 대기 알림을 받는다. 옛 `claude-stall-notice` meta의 `stalled_no_error` 기록은 문구 판정에만 쓰이며 체크를 만들지 않는다. 0.3.6 전에 `tell`·`spawn`한 자식에는 체크가 없으므로, 필요하면 `claude idle-check`로 건다.
+
 ## 인터페이스
 
-- **AI Agent / 사용자**: `tasty claude launch|spawn|tell|broadcast|kill|respawn|children|parent|codex-returns|remote-results|hook|checklist-hook|checklist-enable|checklist-disable|checklist-status|profile-register|profile-unregister|profile-list|profile-show|profile-current|gate-register|gate-unregister|gate-list|gate-show …`.
+- **AI Agent / 사용자**: `tasty claude launch|spawn|tell|idle-check|quiet|broadcast|kill|respawn|children|parent|codex-returns|remote-results|hook|checklist-hook|checklist-enable|checklist-disable|checklist-status|profile-register|profile-unregister|profile-list|profile-show|profile-current|gate-register|gate-unregister|gate-list|gate-show …`.
 - surface/페인 생성 자체는 [work-area](https://github.com/zilhak/tasty/blob/develop/docs/features/work-area/index.md) 도메인을 사용.
 
 ## 비-목표
@@ -746,6 +778,10 @@ surface 전체 선언은 작업 종료나 대기가 아닌 Stop으로 끝나지 
 ## Acceptance Criteria
 
 - Given 플러그인 활성 When `tasty claude launch` Then 새 워크스페이스에서 Claude 가 실행된다.
+- Given 부모 P가 `tasty claude idle-check --surface C`로 체크만 건 Claude 자식 C When C가 `active`도 턴 종료도 없이 지냄 Then C에는 입력이 가지 않고, 등록 뒤 119초까지 P의 completion-log에 줄이 없으며 120초 뒤 첫 회차에 `[warning] … idle check` 한 줄이 남는다. 그 뒤 같은 상태가 이어져도 다시 등록하기 전에는 줄이 없고, 다시 등록하면 그 시각부터 120초 뒤 한 줄이 남는다.
+- Given idle 체크가 걸린 자식 When 체크 도중 `active`가 관측됨 Then 마지막 `active` 뒤 120초가 지나야 줄이 남고, 계속 `active`면 줄이 없다.
+- Given idle 체크가 걸린 자식 When 120초 전에 턴이 끝나 Stop이 확정됨(게이트 pass·시간 초과 포함) Then 체크와 `claude-idle-checks` meta가 지워지고 이후 출력·상태 변화·플러그인 재시작에도 idle 줄이 없다. 게이트가 block한 Stop·백그라운드 작업을 기다리는 Stop·`subagent-stop`은 체크를 끝내지 않는다.
+- Given 부모 로그 쓰기가 실패한 idle 체크 When 30초 뒤 대상이 여전히 `active`가 아님 Then 다시 써서 한 줄이 남고, 그 뒤 더 쓰지 않는다.
 - Given 부모 인스턴스 When `tasty claude spawn` Then 자식 인스턴스가 페인 분할로 생성되고 `children` 에 보인다.
 - Given 상태 훅과 로그 기록이 정상 동작하는 자식 When `tasty claude spawn` 또는 `tell` 뒤 자식이 그 턴을 시작해 끝냄 Then caller의 completion-log에 `[info] … state changed` 한 줄이 남고, 그 뒤 자식이 스스로 연 턴은 줄을 남기지 않는다. 다음 `tell`의 턴 끝은 다시 한 줄이다.
 - Given `tell` 뒤 AskUserQuestion으로 입력을 기다리는 자식 When PreToolUse와 Notification(`permission_prompt`)이 함께 옴 Then `[warning] … waiting for input` 한 줄만 남는다.
