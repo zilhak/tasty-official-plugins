@@ -29,7 +29,7 @@ use tasty_plugin_sdk::{IpcMethodError, i18n::Translator};
 
 #[cfg(test)]
 pub(crate) use attach::test_log;
-pub(crate) use attach::{RouteTo, handle_remote_results};
+pub(crate) use attach::{PAYLOAD_KEY, RouteTo, handle_remote_results};
 pub(crate) use parent::*;
 
 const STORE_DIR: &str = "codex-return";

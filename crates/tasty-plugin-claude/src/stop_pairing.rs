@@ -77,7 +77,21 @@ pub(crate) struct Settled {
     pub final_answer: Option<String>,
     /// Stop 이 왔을 때의 Codex 결과 경로 턴. 확정이 늦어도 이 턴의 결과로 claim 한다.
     pub turn: Option<crate::codex_return::TurnId>,
+    /// Stop 을 받은 시각. 확정이 늦어도 그 뒤에 등록한 idle 체크는 이 완료로 끝내지 않는다.
+    pub stopped_at: StopTime,
 }
+
+/// Stop 을 받은 시각. idle 체크의 소유 판정에만 쓰며, 확정 결과의 비교(시험의 `==`)에서는 보지 않는다.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StopTime(pub Instant);
+
+impl PartialEq for StopTime {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for StopTime {}
 
 impl Settled {
     /// 보류한 idle 처리를 실행해야 하는가.
@@ -304,6 +318,7 @@ impl StopPairing {
             turn_ended: true,
             final_answer: e.final_answer,
             turn: e.turn,
+            stopped_at: StopTime(e.since),
         })
     }
 
@@ -362,6 +377,7 @@ impl StopPairing {
             turn_ended,
             final_answer: entry.final_answer,
             turn: entry.turn,
+            stopped_at: StopTime(entry.since),
         }
     }
 }
@@ -551,6 +567,7 @@ mod tests {
             turn_ended: true,
             final_answer: None,
             turn: None,
+            stopped_at: StopTime(Instant::now()),
         }
     }
 
@@ -566,6 +583,7 @@ mod tests {
             turn_ended: false,
             final_answer: None,
             turn: None,
+            stopped_at: StopTime(Instant::now()),
         }
     }
 

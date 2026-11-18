@@ -3,7 +3,7 @@ desc = "Claude Code CLI 연동(launch, spawn, kill 등)"
 
 [claude]
 "settings.spawn_child_warn_threshold" = "자식 수 경고 기준"
-"settings.no_output_notice_secs" = "자식 출력이 없을 때 부모에게 알리기 전 대기 시간(초)"
+"settings.no_output_notice_secs" = "자식이 active이거나 백그라운드 작업을 기다리는데 출력이 없을 때 부모에게 알리기 전 대기 시간(초)"
 "settings.continue_checklist_round_limit" = "게이트 기본 라운드 상한 (게이트가 자체 값을 지정하지 않았을 때)"
 "settings.default_permission_mode" = "자식 세션 기본 권한 모드"
 "settings.auto_resume_enabled" = "일시적인 API 에러(서버 과부하) 뒤 자동으로 이어서 진행"
@@ -70,6 +70,7 @@ remote_result_message = "surface {0}: 턴 결과 {1} ({2})을(를) 저장했습�
 stop_failure_hint = " — API 에러({})로 턴이 끝나 입력을 기다리는 중"
 stalled_message = "surface {}: 오류 뒤 출력이 멈췄습니다. 자식은 아직 active 상태이며 완료 신호가 없어 작업이 멈췄을 수 있습니다."
 stalled_no_error_message = "surface {}: 오랫동안 출력과 완료 신호가 없습니다. 작업이 멈췄거나 훅이 전달되지 않은 상태로 입력을 기다리는 중일 수 있습니다."
+idle_check_message = "surface {0}: idle 체크 — {1}초 동안 active 상태가 없고 턴 종료 신호도 없습니다(지금 상태: {2}). 체크는 끝났습니다. 자식을 확인하고, 계속 일해야 하면 다음 명령으로 새 체크를 등록하세요: tasty claude idle-check --surface {0}"
 stalled_background_wait_message = "surface {}: 백그라운드 작업({})이 끝나기를 {}분째 기다리는 중이며 그동안 출력이 없습니다."
 stalled_background_task_quiet_message = "surface {}: 백그라운드 작업 {}이(가) {}분째 출력이 없습니다."
 stalled_hint = " 마지막 오류: {}"
@@ -181,7 +182,7 @@ claude = "Claude Code"
 description = "새 워크스페이스에서 Claude Code 시작"
 
 [claude.cli.sub.spawn]
-description = "워크스페이스에 자식 Claude 생성. 즉시 반환합니다. 자식이 시작한 턴을 끝내면 한 줄, 입력을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 호출자 서피스에 남깁니다. 그 뒤 자식이 스스로 연 턴과 일을 시작하지 않은 상태 변화는 줄을 남기지 않습니다."
+description = "워크스페이스에 자식 Claude 생성. 즉시 반환합니다. 자식이 시작한 턴을 끝내면 한 줄, 입력을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 호출자 서피스에 남깁니다. 그 뒤 자식이 스스로 연 턴과 일을 시작하지 않은 상태 변화는 줄을 남기지 않습니다. --prompt를 주면 idle 체크도 등록합니다('claude idle-check' 참고)."
 
 [claude.cli.sub.children]
 description = "지정한 Claude 부모의 자식 나열"
@@ -193,7 +194,7 @@ description = "지정한 Claude 자식의 부모 표시"
 description = "자식 하나의 상태 조회: idle, needs_input, active, exited(실제 서피스와 대조)"
 
 [claude.cli.sub.tell]
-description = "Claude 인스턴스에 여러 줄 메시지 전송(끝에서 제출). 즉시 반환합니다. 이 메시지로 시작한 턴이 끝나면 한 줄, 입력을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 호출자 서피스에 남깁니다. 그 뒤 대상이 스스로 연 턴과 일을 시작하지 않은 상태 변화는 줄을 남기지 않습니다. 진행 중이거나 입력을 기다리는 대상에 보낸 tell은, 메시지가 다음 턴에 처리되는 경우를 놓치지 않으려고 턴 종료 줄이 두 번 나올 수 있습니다."
+description = "Claude 인스턴스에 여러 줄 메시지 전송(끝에서 제출). 즉시 반환합니다. 이 메시지로 시작한 턴이 끝나면 한 줄, 입력을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 호출자 서피스에 남깁니다. 그 뒤 대상이 스스로 연 턴과 일을 시작하지 않은 상태 변화는 줄을 남기지 않습니다. 진행 중이거나 입력을 기다리는 대상에 보낸 tell은, 메시지가 다음 턴에 처리되는 경우를 놓치지 않으려고 턴 종료 줄이 두 번 나올 수 있습니다. idle 체크도 등록합니다. 대상이 턴을 끝내지 않고 120초 동안 active로 보이지 않으면 한 줄을 더 남깁니다('claude idle-check' 참고)."
 
 [claude.cli.sub.broadcast]
 description = "부모 Claude 인스턴스의 모든 자식에게 텍스트 일괄 전송"
@@ -208,7 +209,7 @@ description = "Codex 부모를 둔 자식의 턴 결과 중 아직 Codex 플러�
 description = "surface 부모(Claude 세션이나 셸)에게 돌아온 원격 attach 자식의 턴 결과 목록을 보여 주거나, 한 건을 본문과 함께 보여 줍니다. 결과는 부모의 완료 로그에 ID를 쓰기 전에 저장되며 자식이 닫힌 뒤에도 남습니다."
 
 [claude.cli.sub.respawn]
-description = "자식 Claude 인스턴스 재생성"
+description = "자식 Claude 인스턴스 재생성. 앞 세션의 idle 체크는 끝나고, --prompt를 주면 부모에게 새 체크를 등록합니다('claude idle-check' 참고)."
 
 [claude.cli.sub.reboot]
 description = "서피스의 Claude를 재시작하고 같은 세션 재개(지연 종료 + claude -r). 턴의 마지막 동작으로 호출하세요. 지연 이후 작업은 중단됩니다."
@@ -578,3 +579,18 @@ help = "이 자식 세션의 모델(alias, full ID 또는 provider 식별자). �
 
 [claude.cli.arg.spawn_args.effort]
 help = "이 자식 세션의 effort: low|medium|high|xhigh|max|ultracode. 프로필을 수정하지 않고 effort보다 우선하며 같은 세션 복원에도 유지합니다. 지원 여부는 Claude CLI와 모델에 따라 다릅니다."
+
+[claude.idle_check]
+state_failed = "서피스 {0}의 상태를 읽지 못했습니다: {1}"
+not_running = "서피스 {}에 실행 중인 터미널이 없습니다(상태가 exited이거나 알 수 없음)"
+not_claude = "서피스 {}는 Claude 서피스가 아닙니다(Claude 세션, 감시 기록, 원격 자식 연결이 모두 없음)"
+self_target = "서피스 {}는 자기 자신에게 idle 체크를 걸 수 없습니다. --surface로 자식을 지정하세요"
+
+[claude.cli.sub.idle-check]
+description = "자식 Claude에 아무것도 보내지 않고 idle 체크만 등록합니다. 등록 뒤 active 상태를 볼 때마다 120초 타이머를 다시 셉니다. 자식이 턴 종료를 보고하지 않고 120초 동안 active로 보이지 않으면 호출자 서피스에 경고 한 줄을 남기고 체크를 끝냅니다. 턴 종료(게이트가 끝을 허용한 경우를 포함해 턴을 끝내는 Stop·StopFailure, 세션 종료)는 줄 없이 체크를 끝냅니다. 백그라운드 작업을 기다리는 Stop, 게이트가 막은 Stop, 서브에이전트 종료는 체크를 끝내지 않습니다. 같은 호출자·자식으로 다시 등록하면 새 120초 체크로 바뀝니다. tell과 --prompt를 준 spawn/respawn도 체크를 등록합니다."
+
+[claude.cli.arg.idle_check_args.surface]
+help = "감시할 자식 Claude 서피스(필수)"
+
+[claude.cli.arg.idle_check_args.caller_surface]
+help = "idle 줄을 받을 알림 로그의 서피스(기본값: 호출자의 TASTY_SURFACE_ID)"

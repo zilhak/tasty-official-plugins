@@ -3,7 +3,7 @@ desc = "Claude Code CLI 集成（launch、spawn、kill 等）"
 
 [claude]
 "settings.spawn_child_warn_threshold" = "子数量警告阈值"
-"settings.no_output_notice_secs" = "子无输出时通知父之前的等待秒数"
+"settings.no_output_notice_secs" = "子仍为 active 或在等待后台任务但无输出时，通知父之前的等待秒数"
 "settings.continue_checklist_round_limit" = "Gate 默认轮数上限（Gate 未设置时使用）"
 "settings.default_permission_mode" = "子会话的默认权限模式"
 "settings.auto_resume_enabled" = "临时 API 错误（服务器过载）后自动继续"
@@ -71,6 +71,7 @@ remote_result_message = "Surface {0}：已存储本轮结果 {1}（{2}）。读�
 stop_failure_hint = " ——本轮因 API 错误（{}）而结束，正在等待输入"
 stalled_message = "Surface {}：发生错误后无输出——子实例似乎卡住了（仍处于活动状态，无完成信号）"
 stalled_no_error_message = "Surface {}：长时间无输出且无完成信号——子实例似乎卡住了（可能正在等待某个提示的输入，但该提示的钩子始终未送达）"
+idle_check_message = "Surface {0}：idle 检查——{1} 秒内没有 active 状态，也没有轮次结束信号（当前状态：{2}）。检查已结束；请查看子实例，如需继续工作，请用以下命令注册新的检查：tasty claude idle-check --surface {0}"
 stalled_background_wait_message = "Surface {}：已等待后台工作（{}）{} 分钟，期间无输出"
 stalled_background_task_quiet_message = "Surface {}：后台工作 {} 已有 {} 分钟未输出"
 stalled_hint = " 最近的错误：{}"
@@ -182,7 +183,7 @@ claude = "Claude Code"
 description = "在新工作区中启动 Claude Code"
 
 [claude.cli.sub.spawn]
-description = "在工作区中 Spawn 一个子 Claude 实例。立即返回；子实例结束其开始的轮次时写一行，每次等待输入时写一行（措辞与轮次结束不同），退出时写一行到调用方 Surface。此后子实例自行开启的轮次以及未开始工作的状态变化不写行。"
+description = "在工作区中 Spawn 一个子 Claude 实例。立即返回；子实例结束其开始的轮次时写一行，每次等待输入时写一行（措辞与轮次结束不同），退出时写一行到调用方 Surface。此后子实例自行开启的轮次以及未开始工作的状态变化不写行。带 --prompt 时也会注册 idle 检查（参见 'claude idle-check'）。"
 
 [claude.cli.sub.children]
 description = "列出指定 Claude 父实例的子实例"
@@ -194,7 +195,7 @@ description = "显示指定 Claude 子实例的父实例"
 description = "查询单个子实例的状态：idle、needs_input、active 或 exited（与实际存续的 Surface 交叉核对）"
 
 [claude.cli.sub.tell]
-description = "向 Claude 实例发送消息（支持多行，在末尾提交）。立即返回；此消息开始的轮次结束时写一行，每次等待输入时写一行（措辞与轮次结束不同），退出时写一行到调用方 Surface。此后目标自行开启的轮次以及未开始工作的状态变化不写行。发送给正在运行或等待输入的目标的 tell，为了不漏掉消息在下一轮处理的情况，轮次结束行可能出现两次。"
+description = "向 Claude 实例发送消息（支持多行，在末尾提交）。立即返回；此消息开始的轮次结束时写一行，每次等待输入时写一行（措辞与轮次结束不同），退出时写一行到调用方 Surface。此后目标自行开启的轮次以及未开始工作的状态变化不写行。发送给正在运行或等待输入的目标的 tell，为了不漏掉消息在下一轮处理的情况，轮次结束行可能出现两次。同时注册 idle 检查：若目标未结束轮次且 120 秒内未处于 active，会再写一行（参见 'claude idle-check'）。"
 
 [claude.cli.sub.broadcast]
 description = "向 Claude 父实例的所有子实例广播文本"
@@ -209,7 +210,7 @@ description = "列出以 Codex 为父实例、尚未能将轮次结果交给 Cod
 description = "列出远程附加子实例返回给 Surface 父实例（Claude 会话或 Shell）的轮次结果，或显示单个结果及其正文。每个结果均先存储，再将其 ID 写入父实例的完成日志；子实例关闭后结果仍保留。"
 
 [claude.cli.sub.respawn]
-description = "Respawn 一个 Claude 子实例"
+description = "Respawn 一个 Claude 子实例。旧会话的 idle 检查结束；带 --prompt 时为父注册新的检查（参见 'claude idle-check'）。"
 
 [claude.cli.sub.reboot]
 description = "重新启动 Surface 中的 Claude 实例并恢复同一会话（延迟终止 + claude -r）。将此调用作为一轮的最后一个操作——延迟结束后的所有操作都会被中断。"
@@ -579,3 +580,18 @@ help = "仅用于此子会话的模型（别名、完整 ID 或提供商标识�
 
 [claude.cli.arg.spawn_args.effort]
 help = "仅用于此子会话的推理强度：low|medium|high|xhigh|max|ultracode。覆盖配置档的推理强度设置而不修改配置档；恢复同一会话时保留。可用性取决于 Claude CLI 和模型。"
+
+[claude.idle_check]
+state_failed = "无法读取 Surface {0} 的状态：{1}"
+not_running = "Surface {} 没有正在运行的终端（状态为 exited 或未知）"
+not_claude = "Surface {} 不是 Claude Surface（没有 Claude 会话、监视记录或远程子实例关联）"
+self_target = "Surface {} 不能给自己注册 idle 检查；请用 --surface 指定子实例"
+
+[claude.cli.sub.idle-check]
+description = "只为子 Claude 注册 idle 检查，不向其发送任何内容。注册后每次看到 active 状态都会重新计 120 秒。若子实例没有报告轮次结束且 120 秒内未处于 active，则向调用方 Surface 写一行警告并结束检查。轮次结束（结束轮次的 Stop·StopFailure，包括 Gate 允许结束的情况，以及会话结束）会结束检查且不写行；等待后台任务的 Stop、被 Gate 阻止的 Stop 以及子代理结束不会结束检查。对同一调用方和子实例重新注册会替换为新的 120 秒检查。tell 以及带 --prompt 的 spawn/respawn 也会注册检查。"
+
+[claude.cli.arg.idle_check_args.surface]
+help = "要监视的子 Claude Surface（必填）"
+
+[claude.cli.arg.idle_check_args.caller_surface]
+help = "接收 idle 行的通知日志所属 Surface（默认为调用方的 TASTY_SURFACE_ID）"

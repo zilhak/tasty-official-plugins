@@ -28,6 +28,8 @@ pub(crate) enum NoticeKind {
     StalledBackgroundTaskQuiet,
     /// 무출력 선언이 끝나 그동안 쌓인 무출력 알림을 묶어 보낸다.
     QuietReleased,
+    /// 부모가 건 idle 체크의 기한이 지났다. 마지막 active 뒤로 완료 없이 정해진 시간이 지났다.
+    IdleCheck,
 }
 
 impl NoticeKind {
@@ -39,7 +41,8 @@ impl NoticeKind {
             | Self::StalledNoError
             | Self::StalledBackgroundWait
             | Self::StalledBackgroundTaskQuiet
-            | Self::QuietReleased => NoticeType::Warning,
+            | Self::QuietReleased
+            | Self::IdleCheck => NoticeType::Warning,
             Self::Exited | Self::StopFailure | Self::StopFailureBackground | Self::Stalled => {
                 NoticeType::Error
             }
@@ -61,11 +64,12 @@ impl NoticeKind {
                 "claude.notify.stalled_background_task_quiet_message"
             }
             Self::QuietReleased => "claude.notify.quiet_released_message",
+            Self::IdleCheck => "claude.notify.idle_check_message",
         }
     }
 
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::StateChanged,
         Self::NeedsInput,
         Self::Exited,
@@ -77,6 +81,7 @@ impl NoticeKind {
         Self::StalledBackgroundWait,
         Self::StalledBackgroundTaskQuiet,
         Self::QuietReleased,
+        Self::IdleCheck,
     ];
 }
 
@@ -87,8 +92,16 @@ pub(crate) fn append(caller_surface: u32, kind: NoticeKind, line: &str) -> std::
 }
 
 /// 시험은 실제 완료 로그(`TASTY_PARENT_HOME`)에 쓰지 않고 이 스레드에 모은다. 표지는 실제 쓰기와 같게 붙인다.
+/// [`test_log::fail_next`] 로 정한 횟수만큼은 쓰지 않고 실패한다.
 #[cfg(test)]
 pub(crate) fn append(caller_surface: u32, kind: NoticeKind, line: &str) -> std::io::Result<()> {
+    if test_log::FAILS.with(|f| {
+        let n = f.get();
+        f.set(n.saturating_sub(1));
+        n > 0
+    }) {
+        return Err(std::io::Error::other("injected notify log failure"));
+    }
     let line = tasty_utils::notify::notice_line(kind.notice_type(), line);
     test_log::LINES.with(|l| l.borrow_mut().push((caller_surface, line)));
     Ok(())
@@ -100,6 +113,12 @@ pub(crate) mod test_log {
 
     thread_local! {
         pub(super) static LINES: RefCell<Vec<(u32, String)>> = const { RefCell::new(Vec::new()) };
+        pub(super) static FAILS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    /// 이 스레드의 다음 `n` 번 쓰기를 실패시킨다.
+    pub(crate) fn fail_next(n: u32) {
+        FAILS.with(|f| f.set(n));
     }
 
     /// 이 스레드에서 쓴 줄을 꺼낸다.
@@ -140,7 +159,7 @@ mod tests {
         }
     }
 
-    /// 대응표: 입력 대기, 무출력 3종과 그 묶음만 warning, 오류가 섞인 넷은 error, 나머지 둘은 info 다.
+    /// 대응표: 입력 대기, 무출력 3종과 그 묶음, idle 체크만 warning, 오류가 섞인 넷은 error, 나머지 둘은 info 다.
     #[test]
     fn each_notice_kind_has_the_type_of_the_table() {
         use NoticeKind::*;
@@ -159,7 +178,8 @@ mod tests {
                 StalledNoError,
                 StalledBackgroundWait,
                 StalledBackgroundTaskQuiet,
-                QuietReleased
+                QuietReleased,
+                IdleCheck
             ]
         );
         assert_eq!(

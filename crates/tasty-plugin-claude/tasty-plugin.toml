@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.claude"
 name = "Claude Code"
-version = "0.3.5"
+version = "0.3.6"
 description = "Claude Code CLI integration for Tasty"
 api_version = "1"
 lang_dir = "lang"
@@ -84,7 +84,7 @@ description = "Claude output matched an error pattern"
 
 [[contributes.hook_events]]
 key = "claude-error-stalled"
-description = "Claude produced no output for a sustained period while the host still sees an unfinished turn (active or stale) — likely stuck. Fires with or without a preceding error; the notification text says which"
+description = "Claude produced no output for a sustained period while the host still sees an unfinished turn — likely stuck. After an error or during a background wait it fires for active or stale; without either it fires only while the state is active, since a turn that is not active is left to the parent's idle check. The notification text says which"
 
 [[contributes.hook_events]]
 key = "claude-quiet-released"
@@ -97,14 +97,14 @@ description = "Claude Code CLI integration (launch, spawn, kill, etc.)"
 description_i18n_key = "claude.cli.desc"
 subcommands = [
     { name = "launch",    ipc_method = "claude.launch",    args = "launch_args",    description = "Launch Claude Code in a new workspace", description_i18n_key = "claude.cli.sub.launch.description" },
-    { name = "spawn",     ipc_method = "claude.spawn",     args = "spawn_args",     description = "Spawn a child Claude instance into a workspace. Returns immediately; the caller surface gets one line when the child finishes the turn it started, one line each time it waits for input (worded apart from a finished turn), and one line when it exits. Turns the child opens on its own after that and state changes that start no work write nothing.", description_i18n_key = "claude.cli.sub.spawn.description" },
+    { name = "spawn",     ipc_method = "claude.spawn",     args = "spawn_args",     description = "Spawn a child Claude instance into a workspace. Returns immediately; the caller surface gets one line when the child finishes the turn it started, one line each time it waits for input (worded apart from a finished turn), and one line when it exits. Turns the child opens on its own after that and state changes that start no work write nothing. With --prompt it also registers an idle check (see 'claude idle-check').", description_i18n_key = "claude.cli.sub.spawn.description" },
     { name = "children",  ipc_method = "claude.children",  args = "children_args", output = "child_table",  description = "List children of the specified Claude parent", description_i18n_key = "claude.cli.sub.children.description" },
     { name = "parent",    ipc_method = "claude.parent",    args = "parent_args",    description = "Show the parent of the specified Claude child", description_i18n_key = "claude.cli.sub.parent.description" },
     { name = "state",     ipc_method = "claude.state",     args = "state_args",     description = "Query a single child's status: idle, needs_input, active, or exited (live-surface cross-checked)", description_i18n_key = "claude.cli.sub.state.description" },
-    { name = "tell",      ipc_method = "claude.tell",      args = "tell_args",      description = "Send a message to a Claude instance (multi-line, submits at end). Returns immediately; the caller surface gets one line when the target finishes the turn this message started, one line each time it waits for input (worded apart from a finished turn), and one line when it exits. Turns the target opens on its own after that and state changes that start no work write nothing. A tell to a target that is running or waiting for input may write a second finished-turn line, so a message handled in the next turn is not missed.", description_i18n_key = "claude.cli.sub.tell.description" },
+    { name = "tell",      ipc_method = "claude.tell",      args = "tell_args",      description = "Send a message to a Claude instance (multi-line, submits at end). Returns immediately; the caller surface gets one line when the target finishes the turn this message started, one line each time it waits for input (worded apart from a finished turn), and one line when it exits. Turns the target opens on its own after that and state changes that start no work write nothing. A tell to a target that is running or waiting for input may write a second finished-turn line, so a message handled in the next turn is not missed. It also registers an idle check: if the target is not seen active for 120 seconds without finishing the turn, one more line says so (see 'claude idle-check').", description_i18n_key = "claude.cli.sub.tell.description" },
     { name = "broadcast", ipc_method = "claude.broadcast", args = "broadcast_args", description = "Broadcast text to all children of a parent Claude instance", description_i18n_key = "claude.cli.sub.broadcast.description" },
     { name = "kill",      ipc_method = "claude.kill",      args = "kill_args",      description = "Kill a child Claude instance by child index", description_i18n_key = "claude.cli.sub.kill.description" },
-    { name = "respawn",   ipc_method = "claude.respawn",   args = "respawn_args",   description = "Respawn a child Claude instance", description_i18n_key = "claude.cli.sub.respawn.description" },
+    { name = "respawn",   ipc_method = "claude.respawn",   args = "respawn_args",   description = "Respawn a child Claude instance. Idle checks of the old session end; with --prompt a new one is registered for the parent (see 'claude idle-check').", description_i18n_key = "claude.cli.sub.respawn.description" },
     { name = "codex-returns", ipc_method = "claude.codex_returns", args = "codex_returns_args", description = "List turn results of Codex-parented children that could not be handed to the Codex plugin yet, with their receiver, body and retry state. --retry puts every listed result back in line to be sent now, including ones whose automatic retry stopped, and returns without waiting for the sending.", description_i18n_key = "claude.cli.sub.codex-returns.description" },
     { name = "remote-results", ipc_method = "claude.remote_results", args = "remote_results_args", description = "List turn results of remote attach children that came back for a surface parent (a Claude session or shell), or show one with its body. Each result is stored before its id is written to the parent's completion log, and stays after the child closes.", description_i18n_key = "claude.cli.sub.remote-results.description" },
     { name = "reboot",    ipc_method = "claude.reboot",    args = "reboot_args",    description = "Restart the Claude instance in a surface and resume the same session (delayed kill + claude -r). Call this as the LAST action of a turn — anything after the delay is cut off.", description_i18n_key = "claude.cli.sub.reboot.description" },
@@ -123,6 +123,7 @@ subcommands = [
     { name = "notify-error", internal = true, ipc_method = "claude.notify_error", args = "notify_error_args", description = "Internal: notify the caller that a child may be stalled after a long period without output changes. Used as the hook.set command for claude-error-stalled. Does not change child state or remove or re-register completion hooks.", description_i18n_key = "claude.cli.sub.notify-error.description" },
     { name = "notify-stop-failure", internal = true, ipc_method = "claude.notify_stop_failure", args = "notify_error_args", description = "Internal: when a child's turn ended on an API error while background work keeps it waiting, write one line to the caller's notification log. Writes nothing when the turn simply ended, since the completion line already names the error. Used as the hook.set command for claude-stop-failure.", description_i18n_key = "claude.cli.sub.notify-stop-failure.description" },
     { name = "quiet",     ipc_method = "claude.quiet",     args = "quiet_args",     description = "Declare how long a child's no-output notices are expected, for the whole surface or one background task (--task). With --secs N (positive) the no-output notices of that time are held and sent as one line when the declaration ends (time up, task ended or --clear); with --secs -1 they are dropped until the task ends or --clear. Notices of state changes and errors are sent as usual, and an error ends every declaration of the surface. --clear without --task ends every declaration of the surface.", description_i18n_key = "claude.cli.sub.quiet.description" },
+    { name = "idle-check", ipc_method = "claude.idle_check", args = "idle_check_args", description = "Register an idle check on a child Claude without sending it anything. From then on every active state seen restarts a 120-second timer; if the child reports no finished turn and is not seen active for 120 seconds, the caller surface gets one warning line and the check ends. A finished turn (a Stop or StopFailure that ends the turn, including one a gate lets end, or the session ending) ends the check without a line; a Stop that waits for background work or that a gate blocks, and a subagent ending, do not. Registering again for the same caller and child replaces the check with a fresh 120 seconds. tell, and spawn/respawn with --prompt, register one too.", description_i18n_key = "claude.cli.sub.idle-check.description" },
     { name = "notify-quiet-release", internal = true, ipc_method = "claude.notify_quiet_release", args = "notify_error_args", description = "Internal: write the held no-output notices of quiet declarations that ended to the caller's notification log, once per caller. Used as the hook.set command for claude-quiet-released.", description_i18n_key = "claude.cli.sub.notify-quiet-release.description" },
     { name = "notify-done", internal = true, ipc_method = "claude.notify_done", args = "notify_done_args", description = "Internal: decide and write one line of the caller's notification log for a spawn/tell completion hook. --event says which hook ran: idle writes a finished-turn line once, only after new activity at or above --done-from (idle-twice, armed by a tell to a running target or one waiting for input, writes one more at the next turn end); input writes an input-wait line while the target still waits; exit always writes an exit line. If the target surface can still be found, sets again only the hook of its own event under the same --arm (not the idle hook once the turn end was noticed); the other hooks of the arm stay. A run whose arm was replaced by a later spawn/tell writes nothing and removes the remaining hooks of its arm, as does a run whose target surface is gone. Without --event (hooks registered before an upgrade) the line follows the target state. Used as the hook.set command for claude-idle/needs-input/process-exit.", description_i18n_key = "claude.cli.sub.notify-done.description" },
     # CLI가 한 단계의 하위 명령을 지원하므로 profile-* 이름을 사용한다.
@@ -187,6 +188,12 @@ flags = [
     { name = "task",    type = "string", flag = "--task",    required = false, help = "Background task ID (Bash backgroundTaskId or Agent agentId). Without it the declaration covers the whole surface", help_i18n_key = "claude.cli.arg.quiet_args.task.help" },
     { name = "secs",    type = "i64",    flag = "--secs",    required = false, help = "Seconds to hold no-output notices (no upper limit), or -1 to drop them until the task ends or --clear. 0 and other negative numbers are refused", help_i18n_key = "claude.cli.arg.quiet_args.secs.help" },
     { name = "clear",   type = "bool",   flag = "--clear",   required = false, help = "End the declaration now and send what it held. Without --task, ends every declaration of the surface", help_i18n_key = "claude.cli.arg.quiet_args.clear.help" },
+]
+
+[contributes.cli.arg_groups.idle_check_args]
+flags = [
+    { name = "surface",        type = "u32", flag = "--surface",        required = true,  help = "Child Claude surface to watch (required)", help_i18n_key = "claude.cli.arg.idle_check_args.surface.help" },
+    { name = "caller_surface", type = "u32", flag = "--caller-surface", required = false, help = "Surface whose notification log gets the idle line (defaults to caller's TASTY_SURFACE_ID)", help_i18n_key = "claude.cli.arg.idle_check_args.caller_surface.help" },
 ]
 
 [contributes.cli.arg_groups.tell_args]
@@ -406,7 +413,8 @@ storage_key = "spawn_child_warn_threshold"
 default = 6.0
 min = 1.0
 
-# error_scan.rs 가 범위를 다시 제한한다. 끄는 값은 없다.
+# error_scan.rs 가 범위를 다시 제한한다. 끄는 값은 없다. 오류 없는 무출력 알림은 상태가 active 인 자식과
+# 백그라운드 작업 대기에만 이 값을 쓴다. active 가 아닌 조용함은 부모가 건 idle 체크(120초)가 맡는다.
 [[contributes.settings_pages.items]]
 kind = "number"
 id = "no_output_notice_secs"

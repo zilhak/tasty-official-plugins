@@ -7,6 +7,7 @@
 //! TopLevel 조회 오류는 대상 부재 오류까지 추적 유지로 처리하는 한계가 있다.
 //! 새 턴에서는 중복 알림 기록과 정지 관측을 초기화하되 알림 간격 제한은 유지한다.
 
+pub(crate) mod idle;
 pub(crate) mod quiet;
 
 use std::collections::HashMap;
@@ -133,6 +134,8 @@ pub struct ErrorScanner {
     no_output_notice: NoOutputNotice,
     /// 무출력 알림 선언과 끝난 선언의 묶음. 처음 볼 때 meta 에서 되살린다.
     quiet: quiet::QuietTable,
+    /// 부모가 등록한 idle 체크. 오류 감시 대상이 아닌 surface(원격 mirror 등)의 체크도 둔다.
+    pub(crate) idle: idle::IdleChecks,
 }
 
 /// 마지막으로 읽은 오류 없는 정지 알림 기준과 그 시각.
@@ -413,9 +416,10 @@ impl ErrorScanner {
         self.enabled.insert(surface_id, target);
     }
 
-    /// 추적을 끝낸다. 무출력 선언도 끝내며 쌓인 것은 error 완료 줄을 잠시 기다린다.
+    /// 추적을 끝낸다. 무출력 선언도 끝내며 쌓인 것은 error 완료 줄을 잠시 기다린다. idle 체크도 지운다.
     pub fn stop_tracking<H: HostCall>(&mut self, host: &H, surface_id: u32) {
         self.drop_quiet(host, surface_id);
+        self.idle_drop(host, surface_id);
         self.disable(surface_id);
     }
 
@@ -848,6 +852,14 @@ impl ErrorScanner {
             // error 알림은 선언과 관계없이 바로 보내고 그 surface 의 선언을 모두 끝낸다. 쌓인 것은 error 줄이 가져간다.
             self.end_quiet_on_error(host, surface_id);
             self.fire_stall(host, surface_id, now, wording.as_ref());
+            return;
+        }
+        // 대기가 아닌 오류 없는 멈춤은 상태가 active 일 때만 알린다. active 가 아닌(stale 등) 조용함은 부모가 건
+        // idle 체크가 맡는다. 같은 조용함을 두 알림이 따로 알리지 않게 한다.
+        if wait.is_none() && child_state != "active" {
+            if let Some(w) = self.watch.get_mut(&surface_id) {
+                w.settled = true;
+            }
             return;
         }
         let notice = match wait {
@@ -1916,15 +1928,30 @@ mod tests {
         );
     }
 
-    /// 호스트가 stale로 판정한 경우도 알린다.
+    /// 호스트가 stale로 판정한 오류 없는 멈춤은 부모가 건 idle 체크가 맡으므로 정지 알림을 보내지 않는다.
+    /// 다음 출력 변화나 훅 전에는 상태를 다시 묻지 않는다.
     #[test]
-    fn stale_state_fires_stall() {
+    fn a_stale_state_without_an_error_is_left_to_the_idle_check() {
         let host = ScanHost::new("…\n", "stale");
         let mut s = ErrorScanner::new();
         let t0 = Instant::now();
         s.scan_one_at(&host, 1, t0);
         s.scan_one_at(&host, 1, t0 + NO_OUTPUT_NOTICE_DEFAULT);
+        s.scan_one_at(&host, 1, t0 + NO_OUTPUT_NOTICE_DEFAULT * 3);
+        assert_eq!(host.stalled_count(), 0);
+        assert!(s.is_settled(1));
+    }
+
+    /// 오류 뒤 멈춤은 stale 이어도 지금처럼 알린다. 오류 알림은 idle 체크와 다른 알림이다.
+    #[test]
+    fn a_stale_state_after_an_error_still_fires_stall() {
+        let host = ScanHost::new("API Error: overloaded\n", "stale");
+        let mut s = ErrorScanner::new();
+        let t0 = Instant::now();
+        s.scan_one_at(&host, 1, t0);
+        s.scan_one_at(&host, 1, t0 + STALL_QUIET);
         assert_eq!(host.stalled_count(), 1);
+        assert_eq!(host.stall_notice().expect("판정")["kind"], STALL_KIND_ERROR);
     }
 
     /// 기존 완료 알림 대상 상태에서는 정지 의심 알림을 보내지 않는다.

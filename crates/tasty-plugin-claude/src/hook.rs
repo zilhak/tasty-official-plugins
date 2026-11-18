@@ -154,7 +154,7 @@ impl<H: HostCallSink> StopTail<'_, H> {
                         turn: s.turn.clone(),
                     },
                 );
-                failures += self.run_idle_stop(s.surface_id);
+                failures += self.run_idle_stop(s.surface_id, s.stopped_at.0);
             } else if s.kind == StopKind::Idle {
                 tracing::info!(
                     "claude stop s{}: a gate blocked the stop — turn continues, stays active",
@@ -210,8 +210,9 @@ impl<H: HostCallSink> StopTail<'_, H> {
         )
     }
 
-    /// 턴 종료 Stop 의 처리. 보류하지 않은 Stop 과 같은 호출·기록을 만든다.
-    fn run_idle_stop(&self, surface_id: u32) -> usize {
+    /// 턴 종료 Stop 의 처리. 보류하지 않은 Stop 과 같은 호출·기록을 만든다. `stopped_at` 은 그 Stop 을 받은
+    /// 시각이며, 그 이전에 등록한 idle 체크를 끝낸다.
+    fn run_idle_stop(&self, surface_id: u32, stopped_at: std::time::Instant) -> usize {
         // stop 의 호출 목록은 번역 문구를 쓰지 않는다.
         let mut calls = apply_hook("stop", surface_id, None, None, None, &Translator::default())
             .unwrap_or_else(|e| {
@@ -234,7 +235,9 @@ impl<H: HostCallSink> StopTail<'_, H> {
             None,
             std::time::Instant::now(),
         );
-        crate::error_scan::lock_scanner(self.scanner).clear_background_wait(surface_id);
+        let mut scanner = crate::error_scan::lock_scanner(self.scanner);
+        scanner.clear_background_wait(surface_id);
+        scanner.idle_complete(self.host, surface_id, stopped_at);
         failures
     }
 }
@@ -257,6 +260,8 @@ pub(crate) fn handle_claude_hook<H: HostCallSink>(
         .ok_or_else(|| IpcMethodError::invalid_params(tr.t("claude.hook.missing_event")))?;
 
     let surface_id = resolve_surface_id(params, tr)?;
+    // 이 훅을 받은 시각. 턴 종료로 확정되면 그 이전에 등록한 idle 체크를 끝낸다.
+    let received_at = std::time::Instant::now();
     crate::error_scan::lock_scanner(scanner).note_hook(surface_id);
     let session = params
         .get("session")
@@ -392,6 +397,11 @@ pub(crate) fn handle_claude_hook<H: HostCallSink>(
 
     if ends_background_wait(event) {
         crate::error_scan::lock_scanner(scanner).clear_background_wait(surface_id);
+    }
+    // 여기까지 온 stop·stop-failure 는 확정된 턴 종료다(대기·게이트 보류·서브에이전트 실패는 앞에서 돌아갔다).
+    // 세션 종료 뒤에는 그 세션의 체크가 남지 않는다.
+    if ends_idle_checks(event) {
+        crate::error_scan::lock_scanner(scanner).idle_complete(host, surface_id, received_at);
     }
 
     // 게이트 판정은 별도 경로지만 세션 종료 시 모든 게이트의 회차 상태를 정리한다.
@@ -676,6 +686,12 @@ fn stop_failure_with_background_work<H: HostCallSink>(
 /// 새 턴과 세션 종료 뒤에는 이전 대기가 이어지지 않는다.
 fn ends_background_wait(event: &str) -> bool {
     is_new_turn_event(event) || matches!(event, "stop" | "stop-failure" | "session-end")
+}
+
+/// idle 체크를 끝내는 확정 이벤트. 턴을 끝내지 않는 Stop·StopFailure 는 이 이벤트로 오기 전에 돌아간다.
+/// `subagent-stop` 은 메인 턴의 끝이 아니다.
+fn ends_idle_checks(event: &str) -> bool {
+    matches!(event, "stop" | "stop-failure" | "session-end")
 }
 
 /// agent_id가 있는 stop-failure는 서브에이전트 오류로 처리한다.
@@ -4487,5 +4503,103 @@ mod tests {
             "restore={:?}",
             h.meta.borrow().get(RESTORE_COMMAND_META_KEY)
         );
+    }
+
+    /// idle 체크의 완료 확정 경로. 체크는 HookRig 대상(7)에 부모 3 이 건다.
+    mod idle_checks {
+        use super::*;
+
+        fn with_check(rig: &HookRig) -> u64 {
+            crate::error_scan::lock_scanner(&rig.scanner)
+                .idle_register(
+                    &rig.host,
+                    HookRig::SURFACE,
+                    3,
+                    crate::error_scan::idle::Origin::Manual,
+                    std::time::Instant::now(),
+                )
+                .id
+        }
+
+        fn checks(rig: &HookRig) -> Vec<(u32, u64)> {
+            crate::error_scan::lock_scanner(&rig.scanner)
+                .idle
+                .of_target(HookRig::SURFACE)
+        }
+
+        fn hook(event: &str) -> Value {
+            json!({ "event": event, "surface": HookRig::SURFACE, "session": "sess-1" })
+        }
+
+        /// 턴을 끝내는 Stop·StopFailure 와 세션 종료는 체크를 끝낸다.
+        #[test]
+        fn a_finishing_stop_stop_failure_or_session_end_ends_the_check() {
+            for event in ["stop", "stop-failure", "session-end"] {
+                let mut rig = HookRig::new();
+                with_check(&rig);
+                rig.run(hook(event));
+                assert!(checks(&rig).is_empty(), "{event}");
+            }
+        }
+
+        /// 메인 턴을 끝내지 않는 훅은 체크를 끝내지 않는다: 서브에이전트 종료, 서브에이전트의 StopFailure,
+        /// 백그라운드 작업을 기다리는 Stop, 새 턴과 도구 사용.
+        #[test]
+        fn hooks_that_do_not_end_the_main_turn_keep_the_check() {
+            let cases = [
+                hook("subagent-stop"),
+                json!({ "event": "stop-failure", "surface": HookRig::SURFACE, "agent_id": "a1", "error": "overloaded" }),
+                json!({ "event": "stop", "surface": HookRig::SURFACE, "background_tasks": running_subagent() }),
+                hook("prompt-submit"),
+                hook("post-tool-use"),
+                hook("notification"),
+            ];
+            for params in cases {
+                let mut rig = HookRig::new();
+                let id = with_check(&rig);
+                rig.run(params.clone());
+                assert_eq!(checks(&rig), vec![(3, id)], "{params}");
+            }
+        }
+
+        /// 게이트가 붙은 Stop 은 판정 전에 체크를 끝내지 않는다. 게이트가 block 하면 계속 남고, 모두 pass 해
+        /// 보류한 idle 처리(run_idle_stop)가 확정되면 일반 Stop 과 같이 끝낸다.
+        #[test]
+        fn a_gated_stop_ends_the_check_only_when_the_gates_let_the_turn_end() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut rig = HookRig::with_gates(dir.path(), 1);
+            let id = with_check(&rig);
+            rig.run(gated_stop("p1"));
+            assert_eq!(checks(&rig), vec![(3, id)], "판정 전");
+            rig.gate(json!({ "decision": "block" }), "p1");
+            assert_eq!(checks(&rig), vec![(3, id)], "block 은 완료가 아니다");
+            rig.run(gated_stop("p1"));
+            rig.gate(json!({}), "p1");
+            assert!(checks(&rig).is_empty(), "pass 로 확정된 Stop 은 끝낸다");
+        }
+
+        /// 판정이 오지 않아 시간 초과로 확정된 Stop 도 체크를 끝낸다.
+        #[test]
+        fn a_gated_stop_settled_by_the_timeout_ends_the_check() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut rig = HookRig::with_gates(dir.path(), 1);
+            with_check(&rig);
+            rig.run(gated_stop("p1"));
+            rig.tail().finish_expired(rig.take_expired());
+            assert!(checks(&rig).is_empty());
+        }
+
+        /// Stop 을 받은 뒤 다시 등록한 체크는 그 Stop 이 늦게 확정돼도 남는다(앞 체크의 늦은 완료).
+        #[test]
+        fn a_late_confirmation_of_an_earlier_stop_keeps_a_newer_check() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut rig = HookRig::with_gates(dir.path(), 1);
+            with_check(&rig);
+            rig.run(gated_stop("p1"));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let newer = with_check(&rig);
+            rig.gate(json!({}), "p1");
+            assert_eq!(checks(&rig), vec![(3, newer)]);
+        }
     }
 }

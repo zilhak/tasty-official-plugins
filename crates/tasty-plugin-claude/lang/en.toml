@@ -3,7 +3,7 @@ desc = "Claude Code CLI integration (launch, spawn, kill, etc.)"
 
 [claude]
 "settings.spawn_child_warn_threshold" = "Child count warning threshold"
-"settings.no_output_notice_secs" = "Seconds without child output before notifying the parent"
+"settings.no_output_notice_secs" = "Seconds without output, while the child is still active or waiting on background work, before notifying the parent"
 "settings.continue_checklist_round_limit" = "Default gate round limit (used when a gate sets none)"
 "settings.default_permission_mode" = "Default permission mode for child sessions"
 "settings.auto_resume_enabled" = "Resume automatically after a temporary API error (server overload)"
@@ -71,6 +71,7 @@ remote_result_message = "surface {0}: turn result {1} ({2}) is stored. Read it w
 stop_failure_hint = " — the turn ended on an API error ({}) and is waiting for input"
 stalled_message = "surface {}: no output since an error — the child looks stuck (still active, no completion signal)"
 stalled_no_error_message = "surface {}: no output for a long stretch and no completion signal — the child looks stuck (it may be waiting at a prompt whose hook never arrived)"
+idle_check_message = "surface {0}: idle check — no active state for {1}s and no finished-turn signal (state now: {2}). The check has ended; look into the child, and if it should keep working, register a new check with: tasty claude idle-check --surface {0}"
 stalled_background_wait_message = "surface {}: waiting on background work ({}) for {} min, with no output meanwhile"
 stalled_background_task_quiet_message = "surface {}: background work {} has written no output for {} min"
 stalled_hint = " Last error: {}"
@@ -193,7 +194,7 @@ claude = "Claude Code"
 description = "Launch Claude Code in a new workspace"
 
 [claude.cli.sub.spawn]
-description = "Spawn a child Claude instance into a workspace. Returns immediately; the caller surface gets one line when the child finishes the turn it started, one line each time it waits for input (worded apart from a finished turn), and one line when it exits. Turns the child opens on its own after that and state changes that start no work write nothing."
+description = "Spawn a child Claude instance into a workspace. Returns immediately; the caller surface gets one line when the child finishes the turn it started, one line each time it waits for input (worded apart from a finished turn), and one line when it exits. Turns the child opens on its own after that and state changes that start no work write nothing. With --prompt it also registers an idle check (see 'claude idle-check')."
 
 [claude.cli.sub.children]
 description = "List children of the specified Claude parent"
@@ -205,7 +206,7 @@ description = "Show the parent of the specified Claude child"
 description = "Query a single child's status: idle, needs_input, active, or exited (live-surface cross-checked)"
 
 [claude.cli.sub.tell]
-description = "Send a message to a Claude instance (multi-line, submits at end). Returns immediately; the caller surface gets one line when the target finishes the turn this message started, one line each time it waits for input (worded apart from a finished turn), and one line when it exits. Turns the target opens on its own after that and state changes that start no work write nothing. A tell to a target that is running or waiting for input may write a second finished-turn line, so a message handled in the next turn is not missed."
+description = "Send a message to a Claude instance (multi-line, submits at end). Returns immediately; the caller surface gets one line when the target finishes the turn this message started, one line each time it waits for input (worded apart from a finished turn), and one line when it exits. Turns the target opens on its own after that and state changes that start no work write nothing. A tell to a target that is running or waiting for input may write a second finished-turn line, so a message handled in the next turn is not missed. It also registers an idle check: if the target is not seen active for 120 seconds without finishing the turn, one more line says so (see 'claude idle-check')."
 
 [claude.cli.sub.broadcast]
 description = "Broadcast text to all children of a parent Claude instance"
@@ -220,7 +221,7 @@ description = "List turn results of Codex-parented children that could not be ha
 description = "List turn results of remote attach children that came back for a surface parent (a Claude session or shell), or show one with its body. Each result is stored before its id is written to the parent's completion log, and stays after the child closes."
 
 [claude.cli.sub.respawn]
-description = "Respawn a child Claude instance"
+description = "Respawn a child Claude instance. Idle checks of the old session end; with --prompt a new one is registered for the parent (see 'claude idle-check')."
 
 [claude.cli.sub.reboot]
 description = "Restart the Claude instance in a surface and resume the same session (delayed kill + claude -r). Call this as the LAST action of a turn — anything after the delay is cut off."
@@ -608,3 +609,18 @@ help = "Model for this child session only (alias, full ID or provider identifier
 
 [claude.cli.arg.spawn_args.effort]
 help = "Effort for this child session only: low|medium|high|xhigh|max|ultracode. Overrides profile effort without editing it; retained on same-session restore. Availability depends on Claude CLI and model."
+
+[claude.idle_check]
+state_failed = "could not read the state of surface {0}: {1}"
+not_running = "surface {} has no running terminal (state exited or unknown)"
+not_claude = "surface {} is not a Claude surface (no Claude session, scan record or remote child link)"
+self_target = "surface {} cannot register an idle check on itself; give the child with --surface"
+
+[claude.cli.sub.idle-check]
+description = "Register an idle check on a child Claude without sending it anything. From then on every active state seen restarts a 120-second timer; if the child reports no finished turn and is not seen active for 120 seconds, the caller surface gets one warning line and the check ends. A finished turn (a Stop or StopFailure that ends the turn, including one a gate lets end, or the session ending) ends the check without a line; a Stop that waits for background work or that a gate blocks, and a subagent ending, do not. Registering again for the same caller and child replaces the check with a fresh 120 seconds. tell, and spawn/respawn with --prompt, register one too."
+
+[claude.cli.arg.idle_check_args.surface]
+help = "Child Claude surface to watch (required)"
+
+[claude.cli.arg.idle_check_args.caller_surface]
+help = "Surface whose notification log gets the idle line (defaults to caller's TASTY_SURFACE_ID)"

@@ -12,6 +12,7 @@ mod error_scan;
 mod gate;
 mod handlers;
 mod hook;
+mod idle_check;
 mod install;
 mod monitor_tasks;
 mod notice;
@@ -230,16 +231,33 @@ impl Plugin for ClaudePlugin {
             "claude.broadcast" => {
                 handle_broadcast(&self.returns, &ctx.host, &ctx.params, &self.translator)
             }
-            "claude.tell" => handle_tell(
+            "claude.tell" => idle_check::handle_tell_with_idle_check(
+                &self.scanner,
                 &self.returns,
                 &self.pairing,
                 &ctx.host,
                 &ctx.params,
                 &self.translator,
             ),
+            "claude.idle_check" => idle_check::handle_idle_check(
+                &self.scanner,
+                &ctx.host,
+                &ctx.params,
+                &self.translator,
+            ),
             // attach 서버에서 온 원격 자식의 턴 결과. 이 처리 안에서 claude namespace 를 다시 부르지 않는다.
             "claude.remote_receive" => {
-                remote::receive(&self.returns, &ctx.host, &ctx.params, &self.translator)
+                let received_at = std::time::Instant::now();
+                let response =
+                    remote::receive(&self.returns, &ctx.host, &ctx.params, &self.translator)?;
+                idle_check::after_remote_receive(
+                    &self.scanner,
+                    &ctx.host,
+                    &ctx.params,
+                    &response,
+                    received_at,
+                );
+                Ok(response)
             }
             "claude.codex_returns" => {
                 codex_return::handle_returns(&self.returns, &ctx.params, &self.translator)
@@ -389,10 +407,14 @@ impl Plugin for ClaudePlugin {
         let resume = self.resume.clone();
         let resume_host = host.clone();
         let resume_texts = self.resume_texts.clone();
+        let idle_template = self
+            .translator
+            .t("claude.notify.idle_check_message")
+            .to_string();
         // 스레드 생성 실패 시 이 플러그인 프로세스를 패닉으로 종료한다.
         std::thread::Builder::new()
             .name("claude-error-scan".into())
-            .spawn(move || error_scan_loop(scanner, host))
+            .spawn(move || error_scan_loop(scanner, host, idle_template))
             .expect("spawn claude-error-scan thread");
         // terminal.tell 응답을 기다리는 동안 오류 감시가 멈추지 않도록 스레드를 나눈다.
         std::thread::Builder::new()
@@ -426,12 +448,21 @@ fn stop_pairing_loop(
     }
 }
 
-fn error_scan_loop(scanner: Arc<Mutex<ErrorScanner>>, host: HostHandle) {
+fn error_scan_loop(scanner: Arc<Mutex<ErrorScanner>>, host: HostHandle, idle_template: String) {
     // 재시작 전부터 있던 Claude 터미널을 다시 감시한다.
     let restored = retrack::retrack(&host, &scanner);
     tracing::info!("claude retrack: {restored} surface(s) watched again after start");
+    let restored = idle_check::restore_all(&scanner, &host);
+    tracing::info!("claude idle check: {restored} check(s) restored after start");
     loop {
         std::thread::sleep(ERROR_SCAN_INTERVAL);
+        // 부모가 건 idle 체크. 오류 감시 대상이 아닌 surface(원격 mirror 등)도 여기서 본다.
+        crate::error_scan::idle::run_idle_checks(
+            &scanner,
+            &host,
+            &idle_template,
+            std::time::Instant::now(),
+        );
         // 대상 목록을 복사한 뒤 잠금을 풀고, 개별 스캔 때 다시 잠근다.
         // poison은 lock_scanner가 한 번 보고하고 내부 상태를 계속 사용한다.
         let surfaces = crate::error_scan::lock_scanner(&scanner).enabled_snapshot();

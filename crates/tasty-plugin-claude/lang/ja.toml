@@ -3,7 +3,7 @@ desc = "Claude Code CLI連携（launch、spawn、killなど）"
 
 [claude]
 "settings.spawn_child_warn_threshold" = "子の数の警告しきい値"
-"settings.no_output_notice_secs" = "子の出力がないとき親に通知するまでの待ち時間（秒）"
+"settings.no_output_notice_secs" = "子が active またはバックグラウンド作業待ちなのに出力がないとき、親に通知するまでの待ち時間（秒）"
 "settings.continue_checklist_round_limit" = "ゲートの既定ラウンド上限（ゲートが独自の値を指定しない場合）"
 "settings.default_permission_mode" = "子セッションの既定パーミッションモード"
 "settings.auto_resume_enabled" = "一時的な API エラー（サーバー過負荷）の後に自動で再開する"
@@ -70,6 +70,7 @@ remote_result_message = "surface {0}: ターン結果 {1} ({2}) を保存しま�
 stop_failure_hint = " — API エラー（{}）でターンが終了し、入力待ちです"
 stalled_message = "surface {}: エラー以降 出力が止まっています — 子が停止した可能性があります (まだ active、完了シグナルなし)"
 stalled_no_error_message = "surface {}: 長時間 出力も完了シグナルもありません — 子が停止している可能性があります (フックが届かないプロンプトで待機中かもしれません)"
+idle_check_message = "surface {0}: idle チェック — {1}秒間 active 状態がなく、ターン終了のシグナルもありません（現在の状態: {2}）。チェックは終了しました。子を確認し、作業を続けるべきなら次のコマンドで新しいチェックを登録してください: tasty claude idle-check --surface {0}"
 stalled_background_wait_message = "surface {}: バックグラウンド作業（{}）の終了を {} 分間待っています。その間の出力はありません。"
 stalled_background_task_quiet_message = "surface {}: バックグラウンド作業 {} の出力が {} 分間ありません。"
 stalled_hint = " 直近のエラー: {}"
@@ -181,7 +182,7 @@ claude = "Claude Code"
 description = "新しいワークスペースでClaude Codeを起動"
 
 [claude.cli.sub.spawn]
-description = "ワークスペースに子Claudeを作成。即時に戻ります。子が始めたターンを終えると1行、入力待ちのたびに1行（ターン終了と別の文言）、終了すると1行を呼び出し元サーフェスに残します。その後子が自ら開いたターンと、作業を始めない状態変化は行を残しません。"
+description = "ワークスペースに子Claudeを作成。即時に戻ります。子が始めたターンを終えると1行、入力待ちのたびに1行（ターン終了と別の文言）、終了すると1行を呼び出し元サーフェスに残します。その後子が自ら開いたターンと、作業を始めない状態変化は行を残しません。 --prompt を指定すると idle チェックも登録します（'claude idle-check' を参照）。"
 
 [claude.cli.sub.children]
 description = "指定したClaude親の子を一覧表示"
@@ -193,7 +194,7 @@ description = "指定したClaude子の親を表示"
 description = "子一つの状態を照会：idle、needs_input、active、exited（実際のサーフェスと照合）"
 
 [claude.cli.sub.tell]
-description = "Claudeインスタンスに複数行メッセージを送信（末尾で確定）。即時に戻ります。このメッセージで始まったターンが終わると1行、入力待ちのたびに1行（ターン終了と別の文言）、終了すると1行を呼び出し元サーフェスに残します。その後対象が自ら開いたターンと、作業を始めない状態変化は行を残しません。進行中または入力待ちの対象に送った tell は、メッセージが次のターンで処理される場合を見逃さないよう、ターン終了行が2回出ることがあります。"
+description = "Claudeインスタンスに複数行メッセージを送信（末尾で確定）。即時に戻ります。このメッセージで始まったターンが終わると1行、入力待ちのたびに1行（ターン終了と別の文言）、終了すると1行を呼び出し元サーフェスに残します。その後対象が自ら開いたターンと、作業を始めない状態変化は行を残しません。進行中または入力待ちの対象に送った tell は、メッセージが次のターンで処理される場合を見逃さないよう、ターン終了行が2回出ることがあります。 idle チェックも登録します。対象がターンを終えずに120秒間 active に見えなければ、もう1行残します（'claude idle-check' を参照）。"
 
 [claude.cli.sub.broadcast]
 description = "親Claudeインスタンスの全ての子へテキストを一斉送信"
@@ -208,7 +209,7 @@ description = "Codex を親に持つ子のターン結果のうち、まだ Code
 description = "surface 親（Claude セッションやシェル）に戻ってきたリモート attach 子のターン結果を一覧表示するか、1件を本文とともに表示します。結果は親の完了ログに ID を書く前に保存され、子が閉じた後も残ります。"
 
 [claude.cli.sub.respawn]
-description = "子Claudeインスタンスを再生成"
+description = "子Claudeインスタンスを再生成。前のセッションの idle チェックは終了し、--prompt を指定すると親に新しいチェックを登録します（'claude idle-check' を参照）。"
 
 [claude.cli.sub.reboot]
 description = "サーフェスのClaudeを再起動し同じセッションを再開（遅延終了 + claude -r）。ターンの最後の操作として呼び出してください。遅延後の処理は中断されます。"
@@ -578,3 +579,18 @@ help = "この子セッションのモデル（エイリアス、完全なID、�
 
 [claude.cli.arg.spawn_args.effort]
 help = "この子セッションのeffort: low|medium|high|xhigh|max|ultracode。プロファイルを変更せずeffort設定より優先し、同じセッションの復元でも保持します。対応状況はClaude CLIとモデルによって異なります。"
+
+[claude.idle_check]
+state_failed = "サーフェス {0} の状態を読み取れませんでした: {1}"
+not_running = "サーフェス {} に実行中のターミナルがありません（状態が exited または不明）"
+not_claude = "サーフェス {} は Claude サーフェスではありません（Claude セッション、監視記録、リモート子の連携がありません）"
+self_target = "サーフェス {} は自分自身に idle チェックを登録できません。--surface で子を指定してください"
+
+[claude.cli.sub.idle-check]
+description = "子Claudeに何も送らずに idle チェックだけを登録。登録後、active 状態を見るたびに120秒のタイマーを数え直します。子がターン終了を報告せず120秒間 active に見えなければ、呼び出し元サーフェスに警告を1行残してチェックを終えます。ターン終了（ゲートが終了を許可した場合を含めターンを終える Stop・StopFailure、セッション終了）は行を残さずにチェックを終えます。バックグラウンド作業を待つ Stop、ゲートがブロックした Stop、サブエージェントの終了ではチェックを終えません。同じ呼び出し元・子で再登録すると新しい120秒のチェックに置き換わります。tell と --prompt 付きの spawn/respawn もチェックを登録します。"
+
+[claude.cli.arg.idle_check_args.surface]
+help = "監視する子Claudeサーフェス（必須）"
+
+[claude.cli.arg.idle_check_args.caller_surface]
+help = "idle 行を受け取る通知ログのサーフェス（既定値：呼び出し元のTASTY_SURFACE_ID）"

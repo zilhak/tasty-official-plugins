@@ -794,6 +794,7 @@ pub(crate) fn handle_respawn(
         .map(String::from);
     let profile_file = resolve_profile_file_param(data_dir, params, tr)?;
     let permission_mode = resolve_permission_mode(host, params, profile_file.as_deref(), tr)?;
+    let registered_at = std::time::Instant::now();
 
     // 호스트가 cwd에 따른 PTY 교체와 자식 메타데이터·idle 상태를 처리한다.
     let mut rp = forward(params, &["cwd", "role", "nickname"]);
@@ -819,7 +820,21 @@ pub(crate) fn handle_respawn(
 
     // 재실행 뒤 같은 오류도 알릴 수 있도록 중복 기록을 지운다.
     crate::retrack::enable_and_record(host, scanner, child_surface_id, ScanTarget::Child);
-    crate::error_scan::lock_scanner(scanner).reset_dedupe(child_surface_id);
+    {
+        let mut scanner = crate::error_scan::lock_scanner(scanner);
+        scanner.reset_dedupe(child_surface_id);
+        // 앞 세션에 걸린 idle 체크는 새 세션의 것이 아니다.
+        scanner.idle_drop(host, child_surface_id);
+    }
+    crate::idle_check::register_for_child(
+        scanner,
+        host,
+        &target,
+        child_surface_id,
+        prompt.is_some(),
+        crate::error_scan::idle::Origin::Respawn,
+        registered_at,
+    );
 
     let mut out = serde_json::Map::new();
     out.insert("child_surface_id".into(), json!(child_surface_id));
@@ -1040,8 +1055,27 @@ pub(crate) fn handle_spawn<H: HostCall>(
     }
     let options = crate::session_options::SessionOptions::parse(params, tr)?;
     let target = require_parent(host, returns, params, tr)?;
+    let registered_at = std::time::Instant::now();
+    let with_prompt = params.get("prompt").and_then(|v| v.as_str()).is_some();
     if let Some(anchor) = crate::remote::spawn_anchor(host, params, tr)? {
-        return crate::remote::spawn(returns, host, params, &target, anchor, tr);
+        let out = crate::remote::spawn(returns, host, params, &target, anchor, tr)?;
+        // 결과불명으로 늦게 묶이는 자식(late_spawn)에는 체크를 걸지 않는다. 응답에 자식이 있을 때만 건다.
+        if let Some(child) = out
+            .get("child_surface_id")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok())
+        {
+            crate::idle_check::register_for_child(
+                scanner,
+                host,
+                &target,
+                child,
+                with_prompt,
+                crate::error_scan::idle::Origin::Spawn,
+                registered_at,
+            );
+        }
+        return Ok(out);
     }
     let prompt = params
         .get("prompt")
@@ -1100,6 +1134,15 @@ pub(crate) fn handle_spawn<H: HostCall>(
             Some(Threshold::once(done_from)),
         );
     }
+    crate::idle_check::register_for_child(
+        scanner,
+        host,
+        &target,
+        child_surface_id,
+        with_prompt,
+        crate::error_scan::idle::Origin::Spawn,
+        registered_at,
+    );
 
     Ok(out)
 }
