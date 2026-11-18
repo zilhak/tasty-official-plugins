@@ -238,7 +238,12 @@ impl Dispatch for ThreadDispatch {
 #[cfg(test)]
 pub(crate) mod fake {
     //! 시험용 app-server. 정해진 응답 규칙으로 요청에 답하고 받은 요청을 기록한다.
+    //! 시험이 실패했을 때 원인을 가를 수 있도록 accept 결과와 연결마다의 종료 사유를
+    //! 사건 기록에 남긴다. accept 오류가 나도 리스너는 끝내지 않는다.
+    use std::io::{self, Read, Write};
+    use std::net::TcpStream;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use serde_json::{Value, json};
 
@@ -260,59 +265,200 @@ pub(crate) mod fake {
         pub queued: Vec<String>,
     }
 
+    /// 서버가 겪은 사건. 연결 순번은 accept된 순서로 1부터 센다.
+    #[derive(Default)]
+    pub(crate) struct Events {
+        lines: Vec<String>,
+        accepted: usize,
+        ended: usize,
+    }
+
+    impl Events {
+        fn push(&mut self, line: String) {
+            self.lines.push(line);
+        }
+    }
+
     pub(crate) struct Server {
         pub port: u16,
         pub seen: Arc<Mutex<Vec<Value>>>,
+        pub events: Arc<Mutex<Events>>,
+    }
+
+    fn describe(e: &io::Error) -> String {
+        format!("kind={:?} os={:?} {e}", e.kind(), e.raw_os_error())
+    }
+
+    /// 마지막 읽기·쓰기 오류와 EOF를 기억하는 래퍼. test_server 함수는 오류를 버리므로
+    /// 종료 사유는 여기서 읽는다.
+    struct Tap<'a> {
+        s: &'a mut TcpStream,
+        err: Option<String>,
+        eof: bool,
+    }
+
+    impl Read for Tap<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.s.read(buf) {
+                Ok(0) if !buf.is_empty() => {
+                    self.eof = true;
+                    Ok(0)
+                }
+                Err(e) => {
+                    self.err = Some(describe(&e));
+                    Err(e)
+                }
+                ok => ok,
+            }
+        }
+    }
+
+    impl Write for Tap<'_> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.s
+                .write(buf)
+                .inspect_err(|e| self.err = Some(describe(e)))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.s.flush()
+        }
+    }
+
+    impl Tap<'_> {
+        fn reason(&mut self, what: &str) -> String {
+            match (self.err.take(), self.eof) {
+                (Some(e), _) => format!("{what} error: {e}"),
+                (None, true) => format!("{what}: peer closed (eof)"),
+                (None, false) => format!("{what}: failed without io error"),
+            }
+        }
+    }
+
+    enum Next {
+        Text(String),
+        End(String),
+    }
+
+    /// 텍스트 프레임 하나를 읽는다. pong은 건너뛴다. 읽지 못하면 종료 사유를 돌려준다.
+    fn next_text(tap: &mut Tap<'_>) -> Next {
+        loop {
+            let Some((opcode, data)) = test_server::read_frame(tap) else {
+                return Next::End(tap.reason("read"));
+            };
+            match opcode {
+                0xA => continue,
+                0x8 => return Next::End("close frame".into()),
+                _ => {
+                    return match String::from_utf8(data) {
+                        Ok(text) => Next::Text(text),
+                        Err(e) => Next::End(format!("non-utf8 text: {e}")),
+                    };
+                }
+            }
+        }
+    }
+
+    fn send(tap: &mut Tap<'_>, value: &Value) -> Result<(), String> {
+        let mut frame = Vec::new();
+        test_server::write_text(&mut frame, &value.to_string());
+        tap.write_all(&frame).map_err(|_| tap.reason("write"))
+    }
+
+    /// 연결 하나를 처리하고 종료 사유를 돌려준다.
+    fn serve(
+        s: &mut TcpStream,
+        rules: &Rules,
+        log: &Mutex<Vec<Value>>,
+        note: &dyn Fn(String),
+    ) -> String {
+        let mut tap = Tap {
+            s,
+            err: None,
+            eof: false,
+        };
+        let shook = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            test_server::accept_handshake(&mut tap)
+        }));
+        if shook.is_err() {
+            return tap.reason("handshake");
+        }
+        note("handshake ok".into());
+        loop {
+            let text = match next_text(&mut tap) {
+                Next::Text(text) => text,
+                Next::End(reason) => return reason,
+            };
+            let req: Value = serde_json::from_str(&text).unwrap();
+            log.lock().unwrap().push(req.clone());
+            let method = req["method"].as_str().unwrap_or_default().to_string();
+            note(format!("recv {method}"));
+            let Some(id) = req.get("id").cloned() else {
+                continue;
+            };
+            let reply = match method.as_str() {
+                "thread/loaded/list" => {
+                    json!({"id": id, "result": {"data": rules.loaded, "nextCursor": null}})
+                }
+                "thread/queue/list" => json!({"id": id, "result": {"data": rules.queued.iter()
+                    .map(|c| json!({"id":"q","clientUserMessageId":c})).collect::<Vec<_>>()}}),
+                "thread/queue/add" => match rules.queue_add {
+                    QueueAdd::Accept => {
+                        json!({"id": id, "result": {"queuedSubmission": {"id": "sub-1"}}})
+                    }
+                    QueueAdd::Reject => json!({"id": id,
+                        "error": {"code": -32600, "message": "thread not found"}}),
+                    QueueAdd::Drop => return "dropped after thread/queue/add (intended)".into(),
+                },
+                _ => json!({"id": id, "result": {}}),
+            };
+            if let Err(reason) = send(&mut tap, &reply) {
+                return reason;
+            }
+            note(format!("sent reply to {method}"));
+        }
     }
 
     pub(crate) fn start(rules: Rules) -> Server {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::new(Mutex::new(Events::default()));
         let log = seen.clone();
+        let ev = events.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
-                let Ok(mut s) = stream else { return };
+                let mut s = match stream {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // 오류 하나로 리스너를 끝내지 않는다. 기록하고 다음 연결을 받는다.
+                        ev.lock()
+                            .unwrap()
+                            .push(format!("accept error: {}", describe(&e)));
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                };
+                let conn = {
+                    let mut ev = ev.lock().unwrap();
+                    ev.accepted += 1;
+                    let conn = ev.accepted;
+                    ev.push(format!("conn {conn}: accepted"));
+                    conn
+                };
                 let rules = rules.clone();
                 let log = log.clone();
+                let ev = ev.clone();
                 std::thread::spawn(move || {
-                    test_server::accept_handshake(&mut s);
-                    while let Some(text) = test_server::read_text(&mut s) {
-                        let req: Value = serde_json::from_str(&text).unwrap();
-                        log.lock().unwrap().push(req.clone());
-                        let Some(id) = req.get("id").cloned() else {
-                            continue;
-                        };
-                        let result = match req["method"].as_str().unwrap_or_default() {
-                            "thread/loaded/list" => {
-                                json!({"data": rules.loaded, "nextCursor": null})
-                            }
-                            "thread/queue/list" => json!({"data": rules.queued.iter()
-                                .map(|c| json!({"id":"q","clientUserMessageId":c})).collect::<Vec<_>>()}),
-                            "thread/queue/add" => match rules.queue_add {
-                                QueueAdd::Accept => json!({"queuedSubmission": {"id": "sub-1"}}),
-                                QueueAdd::Reject => {
-                                    test_server::write_text(
-                                        &mut s,
-                                        &json!({"id": id,
-                                        "error": {"code": -32600, "message": "thread not found"}})
-                                        .to_string(),
-                                    );
-                                    continue;
-                                }
-                                QueueAdd::Drop => return,
-                            },
-                            _ => json!({}),
-                        };
-                        test_server::write_text(
-                            &mut s,
-                            &json!({"id": id, "result": result}).to_string(),
-                        );
-                    }
+                    let note =
+                        |line: String| ev.lock().unwrap().push(format!("conn {conn}: {line}"));
+                    let reason = serve(&mut s, &rules, &log, &note);
+                    let mut ev = ev.lock().unwrap();
+                    ev.push(format!("conn {conn}: end: {reason}"));
+                    ev.ended += 1;
                 });
             }
         });
-        Server { port, seen }
+        Server { port, seen, events }
     }
 
     impl Server {
@@ -323,6 +469,29 @@ pub(crate) mod fake {
                 .iter()
                 .filter_map(|v| v["method"].as_str().map(str::to_string))
                 .collect()
+        }
+
+        /// 실패 메시지용 사건 기록과 받은 메서드 목록. 연결 스레드가 종료 사유를 남길
+        /// 때까지 잠깐 기다린다. 판정에는 쓰지 않는다.
+        pub(crate) fn report(&self) -> String {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let ev = self.events.lock().unwrap();
+                if ev.ended >= ev.accepted || Instant::now() >= deadline {
+                    let mut out = format!(
+                        "server events (accepted {}, ended {}):",
+                        ev.accepted, ev.ended
+                    );
+                    for line in &ev.lines {
+                        out.push_str("\n  ");
+                        out.push_str(line);
+                    }
+                    out.push_str(&format!("\nmethods: {:?}", self.methods()));
+                    return out;
+                }
+                drop(ev);
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
     }
 }
@@ -408,16 +577,23 @@ mod tests {
     #[test]
     fn a_lost_response_is_unknown_unless_the_queue_shows_it() {
         let server = start(rules(QueueAdd::Drop));
-        assert!(matches!(
-            run(&job(server.port, JobKind::Send, false)),
-            Outcome::Unknown { .. }
-        ));
+        let out = run(&job(server.port, JobKind::Send, false));
+        assert!(
+            matches!(out, Outcome::Unknown { .. }),
+            "out: {out:?}\n{}",
+            server.report()
+        );
         let adds = server
             .methods()
             .iter()
             .filter(|m| *m == "thread/queue/add")
             .count();
-        assert_eq!(adds, 1, "응답을 잃은 요청을 다시 보내지 않는다");
+        assert_eq!(
+            adds,
+            1,
+            "응답을 잃은 요청을 다시 보내지 않는다\n{}",
+            server.report()
+        );
 
         let mut r = rules(QueueAdd::Drop);
         r.queued = vec!["tasty-0123456789abcdef0123456789abcdef".into()];
@@ -427,7 +603,9 @@ mod tests {
             Outcome::Accepted {
                 submission_id: None,
                 confirmed_by: "queue_list".into()
-            }
+            },
+            "{}",
+            server.report()
         );
     }
 
