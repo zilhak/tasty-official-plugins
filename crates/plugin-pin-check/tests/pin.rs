@@ -284,6 +284,17 @@ fn plugin_manifest_versions_match_crate_versions() {
             // Library crates such as tasty-plugin-agent-common have no manifest.
             continue;
         }
+        // tasty's manifest parser drops unknown fields, so a leftover permissions
+        // block would still load. Check the raw TOML instead.
+        let raw: toml::Table = toml::from_str(
+            &std::fs::read_to_string(dir.join("tasty-plugin.toml"))
+                .unwrap_or_else(|e| panic!("{plugin}: read tasty-plugin.toml: {e}")),
+        )
+        .unwrap_or_else(|e| panic!("{plugin}: parse tasty-plugin.toml: {e}"));
+        assert!(
+            !raw.contains_key("permissions"),
+            "{plugin}: tasty-plugin.toml must not declare top-level permissions"
+        );
         let manifest = Manifest::read(&dir).unwrap_or_else(|e| panic!("{plugin}: {e:#}"));
         manifest
             .validate()
