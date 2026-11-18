@@ -542,7 +542,7 @@ fn stop_that_does_not_end_the_turn<H: HostCallSink>(
         None => 0,
     };
 
-    if let Some(pending) = background_work_pending(params) {
+    if let Some((pending, monitors, items)) = background_wait(tail.host, surface_id, params) {
         // 메인 응답만 끝났고 백그라운드 작업이 남아 있다. 작업이 끝나면 Claude Code 가
         // 새 턴(UserPromptSubmit)을 열고 그 턴의 Stop 이 진짜 종료가 된다.
         // idle·완료 알림·화면 알림·wall_time 기록·자동 재개 성공 처리를 하지 않고,
@@ -550,15 +550,8 @@ fn stop_that_does_not_end_the_turn<H: HostCallSink>(
         tracing::info!(
             "claude hook stop s{surface_id}: waiting on background work ({pending}) — main turn continues, stays active"
         );
-        let monitors = crate::monitor_tasks::recorded(tail.host, surface_id);
         let watch = crate::task_watch::TaskWatch::from_stop(params, &monitors);
-        let kinds = crate::monitor_tasks::wait_kinds(
-            &params
-                .get("background_tasks")
-                .and_then(pending_background_tasks)
-                .unwrap_or_default(),
-            &monitors,
-        );
+        let kinds = crate::monitor_tasks::wait_kinds(&items, &monitors);
         let calls = background_wait_calls(tail, surface_id, now_ms, kinds, watch);
         // 게이트는 대기 Stop 도 판정한다. 그 판정이 다음 Stop 과 섞이지 않도록 이 Stop 과 짝짓는다.
         let host_call_failures = deliver_all(tail.host, &calls)
@@ -609,6 +602,34 @@ fn stop_that_does_not_end_the_turn<H: HostCallSink>(
     None
 }
 
+/// Stop 이 백그라운드 작업을 기다리면 그 요약, 기록한 Monitor, 끝나지 않은 `background_tasks` 항목을 돌려준다.
+/// 남은 항목이 모두 Monitor 면 `None` 이다. Monitor 만 남기고 턴을 끝낸 자식은 쉬는 것으로 보고 일반 턴 종료로
+/// 처리한다. `waiting_on_background_work` 가 참이어도 목록이 그렇게 보이면 목록을 따르고, 목록이 없으면 종류를 알 수
+/// 없으므로 대기다.
+fn background_wait<H: HostCallSink>(
+    host: &H,
+    surface_id: u32,
+    params: &Value,
+) -> Option<(String, crate::monitor_tasks::MonitorIds, Vec<Value>)> {
+    let pending = background_work_pending(params)?;
+    let monitors = crate::monitor_tasks::recorded(host, surface_id);
+    let items = params
+        .get("background_tasks")
+        .and_then(pending_background_tasks);
+    if let Some(items) = &items
+        && crate::monitor_tasks::only_monitors(
+            items.iter().map(crate::monitor_tasks::item_id_kind),
+            &monitors,
+        )
+    {
+        tracing::info!(
+            "claude hook stop s{surface_id}: only monitors left ({pending}) — the turn ends"
+        );
+        return None;
+    }
+    Some((pending, monitors, items.unwrap_or_default()))
+}
+
 /// 대기를 `active` 로 보고하고 정지 감시가 대기 기준과 문구를 쓰도록 기록하는 호출.
 /// 같은 대기에서 이어진 기록은 처음 시작 시각을 유지한다.
 fn background_wait_calls<H>(
@@ -637,7 +658,7 @@ fn background_wait_calls<H>(
 /// 대기 Stop 과 같이 `active` 로 보고하고 idle·완료 알림·자동 재개를 만들지 않는다.
 /// 오류는 meta 와 `claude-stop-failure` 로 남겨, 부모의 notify-stop-failure 훅이 한 줄로 알린다.
 /// 그 훅은 대기 meta 를 읽으므로 두 meta 를 이벤트보다 먼저 기록한다.
-/// 남은 작업이 없으면 `None` 이며 호출자가 턴 종료로 처리한다.
+/// 남은 작업이 없거나 모두 Monitor 면 `None` 이며 호출자가 턴 종료로 처리한다.
 fn stop_failure_with_background_work<H: HostCallSink>(
     tail: &StopTail<'_, H>,
     surface_id: u32,
@@ -655,6 +676,19 @@ fn stop_failure_with_background_work<H: HostCallSink>(
     if types.is_empty() {
         return None;
     }
+    let monitors = crate::monitor_tasks::recorded(tail.host, surface_id);
+    if crate::monitor_tasks::only_monitors(
+        ids.iter()
+            .zip(&types)
+            .map(|(id, kind)| (Some(id.as_str()), Some(kind.as_str()))),
+        &monitors,
+    ) {
+        // Stop 과 같은 기준이다. Monitor 만 남았으면 턴 종료로 처리한다.
+        tracing::info!(
+            "claude hook stop-failure s{surface_id}: API error {error:?} with only monitors left — the turn ends"
+        );
+        return None;
+    }
     tracing::info!(
         "claude hook stop-failure s{surface_id}: API error {error:?} while {} background task(s) ({}) still run — the session continues when they finish, stays active",
         types.len(),
@@ -668,8 +702,7 @@ fn stop_failure_with_background_work<H: HostCallSink>(
             .unwrap_or("unknown")
             .to_string(),
     }];
-    // 상태와 notify-stop-failure 문구는 Monitor 도 그대로 센다. 정지 알림의 대상에서만 뺀다.
-    let monitors = crate::monitor_tasks::recorded(tail.host, surface_id);
+    // 다른 작업이 섞인 대기의 상태와 notify-stop-failure 문구는 Monitor 도 그대로 센다. 정지 알림의 대상에서만 뺀다.
     let (noticed_ids, kinds) = crate::monitor_tasks::split_recorded(ids, types, &monitors);
     let watch = crate::task_watch::TaskWatch::from_ids(params, noticed_ids);
     calls.extend(background_wait_calls(
@@ -1405,6 +1438,8 @@ mod tests {
         launch_prompt: bool,
         /// Monitor 기록 meta. 플러그인 재시작에도 남는 값이라 실제처럼 저장한다.
         monitor_meta: std::cell::RefCell<Option<String>>,
+        /// 자동 재개 설정을 켠다.
+        auto_resume: bool,
     }
 
     impl HostCallSink for RecordingHost {
@@ -1449,6 +1484,12 @@ mod tests {
                         Some(id) => json!({ "value": id }),
                         None => json!({"value": null}),
                     }
+                }
+                _ if self.auto_resume
+                    && method == "settings.get_plugin_setting"
+                    && params["storage_key"] == crate::auto_resume::ENABLED_KEY =>
+                {
+                    json!({ "value": true })
                 }
                 _ if method == "surface.meta.get" => json!({"value": null}),
                 _ => json!({}),
@@ -2008,6 +2049,63 @@ mod tests {
             rig.codex_returns(),
             vec![returned("turn_ended", Some("all done"))]
         );
+    }
+
+    /// Monitor 만 남긴 Stop 은 턴 종료라 결과 하나를 만든다. 결과 경로는 턴마다 한 번이므로, Monitor 이벤트가 연
+    /// 턴이 다시 Monitor 만 남기고 끝나면 그 턴의 결과가 하나 더 나간다(부모 완료 줄의 1회 규칙과 별개다).
+    #[test]
+    fn a_monitor_only_stop_is_returned_once_per_turn() {
+        for attach in [false, true] {
+            let mut rig = HookRig::new();
+            rig.returns
+                .bind_new_child(
+                    HookRig::SURFACE,
+                    &crate::codex_return::Binding {
+                        receiver_id: "receiver-1".into(),
+                        parent_external: None,
+                        attach,
+                    },
+                    true,
+                )
+                .expect("route stored");
+            rig.run(
+                json!({ "event": "session-start", "surface": HookRig::SURFACE, "session": "sess-1" }),
+            );
+            start_monitor(&mut rig, "m1", None);
+            let stop = |answer: &str| {
+                json!({
+                    "event": "stop",
+                    "surface": HookRig::SURFACE,
+                    "session": "sess-1",
+                    "last_assistant_message": answer,
+                    "background_tasks": [shell_item("m1", "ticks")],
+                })
+            };
+            rig.run(stop("watching"));
+            rig.run(json!({
+                "event": "prompt-submit",
+                "surface": HookRig::SURFACE,
+                "session": "sess-1",
+                "prompt": "<task-notification>\n<task-id>m1</task-id>\n<event>tick</event>\n</task-notification>",
+            }));
+            rig.run(stop("tick handled"));
+            rig.returns
+                .pump_once(&rig.host, crate::codex_return::now_ms());
+            // 원격 mirror 자식(attach)은 같은 claim 을 거쳐 부모 쪽 알림으로 넘긴다. 보낸 요청의 본문으로 센다.
+            let bodies: Vec<String> = rig
+                .host
+                .seen
+                .borrow()
+                .iter()
+                .filter_map(|(_, p)| {
+                    let text = p.to_string();
+                    (text.contains("turn_ended") && text.contains("completion_key")).then_some(text)
+                })
+                .collect();
+            assert_eq!(bodies.len(), 2, "attach={attach}: {bodies:?}");
+            assert!(bodies[0].contains("watching"), "attach={attach}");
+            assert!(bodies[1].contains("tick handled"), "attach={attach}");
+        }
     }
 
     /// prompt_id 가 없어도 턴마다 한 번 보낸다. 같은 턴의 Stop 이 다시 와도 한 번이다.
@@ -2680,20 +2778,115 @@ mod tests {
         serde_json::from_str(set["value"].as_str().unwrap()).unwrap()
     }
 
-    /// Monitor 만 남은 Stop: 상태·대기 기록은 그대로이고 정지 알림 대상에서만 빠진다.
+    /// 턴 종료로 처리한 Stop 의 흔적(idle·`claude-idle`·완료 알림, 대기 없음).
+    fn assert_stop_ended_the_turn(rig: &HookRig, reply: &Value) {
+        assert!(reply.get("waiting").is_none(), "{reply}");
+        assert_eq!(rig.host.states().last().map(String::as_str), Some("idle"));
+        assert!(rig.host.fired().contains(&"claude-idle".to_string()));
+        assert!(
+            rig.host
+                .methods()
+                .contains(&"surface.completion".to_string())
+        );
+        assert!(!rig.is_waiting());
+    }
+
+    /// 대기 meta 를 한 번이라도 썼는가.
+    fn wrote_wait_meta(rig: &HookRig) -> bool {
+        rig.host
+            .seen
+            .borrow()
+            .iter()
+            .any(|(m, p)| m == "surface.meta.set" && p["key"] == BACKGROUND_WAIT_META_KEY)
+    }
+
+    /// Monitor 의 중간 이벤트가 연 턴(`<status>` 없음).
+    fn monitor_event(rig: &mut HookRig, id: &str) {
+        rig.run(json!({
+            "event": "prompt-submit",
+            "surface": HookRig::SURFACE,
+            "session": "s-monitor",
+            "prompt": format!("<task-notification>\n<task-id>{id}</task-id>\n<summary>Monitor event: \"ticks\"</summary>\n<event>tick</event>\n</task-notification>"),
+        }));
+    }
+
+    /// Monitor 만 남기고 끝낸 Stop 은 일반 턴 종료다. idle·완료 알림·wall_time·자동 재개 성공 처리를 하고 대기를
+    /// 기록하지 않는다. Monitor 기록은 다음 Stop 판정과 끝 알림을 위해 남는다.
     #[test]
-    fn a_stop_waiting_only_on_a_monitor_stays_active_without_a_notice_target() {
+    fn a_stop_with_only_a_monitor_left_ends_the_turn_and_goes_idle() {
         let mut rig = HookRig::new();
         start_monitor(&mut rig, "bym7ibssy", None);
         let reply = stop_with(&mut rig, json!([shell_item("bym7ibssy", "quiet monitor")]));
+        assert_stop_ended_the_turn(&rig, &reply);
+        assert_eq!(rig.host.states(), vec!["idle"]);
+        assert!(!wrote_wait_meta(&rig), "대기 meta 를 쓰지 않는다");
+        assert!(
+            rig.host.monitor_meta.borrow().is_some(),
+            "Monitor 기록 유지"
+        );
+        assert_eq!(
+            rig.host.turn_reports().last().map(|(e, _)| e.as_str()),
+            Some("turn_ended")
+        );
+        assert!(!rig.wall_time_open());
+        assert!(!rig.resume_attempts_kept());
+    }
+
+    /// Monitor 와 셸이 함께 남으면 지금처럼 대기다.
+    #[test]
+    fn a_monitor_next_to_a_shell_still_waits() {
+        let mut rig = HookRig::new();
+        start_monitor(&mut rig, "m1", None);
+        let reply = stop_with(
+            &mut rig,
+            json!([shell_item("m1", "monitor"), shell_item("b1", "bash")]),
+        );
         assert_eq!(reply["waiting"], "background_work");
         assert_eq!(rig.host.states(), vec!["active"]);
         assert!(!rig.host.fired().contains(&"claude-idle".to_string()));
         assert!(rig.is_waiting());
-        let meta = last_wait_meta(&rig);
-        assert_eq!(meta["types"], json!(["shell"]));
-        assert_eq!(meta["notice_types"], json!([]));
-        assert!(meta.get("watch").is_none(), "{meta}");
+    }
+
+    /// `waiting_on_background_work` 가 참이어도 목록이 있고 모두 Monitor 면 목록을 따른다. 목록이 없거나 비었으면
+    /// 종류를 알 수 없으므로 대기다.
+    #[test]
+    fn the_waiting_flag_waits_unless_a_list_shows_only_monitors() {
+        let monitor = json!([{ "id": "m1", "type": "monitor", "status": "running" }]);
+        let cases = [
+            (json!(true), None, true),
+            (json!("true"), None, true),
+            (json!(true), Some(json!([])), true),
+            (json!(true), Some(monitor.clone()), false),
+            (json!("true"), Some(monitor.clone()), false),
+            (
+                json!(true),
+                Some(
+                    json!([{ "id": "m1", "type": "monitor", "status": "running" }, { "id": "b1", "type": "shell", "status": "running" }]),
+                ),
+                true,
+            ),
+            (json!(false), Some(monitor), false),
+        ];
+        for (flag, list, waits) in cases {
+            let mut rig = HookRig::new();
+            let mut stop = json!({
+                "event": "stop",
+                "surface": HookRig::SURFACE,
+                "session": "s-monitor",
+                "waiting_on_background_work": flag,
+            });
+            if let Some(list) = &list {
+                stop["background_tasks"] = list.clone();
+            }
+            let reply = rig.run(stop);
+            let case = format!("flag={flag} list={list:?}");
+            if waits {
+                assert_eq!(reply["waiting"], "background_work", "{case}");
+                assert_eq!(rig.host.states(), vec!["active"], "{case}");
+            } else {
+                assert_stop_ended_the_turn(&rig, &reply);
+            }
+        }
     }
 
     /// Monitor 와 셸이 함께면 셸만으로 판정한다.
@@ -2717,44 +2910,45 @@ mod tests {
         assert_eq!(tasks[0]["label"], "probe silent bash");
     }
 
-    /// 기록이 없으면(옛 훅 설치) 셸로 본다. `type: monitor` 는 기록 없이도 Monitor 다.
+    /// 기록이 없으면(옛 훅 설치) 셸로 보고 대기한다. `type: monitor` 는 기록 없이도 Monitor 라 턴이 끝난다.
     #[test]
-    fn an_unrecorded_shell_is_noticed_and_a_monitor_type_is_not() {
+    fn an_unrecorded_shell_waits_and_a_monitor_type_ends_the_turn() {
         let mut rig = HookRig::new();
-        stop_with(&mut rig, json!([shell_item("bym7ibssy", "unknown")]));
+        let reply = stop_with(&mut rig, json!([shell_item("bym7ibssy", "unknown")]));
+        assert_eq!(reply["waiting"], "background_work");
         assert_eq!(last_wait_meta(&rig)["notice_types"], json!(["shell"]));
-        stop_with(
+        let reply = stop_with(
             &mut rig,
             json!([{ "id": "m1", "type": "monitor", "status": "running" }]),
         );
-        assert_eq!(last_wait_meta(&rig)["notice_types"], json!([]));
+        assert_stop_ended_the_turn(&rig, &reply);
+        assert_eq!(rig.host.states(), vec!["active", "idle"]);
     }
 
-    /// 플러그인이 다시 시작돼도 기록은 surface meta 에 남는다. 첫 Stop 전에 재시작해도 같다.
-    /// 중간 이벤트의 새 턴은 기록을 지우지 않고, `<status>` 가 있는 끝 알림만 지운다.
+    /// 플러그인이 다시 시작돼도 기록은 surface meta 에 남아 Monitor 만 남은 Stop 이 턴을 끝낸다. 첫 Stop 전에
+    /// 재시작해도 같다. 중간 이벤트의 새 턴은 기록을 지우지 않고(active 뒤 다시 idle), `<status>` 가 있는 끝 알림만
+    /// 지운다.
     #[test]
     fn the_monitor_record_survives_restarts_and_events_until_the_end_notice() {
         let mut rig = HookRig::new();
         start_monitor(&mut rig, "bkmcn04ns", None);
         rig.state = Mutex::new(ClaudeState::default());
         rig.scanner = Arc::new(Mutex::new(ErrorScanner::new()));
-        stop_with(&mut rig, json!([shell_item("bkmcn04ns", "ticks")]));
-        assert_eq!(last_wait_meta(&rig)["notice_types"], json!([]));
+        let reply = stop_with(&mut rig, json!([shell_item("bkmcn04ns", "ticks")]));
+        assert_stop_ended_the_turn(&rig, &reply);
 
-        rig.run(json!({
-            "event": "prompt-submit",
-            "surface": HookRig::SURFACE,
-            "prompt": "<task-notification>\n<task-id>bkmcn04ns</task-id>\n<summary>Monitor event: \"ticks\"</summary>\n<event>tick 1</event>\n</task-notification>",
-        }));
-        assert!(!rig.is_waiting(), "새 턴은 대기를 끝낸다");
+        monitor_event(&mut rig, "bkmcn04ns");
+        assert_eq!(rig.host.states(), vec!["idle", "active"]);
         rig.state = Mutex::new(ClaudeState::default());
         rig.scanner = Arc::new(Mutex::new(ErrorScanner::new()));
-        stop_with(&mut rig, json!([shell_item("bkmcn04ns", "ticks")]));
+        let reply = stop_with(&mut rig, json!([shell_item("bkmcn04ns", "ticks")]));
+        assert_stop_ended_the_turn(&rig, &reply);
         assert_eq!(
-            last_wait_meta(&rig)["notice_types"],
-            json!([]),
+            rig.host.states(),
+            vec!["idle", "active", "idle"],
             "이벤트 뒤 재시작해도 Monitor 다"
         );
+        assert!(!wrote_wait_meta(&rig));
 
         rig.run(json!({
             "event": "prompt-submit",
@@ -2764,7 +2958,7 @@ mod tests {
         assert_eq!(*rig.host.monitor_meta.borrow(), None, "끝 알림이 지운다");
     }
 
-    /// 서브에이전트가 띄운 Monitor. 그 전의 Stop 목록에 없어도 기록을 지우지 않고, 뒤에 나타나면 Monitor 다.
+    /// 서브에이전트가 띄운 Monitor. 그 전의 Stop 목록에 없어도 기록을 지우지 않고, 뒤에 Monitor 만 남으면 턴이 끝난다.
     #[test]
     fn a_subagent_monitor_missing_from_a_stop_list_stays_recorded() {
         let mut rig = HookRig::new();
@@ -2774,8 +2968,8 @@ mod tests {
             json!([{ "id": "a22d7fc9077e1353c", "type": "subagent", "status": "running" }]),
         );
         assert_eq!(last_wait_meta(&rig)["notice_types"], json!(["subagent"]));
-        stop_with(&mut rig, json!([shell_item("bqmug8c54", "sub monitor")]));
-        assert_eq!(last_wait_meta(&rig)["notice_types"], json!([]));
+        let reply = stop_with(&mut rig, json!([shell_item("bqmug8c54", "sub monitor")]));
+        assert_stop_ended_the_turn(&rig, &reply);
     }
 
     /// 첫 Stop 전의 Monitor 는 StopFailure 판정의 기록에 들어가지 않는다. 지금처럼 턴이 끝난다.
@@ -2789,12 +2983,53 @@ mod tests {
         assert_stop_failure_ended_the_turn(&mut rig);
     }
 
-    /// Stop 으로 기록된 Monitor 가 남은 StopFailure: 상태와 `types` 는 그대로이고 정지 알림 대상만 빠진다.
+    /// Stop 으로 기록된 작업이 Monitor 뿐인 StopFailure 는 Stop 과 같은 기준으로 턴 종료다. idle·완료 알림과 함께
+    /// 재개 가능한 오류면 자동 재개를 예약한다. 성공 처리(재개 계수 지우기)는 하지 않는다.
     #[test]
-    fn a_stop_failure_while_a_monitor_runs_keeps_its_state_and_wording() {
+    fn a_stop_failure_while_only_a_monitor_runs_ends_the_turn_and_schedules_a_resume() {
         let mut rig = HookRig::new();
+        rig.host.auto_resume = true;
         start_monitor(&mut rig, "bym7ibssy", None);
         stop_with(&mut rig, json!([shell_item("bym7ibssy", "quiet monitor")]));
+        crate::auto_resume::lock_table(&rig.resume).record_attempt(HookRig::SURFACE);
+        let reply = rig.run(json!({
+            "event": "stop-failure",
+            "surface": HookRig::SURFACE,
+            "session": "s-monitor",
+            "cwd": "/w",
+            "error": "overloaded",
+        }));
+        assert!(reply.get("waiting").is_none(), "{reply}");
+        assert_eq!(rig.host.states(), vec!["idle", "idle"]);
+        assert_stop_failure_ended_the_turn(&mut rig);
+        assert!(!wrote_wait_meta(&rig));
+        assert!(
+            rig.host.monitor_meta.borrow().is_some(),
+            "Monitor 기록 유지"
+        );
+        let far = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        assert!(
+            crate::auto_resume::lock_table(&rig.resume)
+                .due(HookRig::SURFACE, far)
+                .is_some(),
+            "재개 가능한 오류는 자동 재개를 예약한다"
+        );
+        assert!(rig.resume_attempts_kept(), "성공 처리가 아니다");
+    }
+
+    /// Monitor 와 기록된 셸이 함께 남은 StopFailure 는 지금처럼 대기다. 상태와 `types` 는 Monitor 도 세고 정지 알림
+    /// 대상에서만 뺀다.
+    #[test]
+    fn a_stop_failure_while_a_monitor_and_a_shell_run_keeps_its_state_and_wording() {
+        let mut rig = HookRig::new();
+        start_monitor(&mut rig, "bym7ibssy", None);
+        stop_with(
+            &mut rig,
+            json!([
+                shell_item("bym7ibssy", "quiet monitor"),
+                shell_item("baaw0pnlp", "probe silent bash")
+            ]),
+        );
         let reply = rig.run(json!({
             "event": "stop-failure",
             "surface": HookRig::SURFACE,
@@ -2806,9 +3041,109 @@ mod tests {
         assert_eq!(rig.host.states(), vec!["active", "active"]);
         assert_eq!(rig.host.fired(), vec![STOP_FAILURE_EVENT]);
         let meta = last_wait_meta(&rig);
-        assert_eq!(meta["types"], json!(["shell"]), "문구가 읽는 값");
-        assert_eq!(meta["notice_types"], json!([]));
-        assert!(meta.get("watch").is_none(), "{meta}");
+        assert_eq!(meta["types"], json!(["shell", "shell"]), "문구가 읽는 값");
+        assert_eq!(meta["notice_types"], json!(["shell"]));
+    }
+
+    /// 서브에이전트 종료는 Monitor 만 남은 자식의 상태를 바꾸지 않는다.
+    #[test]
+    fn a_subagent_stop_leaves_a_monitor_only_child_as_it_is() {
+        let mut rig = HookRig::new();
+        start_monitor(&mut rig, "bym7ibssy", None);
+        stop_with(&mut rig, json!([shell_item("bym7ibssy", "quiet monitor")]));
+        rig.run(json!({ "event": "subagent-stop", "surface": HookRig::SURFACE, "session": "s-monitor" }));
+        assert_eq!(rig.host.states(), vec!["idle"]);
+        assert!(rig.host.monitor_meta.borrow().is_some());
+    }
+
+    /// Monitor 만 남기고 쉬는 자식의 압축은 idle 과 Monitor 기록을 그대로 두고, 세션 종료는 기록을 지운다.
+    #[test]
+    fn compaction_keeps_a_monitor_only_idle_and_session_end_clears_it() {
+        let mut rig = HookRig::new();
+        start_monitor(&mut rig, "bym7ibssy", None);
+        stop_with(&mut rig, json!([shell_item("bym7ibssy", "quiet monitor")]));
+        rig.run(json!({
+            "event": "session-start",
+            "surface": HookRig::SURFACE,
+            "session": "s-monitor",
+            "source": "compact",
+        }));
+        assert_eq!(
+            rig.host.states(),
+            vec!["idle"],
+            "압축은 상태를 바꾸지 않는다"
+        );
+        assert!(
+            rig.host.monitor_meta.borrow().is_some(),
+            "압축은 기록을 남긴다"
+        );
+        rig.run(
+            json!({ "event": "session-end", "surface": HookRig::SURFACE, "session": "s-monitor" }),
+        );
+        assert_eq!(rig.host.states().last().map(String::as_str), Some("idle"));
+        assert_eq!(
+            *rig.host.monitor_meta.borrow(),
+            None,
+            "세션 종료는 기록을 지운다"
+        );
+        assert!(!rig.is_waiting());
+    }
+
+    fn gated_monitor_stop(prompt_id: &str, items: Value) -> Value {
+        let mut stop = gated_stop(prompt_id);
+        stop["background_tasks"] = items;
+        stop
+    }
+
+    /// 게이트가 붙은 세션의 Monitor 만 남은 Stop 은 턴 종료 후보(`StopKind::Idle`)다. pass 면 idle·완료,
+    /// block 이면 턴이 이어지고, 시간 초과도 idle 로 확정한다. block 뒤 이어진 턴의 Stop 이 pass 하면 한 번 idle 이다.
+    #[test]
+    fn a_gated_monitor_only_stop_is_an_idle_candidate() {
+        let monitor = || json!([{ "id": "m1", "type": "monitor", "status": "running" }]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut rig = HookRig::with_gates(dir.path(), 1);
+        let reply = rig.run(gated_monitor_stop("p1", monitor()));
+        assert_eq!(reply["deferred"], "gate");
+        assert_eq!(rig.host.states(), vec!["active"]);
+        rig.gate(json!({}), "p1");
+        assert_eq!(rig.host.states(), vec!["active", "idle"], "pass");
+        assert_eq!(rig.host.fired(), vec!["claude-idle"]);
+        assert!(!rig.is_waiting());
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut rig = HookRig::with_gates(dir.path(), 1);
+        rig.run(gated_monitor_stop("p1", monitor()));
+        rig.gate(json!({ "decision": "block", "reason": "checklist" }), "p1");
+        assert_eq!(rig.host.states(), vec!["active"], "block");
+        assert!(rig.host.fired().is_empty());
+        // 이어진 턴의 Stop 이 다시 Monitor 만 남기고 pass.
+        rig.run(gated_monitor_stop("p1", monitor()));
+        rig.gate(json!({}), "p1");
+        assert_eq!(rig.host.states(), vec!["active", "active", "idle"]);
+        assert_eq!(
+            rig.host.fired(),
+            vec!["claude-idle"],
+            "연속 Stop 은 한 번 idle"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut rig = HookRig::with_gates(dir.path(), 1);
+        rig.run(gated_monitor_stop("p1", monitor()));
+        rig.tail().finish_expired(rig.take_expired());
+        assert_eq!(rig.host.states(), vec!["active", "idle"], "timeout");
+
+        // Monitor 와 셸이 섞이면 대기 Stop(`StopKind::Waiting`)이라 pass 해도 idle 이 아니다.
+        let dir = tempfile::tempdir().unwrap();
+        let mut rig = HookRig::with_gates(dir.path(), 1);
+        let reply = rig.run(gated_monitor_stop(
+            "p1",
+            json!([{ "id": "m1", "type": "monitor", "status": "running" }, { "id": "b1", "type": "shell", "status": "running" }]),
+        ));
+        assert_eq!(reply["waiting"], "background_work");
+        rig.gate(json!({}), "p1");
+        assert_eq!(rig.host.states(), vec!["active"], "섞인 대기");
+        assert!(rig.is_waiting());
     }
 
     /// 새 세션과 세션 종료는 기록을 지우고, 압축은 같은 세션이라 남긴다.
@@ -4744,6 +5079,107 @@ mod tests {
             let newer = with_check(&rig);
             rig.gate(json!({}), "p1");
             assert_eq!(checks(&rig), vec![(3, newer)]);
+        }
+
+        fn monitor_stop(prompt_id: Option<&str>) -> Value {
+            let mut stop = json!({
+                "event": "stop",
+                "surface": HookRig::SURFACE,
+                "session": "sess-1",
+                "background_tasks": [shell_item("m1", "ticks")],
+            });
+            if let Some(id) = prompt_id {
+                stop["prompt_id"] = json!(id);
+            }
+            stop
+        }
+
+        fn tick() -> Value {
+            json!({
+                "event": "prompt-submit",
+                "surface": HookRig::SURFACE,
+                "session": "sess-1",
+                "prompt": "<task-notification>\n<task-id>m1</task-id>\n<summary>Monitor event: \"ticks\"</summary>\n<event>tick</event>\n</task-notification>",
+            })
+        }
+
+        /// Monitor 만 남긴 Stop 은 확정 완료라 체크를 끝낸다. 대기로 기록하지 않으므로 체크를 일시정지시키지 않고,
+        /// 남은 체크가 없으니 idle 줄도 없다. 그 뒤 Monitor 이벤트가 연 턴은 끝난 체크를 되살리지 않는다.
+        #[test]
+        fn a_monitor_only_stop_ends_the_check_and_an_event_turn_does_not_revive_it() {
+            let mut rig = HookRig::new();
+            start_monitor(&mut rig, "m1", None);
+            with_check(&rig);
+            rig.run(monitor_stop(None));
+            assert!(checks(&rig).is_empty());
+            assert!(!rig.is_waiting(), "대기 일시정지 없음");
+            assert!(
+                crate::error_scan::lock_scanner(&rig.scanner)
+                    .idle
+                    .probes()
+                    .is_empty(),
+                "감시할 체크가 없다(idle 줄 0)"
+            );
+            rig.run(tick());
+            assert!(
+                checks(&rig).is_empty(),
+                "이벤트 턴은 체크를 되살리지 않는다"
+            );
+            rig.run(monitor_stop(None));
+            assert!(checks(&rig).is_empty());
+        }
+
+        /// Monitor 와 셸이 섞인 대기 Stop 은 지금처럼 체크를 끝내지 않고 대기로 일시정지시킨다.
+        #[test]
+        fn a_monitor_next_to_a_shell_keeps_and_pauses_the_check() {
+            let mut rig = HookRig::new();
+            start_monitor(&mut rig, "m1", None);
+            let id = with_check(&rig);
+            rig.run(json!({
+                "event": "stop",
+                "surface": HookRig::SURFACE,
+                "session": "sess-1",
+                "background_tasks": [shell_item("m1", "ticks"), shell_item("b1", "bash")],
+            }));
+            assert_eq!(checks(&rig), vec![(3, id)]);
+            assert!(rig.is_waiting(), "대기 동안 일시정지");
+        }
+
+        /// 실행 중인 대상에 보낸 tell 의 체크: 진행 중이던 앞 턴이 Monitor 만 남기고 끝나도 체크는 남고(건너뛴 끝),
+        /// 같은 Stop 의 재수신도 끝이 아니다. 메시지를 처리한 다음 턴이 Monitor 만 남기고 끝나면 체크가 끝나고, 그 뒤의
+        /// Monitor 이벤트 턴은 되살리지 않는다.
+        #[test]
+        fn a_tell_check_to_a_running_target_ends_at_the_next_monitor_only_stop() {
+            let mut rig = HookRig::new();
+            start_monitor(&mut rig, "m1", None);
+            rig.run(hook("prompt-submit"));
+            let id = with_tell_check(&rig, "active");
+            rig.run(hook("post-tool-use"));
+            rig.run(monitor_stop(Some("old-turn")));
+            assert_eq!(checks(&rig), vec![(3, id)], "진행 중이던 앞 턴의 끝");
+            rig.run(monitor_stop(Some("old-turn")));
+            assert_eq!(checks(&rig), vec![(3, id)], "같은 턴 Stop 의 재수신");
+            rig.run(hook("prompt-submit"));
+            rig.run(hook("post-tool-use"));
+            rig.run(monitor_stop(Some("new-turn")));
+            assert!(checks(&rig).is_empty(), "메시지를 처리한 턴의 끝");
+            rig.run(tick());
+            rig.run(monitor_stop(Some("event-turn")));
+            assert!(checks(&rig).is_empty());
+        }
+
+        /// idle 대상에 보낸 tell 의 체크는 그 메시지 턴의 Monitor 만 남은 Stop 이 끝낸다(문턱 한 번).
+        #[test]
+        fn a_tell_check_to_an_idle_target_ends_at_its_monitor_only_stop() {
+            let mut rig = HookRig::new();
+            start_monitor(&mut rig, "m1", None);
+            rig.run(hook("prompt-submit"));
+            rig.run(monitor_stop(Some("p0")));
+            with_tell_check(&rig, "idle");
+            rig.run(hook("prompt-submit"));
+            rig.run(hook("post-tool-use"));
+            rig.run(monitor_stop(Some("p1")));
+            assert!(checks(&rig).is_empty());
         }
     }
 }

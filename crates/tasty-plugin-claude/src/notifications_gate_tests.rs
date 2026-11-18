@@ -749,3 +749,83 @@ fn a_tell_that_answers_an_input_wait_notices_one_more_turn_end() {
     }
     assert_eq!(counts, [1, 1, 0]);
 }
+
+/// Monitor 하나를 띄운다(Claude Code 2.1.319 실측 `PostToolUse` 모양).
+fn start_monitor(rig: &Rig, id: &str) {
+    rig.hook(
+        crate::hook::BACKGROUND_START_EVENT,
+        json!({ "tool_name": "Monitor", "tool_response": { "taskId": id, "timeoutMs": 1_500_000, "persistent": false } }),
+    );
+}
+
+/// Monitor 하나만 남긴 Stop. Stop 목록에서 Monitor 는 `type: shell` 이다.
+fn stop_leaving(rig: &Rig, ids: &[&str]) {
+    let items: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({ "id": id, "type": "shell", "status": "running" }))
+        .collect();
+    rig.hook("stop", json!({ "background_tasks": items }));
+}
+
+/// Monitor 의 중간 이벤트가 연 턴(`<status>` 없음).
+fn monitor_event(rig: &Rig, id: &str) {
+    rig.hook(
+        "prompt-submit",
+        json!({ "prompt": format!("<task-notification>\n<task-id>{id}</task-id>\n<summary>Monitor event: \"ticks\"</summary>\n<event>tick</event>\n</task-notification>") }),
+    );
+}
+
+/// Monitor 만 남기고 턴을 끝낸 자식은 idle 이고 완료 줄 하나를 쓴다. 그 뒤 Monitor 이벤트가 연 턴이 다시 Monitor 만
+/// 남기고 끝나도 새 spawn·tell 이 없으면 줄을 더 쓰지 않는다(spawn·tell 한 번에 완료 한 번).
+#[test]
+fn a_child_that_leaves_only_a_monitor_is_done_once_until_the_next_order() {
+    let rig = Rig::new();
+    rig.spawn();
+    rig.hook("session-start", json!({ "source": "startup" }));
+    rig.hook("prompt-submit", json!({}));
+    start_monitor(&rig, "bym7ibssy");
+    stop_leaving(&rig, &["bym7ibssy"]);
+    assert_eq!(rig.host.states.borrow()[&CHILD], "idle");
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("state changed (via spawn)"), "{lines:?}");
+
+    for _ in 0..3 {
+        monitor_event(&rig, "bym7ibssy");
+        assert_eq!(rig.host.states.borrow()[&CHILD], "active");
+        stop_leaving(&rig, &["bym7ibssy"]);
+        assert_eq!(rig.host.states.borrow()[&CHILD], "idle");
+        assert!(rig.drain().is_empty(), "이벤트 턴은 줄을 쓰지 않는다");
+    }
+
+    rig.tell();
+    rig.hook("prompt-submit", json!({}));
+    stop_leaving(&rig, &["bym7ibssy"]);
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "새 tell 은 다시 한 번: {lines:?}");
+    assert!(lines[0].contains("(via tell)"), "{lines:?}");
+}
+
+/// Monitor 와 백그라운드 셸이 함께 남은 Stop 은 대기다. 줄이 없다. 셸이 끝나 열린 턴이 Monitor 만 남기고 끝나면
+/// 그때 줄 하나를 쓴다.
+#[test]
+fn a_monitor_next_to_a_shell_waits_until_only_the_monitor_is_left() {
+    let rig = Rig::new();
+    rig.spawn();
+    rig.hook("session-start", json!({ "source": "startup" }));
+    rig.hook("prompt-submit", json!({}));
+    start_monitor(&rig, "m1");
+    stop_leaving(&rig, &["m1", "bwny9udnf"]);
+    assert_eq!(rig.host.states.borrow()[&CHILD], "active");
+    assert!(rig.drain().is_empty());
+
+    rig.hook(
+        "prompt-submit",
+        json!({ "prompt": "<task-notification>\n<task-id>bwny9udnf</task-id>\n<status>completed</status>\n</task-notification>" }),
+    );
+    stop_leaving(&rig, &["m1"]);
+    assert_eq!(rig.host.states.borrow()[&CHILD], "idle");
+    let lines = rig.drain();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("(via spawn)"), "{lines:?}");
+}

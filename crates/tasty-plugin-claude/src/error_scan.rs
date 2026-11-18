@@ -285,7 +285,9 @@ impl BackgroundWait {
     }
 
     /// 기다리는 작업이 모두 Monitor 인가. Monitor 는 조용한 것이 정상이라 이 대기에는 정지 알림을 보내지 않는다.
-    /// 종류를 모르는 대기(`waiting_on_background_work` 만 있음)는 해당하지 않는다.
+    /// 종류를 모르는 대기(`waiting_on_background_work` 만 있음)는 해당하지 않는다. 지금은 Monitor 만 남은 Stop·
+    /// StopFailure 가 대기가 아니라 턴 종료이므로, 이런 대기는 그 규칙 전에 기록돼 surface meta 에서 복원된 것뿐이다.
+    /// 옮기지 않고 다음 Stop 까지 알리지 않는다.
     fn monitors_only(&self) -> bool {
         !self.kinds.all.is_empty() && self.kinds.noticed.is_empty()
     }

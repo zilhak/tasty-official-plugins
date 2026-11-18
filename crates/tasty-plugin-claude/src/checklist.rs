@@ -1232,6 +1232,29 @@ mod tests {
         assert_eq!(passed, json!({}));
     }
 
+    /// checklist 판정은 Stop 의 남은 작업을 보지 않는다. Monitor 만 남긴 Stop 도 다른 Stop 처럼 첫 회차는 block 이고
+    /// 완료 표식이 있으면 통과한다.
+    #[test]
+    fn a_stop_with_only_a_monitor_left_is_judged_like_any_stop() {
+        let tmp = tempfile::tempdir().unwrap();
+        setup_marker(tmp.path(), "gate-a");
+        register_gate(tmp.path(), "gate-a", "[[A-DONE]]", Some(3));
+        let with_monitor = |last: &str| {
+            let mut params = hook_params("gate-a", "sess-1", "p1", last);
+            params["background_tasks"] =
+                json!([{ "id": "m1", "type": "monitor", "status": "running" }]);
+            params
+        };
+        assert_eq!(
+            fire(tmp.path(), &with_monitor("watching"), None)["decision"],
+            "block"
+        );
+        assert_eq!(
+            fire(tmp.path(), &with_monitor("done [[A-DONE]]"), None),
+            json!({})
+        );
+    }
+
     /// 시험에서 기본 본문을 직접 지정한다.
     fn fire_host_body(dir: &Path, params: &Value, host_body: &str, goal: Option<&str>) -> Value {
         hook_response(

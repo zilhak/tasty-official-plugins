@@ -106,6 +106,33 @@ pub(crate) fn split_recorded(
     )
 }
 
+/// 끝나지 않은 작업이 하나 이상이고 모두 Monitor 인가. 작업은 (id, 종류) 쌍이다.
+///
+/// Monitor 만 남기고 턴을 끝낸 자식은 쉬는 것으로 본다. 그래서 Stop(`background_tasks`)과 StopFailure(기록된 작업)
+/// 모두 이 값이 참이면 대기로 두지 않고 턴 종료로 처리한다. Monitor 와 셸·서브에이전트가 섞이면 거짓이라 대기다.
+/// 빈 목록은 남은 작업이 없다는 뜻이고 대기 판정의 몫이므로 거짓이다.
+pub(crate) fn only_monitors<'a>(
+    tasks: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
+    recorded: &MonitorIds,
+) -> bool {
+    let mut any = false;
+    for (id, kind) in tasks {
+        if !is_monitor(id, kind, recorded) {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
+/// `Stop` 의 `background_tasks` 항목을 [`only_monitors`] 가 받는 (id, 종류) 쌍으로 읽는다.
+pub(crate) fn item_id_kind(item: &Value) -> (Option<&str>, Option<&str>) {
+    (
+        item.get("id").and_then(Value::as_str),
+        item.get("type").and_then(Value::as_str),
+    )
+}
+
 /// 도구 결과가 Monitor 를 띄웠으면 그 작업 id 를 돌려준다.
 fn started_id(tool_name: Option<&str>, tool_response: Option<&Value>) -> Option<String> {
     if tool_name? != "Monitor" {
@@ -177,11 +204,8 @@ fn is_monitor(id: Option<&str>, kind: Option<&str>, recorded: &MonitorIds) -> bo
 
 /// `Stop` 의 `background_tasks` 항목이 Monitor 인가.
 pub(crate) fn is_monitor_item(item: &Value, recorded: &MonitorIds) -> bool {
-    is_monitor(
-        item.get("id").and_then(Value::as_str),
-        item.get("type").and_then(Value::as_str),
-        recorded,
-    )
+    let (id, kind) = item_id_kind(item);
+    is_monitor(id, kind, recorded)
 }
 
 /// prompt 의 `<task-notification>` 가운데 작업이 끝났다고 알린 것(`<status>` 가 있음)의 `<task-id>`.
@@ -295,6 +319,34 @@ mod tests {
         assert!(!is_monitor_item(&bash, &ids));
         let typed = json!({"id":"m1","type":"monitor","status":"running"});
         assert!(is_monitor_item(&typed, &MonitorIds::new()));
+    }
+
+    /// 남은 작업이 모두 Monitor 일 때만 참이다. 빈 목록과 셸이 섞인 목록은 거짓이다.
+    #[test]
+    fn only_monitors_needs_at_least_one_task_and_no_other_kind() {
+        let ids = MonitorIds::from(["bym7ibssy".to_string()]);
+        let shell = json!({"id":"bym7ibssy","type":"shell","status":"running"});
+        let bash = json!({"id":"baaw0pnlp","type":"shell","status":"running"});
+        let typed = json!({"id":"m1","type":"monitor","status":"running"});
+        fn items<'a>(list: &[&'a Value]) -> Vec<(Option<&'a str>, Option<&'a str>)> {
+            list.iter().map(|v| item_id_kind(v)).collect()
+        }
+        assert!(only_monitors(items(&[&shell]), &ids));
+        assert!(only_monitors(items(&[&shell, &typed]), &ids));
+        assert!(!only_monitors(items(&[]), &ids), "빈 목록");
+        assert!(!only_monitors(items(&[&shell, &bash]), &ids), "셸이 섞임");
+        assert!(
+            !only_monitors(items(&[&shell]), &MonitorIds::new()),
+            "기록이 없으면 셸"
+        );
+        // StopFailure 경로처럼 기록된 (id, 종류) 로도 같다.
+        let recorded = [(Some("bym7ibssy"), Some("shell"))];
+        assert!(only_monitors(recorded, &ids));
+        let mixed = [
+            (Some("bym7ibssy"), Some("shell")),
+            (Some("a1"), Some("subagent")),
+        ];
+        assert!(!only_monitors(mixed, &ids));
     }
 
     /// 중간 이벤트(`<status>` 없음)는 끝이 아니다. 실측 모양이다.
