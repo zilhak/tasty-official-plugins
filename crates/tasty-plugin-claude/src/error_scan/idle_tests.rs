@@ -769,6 +769,120 @@ fn a_finish_before_the_restore_keeps_the_stored_check_from_coming_back() {
     assert!(tick(&restarted, &host, t0 + secs(400)).is_empty());
 }
 
+/// 되살리기 전에 받았지만 되살린 뒤 적용된 완료(게이트 판정을 기다리다 확정된 Stop 등)도 되살린 체크를 끝낸다.
+/// 되살린 체크의 등록 시각은 프로세스 시작 시각이다.
+#[test]
+fn a_stop_received_before_the_restore_but_confirmed_after_ends_the_restored_check() {
+    test_log::take();
+    let host = FakeHost::new("idle");
+    let t0 = Instant::now();
+    let _old = registered(&host, t0);
+    let restarted = Mutex::new(ErrorScanner::new());
+    lock_scanner(&restarted).idle.begin_restore(t0 + secs(1));
+    assert_eq!(
+        lock_scanner(&restarted).idle_restore(&host, TARGET, t0 + secs(120)),
+        1
+    );
+    lock_scanner(&restarted).idle_complete(&host, TARGET, turn(t0 + secs(119), 3));
+    assert!(checks(&restarted).is_empty());
+    assert_eq!(host.idle_meta(), None);
+    assert!(tick(&restarted, &host, t0 + secs(400)).is_empty());
+}
+
+/// 복원을 마치기 전에는 다른 대상의 완료가 많아도(대상 수 상한) 되살릴 대상의 완료를 버리지 않는다. 복원을 마치면
+/// 다시 일반 상한을 따른다.
+#[test]
+fn finishes_before_the_restore_survive_the_target_cap() {
+    test_log::take();
+    let host = FakeHost::new("idle");
+    let t0 = Instant::now();
+    let _old = registered(&host, t0);
+    let restarted = Mutex::new(ErrorScanner::new());
+    let mut s = lock_scanner(&restarted);
+    s.idle.begin_restore(t0 + secs(1));
+    s.idle
+        .complete(TARGET, turn(t0 + secs(119), 3), t0 + secs(119));
+    let later = t0 + secs(119) + Duration::from_millis(1);
+    for target in 1000..1000 + HISTORY_TARGETS_MAX as u32 {
+        s.idle.complete(target, turn(later, 1), later);
+    }
+    assert_eq!(s.idle_restore(&host, TARGET, t0 + secs(120)), 0);
+    assert_eq!(host.idle_meta(), None);
+    s.idle.end_restore();
+    for target in 5000..6000 {
+        s.idle.complete(target, turn(later, 1), later);
+    }
+    assert!(s.idle.history_targets() <= HISTORY_TARGETS_MAX);
+}
+
+/// 복원이 5분 넘게 늦어져도 복원 전에 받은 완료는 시간 상한으로 버리지 않는다.
+#[test]
+fn finishes_before_a_late_restore_survive_the_age_limit() {
+    test_log::take();
+    let host = FakeHost::new("idle");
+    let t0 = Instant::now();
+    let _old = registered(&host, t0);
+    let restarted = Mutex::new(ErrorScanner::new());
+    let mut s = lock_scanner(&restarted);
+    s.idle.begin_restore(t0 + secs(1));
+    s.idle.complete(TARGET, turn(t0 + secs(2), 3), t0 + secs(2));
+    s.idle.complete(99, turn(t0 + secs(420), 1), t0 + secs(420));
+    assert_eq!(s.idle_restore(&host, TARGET, t0 + secs(421)), 0);
+    assert_eq!(host.idle_meta(), None);
+}
+
+/// tell 을 보내고 등록하기 전에는 대상당 상한을 넘게 완료가 와도 버리지 않는다. 등록 뒤 보낸 지시의 원격 결과가
+/// 먼저 오고 앞 지시의 결과 여덟 개가 늦게 와도 체크는 바로 끝난다.
+#[test]
+fn finishes_before_a_tell_registers_survive_the_per_target_cap() {
+    test_log::take();
+    let host = FakeHost::new("idle");
+    let t0 = Instant::now();
+    let scanner = Mutex::new(ErrorScanner::new());
+    let mut s = lock_scanner(&scanner);
+    s.idle.expect(TARGET);
+    s.idle.complete(
+        TARGET,
+        Finish::Remote {
+            issued_ms: Some(2000),
+        },
+        t0,
+    );
+    for ms in 100..108 {
+        s.idle.complete(
+            TARGET,
+            Finish::Remote {
+                issued_ms: Some(ms),
+            },
+            t0,
+        );
+    }
+    let registered = s.idle_register(&host, TARGET, PARENT, Origin::Tell, owner_at(t0, 1000));
+    s.idle.unexpect(TARGET);
+    assert!(registered.completed);
+}
+
+/// 일반 규칙의 이력(보호 없음)도 등록 전에 온 두 완료를 순서대로 적용한다. 실행 중인 대상에 보낸 tell 의 앞 턴 끝과
+/// 메시지 턴의 끝이 모두 등록 전에 왔으면 체크는 바로 끝난다.
+#[test]
+fn two_finishes_before_a_tell_registers_both_count() {
+    let mut idle = IdleChecks::default();
+    let t = Instant::now();
+    idle.complete(TARGET, turn(t + secs(1), 5), t + secs(1));
+    idle.complete(TARGET, turn(t + secs(2), 6), t + secs(2));
+    let registered = idle.register(
+        TARGET,
+        PARENT,
+        Origin::Tell,
+        Owner {
+            at: At { instant: t, ms: 0 },
+            threshold: Some(completion_gate::threshold(Some("active"), 5, false)),
+            running: true,
+        },
+    );
+    assert!(registered.completed);
+}
+
 /// meta 쓰기 실패: 줄을 쓰기 전에 meta 에서 체크를 먼저 지우고, 지우지 못하면 쓰지 않고 다음 회차에 다시 한다.
 /// 쓴 등록은 재시작 뒤 되살아나지 않는다.
 #[test]

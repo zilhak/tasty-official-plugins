@@ -29,6 +29,8 @@ struct TargetHost<'a> {
     /// `terminal.tell` 을 받는 동안 할 일(보낸 직후 처리 전에 온 Stop 등).
     on_tell: Option<Box<dyn Fn() + 'a>>,
     idle_meta: RefCell<Option<String>>,
+    /// `surface.list` 을 실패시킨다.
+    list_fails: RefCell<bool>,
     calls: RefCell<Vec<(String, Value)>>,
 }
 
@@ -40,6 +42,7 @@ impl TargetHost<'_> {
             tell_fails: false,
             on_tell: None,
             idle_meta: RefCell::new(None),
+            list_fails: RefCell::new(false),
             calls: RefCell::new(Vec::new()),
         }
     }
@@ -70,6 +73,7 @@ impl HostCall for TargetHost<'_> {
                 }
                 Ok(json!({}))
             }
+            "surface.list" if *self.list_fails.borrow() => Err(host_error(method, "list failed")),
             "surface.list" => Ok(json!([{ "id": CHILD }])),
             "surface.meta.set" if idle_key => {
                 *self.idle_meta.borrow_mut() = params["value"].as_str().map(String::from);
@@ -317,6 +321,47 @@ fn a_turn_that_ends_before_the_tell_registers_ends_its_check() {
     );
 }
 
+/// tell 을 보내고 등록하기 전까지는 그 대상의 이력을 대상당 상한으로 버리지 않는다. 그 사이 메시지의 턴 끝 뒤에
+/// 상한보다 많은 다른 완료가 와도 메시지의 턴 끝이 체크를 끝낸다.
+#[test]
+fn finishes_between_the_tell_and_its_registration_are_all_kept() {
+    let tr = tr();
+    let dir = tempfile::tempdir().unwrap();
+    let returns = Returns::new(Some(dir.path()));
+    let pairing = Mutex::new(StopPairing::default());
+    let scanner = Mutex::new(ErrorScanner::new());
+    let quiet_host = TargetHost::new("idle");
+    let host = TargetHost {
+        on_tell: Some(Box::new(|| {
+            let mut s = lock_scanner(&scanner);
+            s.idle_complete(
+                &quiet_host,
+                CHILD,
+                Finish::Turn {
+                    at: std::time::Instant::now(),
+                    seq: 1,
+                    turn: None,
+                },
+            );
+            // 이 체크를 끝내지 않는 완료(지시를 모르는 원격 결과)가 상한보다 많이 온다.
+            for _ in 0..20 {
+                s.idle_complete(&quiet_host, CHILD, Finish::Remote { issued_ms: None });
+            }
+        })),
+        ..TargetHost::new("idle")
+    };
+    handle_tell_with_idle_check(
+        &scanner,
+        &returns,
+        &pairing,
+        &host,
+        &json!({ "surface": CHILD, "caller_surface": PARENT, "message": "work" }),
+        &tr,
+    )
+    .expect("sent");
+    assert!(checks(&scanner).is_empty(), "메시지의 턴 끝이 남았다");
+}
+
 /// 자기 자신에게 보낸 tell 에는 체크를 걸지 않는다.
 #[test]
 fn a_tell_to_itself_registers_no_check() {
@@ -409,6 +454,40 @@ fn the_start_restore_skips_exited_targets() {
         Some(r#"{"checks":[{"caller":3,"id":1,"origin":"tell","registered_ms":1}]}"#.to_string());
     let scanner = Mutex::new(ErrorScanner::new());
     assert_eq!(restore_all(&scanner, &host), 1);
+}
+
+/// 시작 복원을 마치면 이력 보호를 풀어 일반 상한으로 돌아간다. 복원 중 surface 목록 조회가 실패해도 같다.
+#[test]
+fn the_start_restore_returns_the_history_to_its_limits() {
+    for fails in [false, true] {
+        let host = TargetHost::new("idle");
+        let scanner = Mutex::new({
+            let mut s = ErrorScanner::new();
+            s.idle.begin_restore(std::time::Instant::now());
+            s
+        });
+        if fails {
+            *host.list_fails.borrow_mut() = true;
+        }
+        restore_all(&scanner, &host);
+        let now = std::time::Instant::now();
+        let mut s = lock_scanner(&scanner);
+        for target in 1000..2000 {
+            s.idle.complete(
+                target,
+                Finish::Turn {
+                    at: now,
+                    seq: 1,
+                    turn: None,
+                },
+                now,
+            );
+        }
+        assert!(
+            s.idle.history_targets() <= crate::error_scan::idle::HISTORY_TARGETS_MAX,
+            "fails={fails}"
+        );
+    }
 }
 
 /// 원격 자식: 기록된 결과는 그 결과의 route 토큰을 발급한 시각이 체크 등록 뒤일 때만 체크를 끝낸다. t=0 에 등록하고

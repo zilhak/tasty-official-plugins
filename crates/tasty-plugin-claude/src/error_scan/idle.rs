@@ -43,7 +43,8 @@ const STATE_ERROR_WARN_EVERY: u32 = 75;
 /// 등록한 체크를 남기는 대상 surface meta. 재시작 뒤 복원에 쓴다.
 pub(crate) const IDLE_CHECK_META_KEY: &str = "claude-idle-checks";
 
-/// 완료 이력을 두는 시간. 이력은 보내기와 등록 사이, 시작과 복원 사이에 온 완료를 가리는 데만 쓴다.
+/// 완료 이력을 두는 시간. 이력은 보내기와 등록 사이, 시작과 복원 사이에 온 완료를 가리는 데만 쓴다. 아래 세 상한은
+/// 그 두 구간을 지나는 중인 대상(보호 대상)에는 쓰지 않는다([`IdleChecks::protects`]).
 const HISTORY_KEPT: Duration = Duration::from_secs(5 * 60);
 /// 완료 이력을 두는 대상 수 상한. 넘으면 가장 오래된 대상부터 지운다.
 pub(crate) const HISTORY_TARGETS_MAX: usize = 256;
@@ -294,6 +295,13 @@ pub(crate) struct IdleChecks {
     unsaved: HashSet<u32>,
     /// idle 줄을 쓴 (대상, 부모)와 그 시각.
     delivered: HashMap<(u32, u32), Instant>,
+    /// 플러그인 프로세스가 시작한 시각. 되살린 체크의 등록 시각으로 쓴다. 그래서 시작 뒤에 받은 완료는 되살리기
+    /// 전에 받았어도(게이트 판정을 기다리다 되살린 뒤 확정된 Stop 등) 되살린 체크를 끝낸다.
+    started: Option<Instant>,
+    /// 시작 복원을 아직 마치지 않았다. 그동안은 모든 대상의 이력을 상한으로 버리지 않는다.
+    restoring: bool,
+    /// tell 을 보내고 아직 등록하지 않은 대상(진행 중인 수). 그동안은 그 대상의 이력을 상한으로 버리지 않는다.
+    expecting: HashMap<u32, u32>,
     next_id: u64,
 }
 
@@ -409,22 +417,59 @@ impl IdleChecks {
         ended
     }
 
-    /// 완료 이력에 넣는다. 오래된 이력과 상한을 넘는 대상을 함께 지운다.
+    /// 플러그인 시작에 부른다. 이 시각을 되살릴 체크의 등록 시각으로 쓰고, 복원을 마칠 때까지 이력을 지킨다.
+    pub(crate) fn begin_restore(&mut self, started: Instant) {
+        self.started = Some(started);
+        self.restoring = true;
+    }
+
+    /// 시작 복원을 마쳤다. 이력은 다음 완료부터 일반 상한을 따른다.
+    pub(crate) fn end_restore(&mut self) {
+        self.restoring = false;
+    }
+
+    /// tell 을 보내기 전에 부른다. 등록(또는 포기)할 때까지 그 대상의 이력을 지킨다.
+    pub(crate) fn expect(&mut self, target: u32) {
+        *self.expecting.entry(target).or_default() += 1;
+    }
+
+    /// [`Self::expect`] 를 푼다.
+    pub(crate) fn unexpect(&mut self, target: u32) {
+        if let Some(n) = self.expecting.get_mut(&target) {
+            *n -= 1;
+            if *n == 0 {
+                self.expecting.remove(&target);
+            }
+        }
+    }
+
+    /// 이 대상의 이력을 상한으로 버리면 안 되는가. 복원 전이거나 tell 을 보내고 등록하기 전이다.
+    fn protects(&self, target: u32) -> bool {
+        self.restoring || self.expecting.contains_key(&target)
+    }
+
+    /// 완료 이력에 넣는다. 오래된 이력과 상한을 넘는 대상을 함께 지운다. 보호 대상의 이력은 지우지 않는다.
     fn remember(&mut self, target: u32, finish: Finish, now: Instant) {
-        self.history.retain(|_, h| {
+        let restoring = self.restoring;
+        let expecting = &self.expecting;
+        self.history.retain(|t, h| {
+            if restoring || expecting.contains_key(t) {
+                return true;
+            }
             h.retain(|(at, _)| now.saturating_duration_since(*at) < HISTORY_KEPT);
             !h.is_empty()
         });
+        let protected = self.protects(target);
         let entries = self.history.entry(target).or_default();
         entries.push_back((now, finish));
-        while entries.len() > HISTORY_PER_TARGET {
+        while !protected && entries.len() > HISTORY_PER_TARGET {
             entries.pop_front();
         }
         while self.history.len() > HISTORY_TARGETS_MAX {
             let oldest = self
                 .history
                 .iter()
-                .filter(|(t, _)| **t != target)
+                .filter(|(t, _)| **t != target && !self.protects(**t))
                 .min_by_key(|(_, h)| h.back().map(|(at, _)| *at))
                 .map(|(t, _)| *t);
             match oldest {
@@ -729,7 +774,7 @@ impl ErrorScanner {
             }
             let owner = Owner {
                 at: At {
-                    instant: now,
+                    instant: self.idle.started.unwrap_or(now),
                     ms: stored.ms,
                 },
                 threshold: stored.threshold,

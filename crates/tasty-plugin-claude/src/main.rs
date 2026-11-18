@@ -100,7 +100,12 @@ impl ClaudePlugin {
             pairing: Arc::new(Mutex::new(stop_pairing::StopPairing::default())),
             returns: Arc::new(codex_return::Returns::new(plugin_data_dir.as_deref())),
             return_pump: None,
-            scanner: Arc::new(Mutex::new(ErrorScanner::new())),
+            scanner: Arc::new(Mutex::new({
+                // 재시작 전 체크는 시작 뒤 감시 루프가 되살린다. 그 전에 온 완료를 지키고 시작 시각을 기준으로 삼는다.
+                let mut scanner = ErrorScanner::new();
+                scanner.idle.begin_restore(std::time::Instant::now());
+                scanner
+            })),
             resume: Arc::new(Mutex::new(auto_resume::ResumeTable::default())),
             resume_texts,
             rebooting: Arc::new(Mutex::new(HashSet::new())),

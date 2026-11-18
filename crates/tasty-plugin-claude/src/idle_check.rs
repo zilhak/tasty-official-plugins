@@ -12,6 +12,7 @@ use crate::codex_return::{ParentTarget, Returns};
 use crate::error_scan::idle::{At, Finish, IDLE_CHECK_WAIT, Origin, Owner};
 use crate::error_scan::{ErrorScanner, lock_scanner};
 use crate::stop_pairing::StopPairing;
+use tasty_plugin_agent_common::completion_gate::Threshold;
 
 /// Claude 세션 meta. SessionStart 훅이 남긴다.
 const SESSION_META_KEY: &str = "claude-session-id";
@@ -109,22 +110,44 @@ pub(crate) fn handle_tell_with_idle_check<H: HostCall>(
     params: &Value,
     tr: &Translator,
 ) -> Result<Value, IpcMethodError> {
+    let target = crate::handlers::require_target_surface(params, tr).ok();
+    // 보내기와 등록 사이에 온 완료를 이력에서 잃지 않도록 등록할 때까지 그 대상의 이력을 지킨다.
+    if let Some(target) = target {
+        lock_scanner(scanner).idle.expect(target);
+    }
     let registered_at = At::now();
-    let (resp, threshold) =
-        crate::handlers::handle_tell_with_threshold(returns, pairing, host, params, tr)?;
+    let result = crate::handlers::handle_tell_with_threshold(returns, pairing, host, params, tr)
+        .map(|(resp, threshold)| {
+            register_after_tell(scanner, host, params, target, registered_at, threshold);
+            resp
+        });
+    if let Some(target) = target {
+        lock_scanner(scanner).idle.unexpect(target);
+    }
+    result
+}
+
+/// 보낸 tell 의 체크를 건다. 원격 출처 호출과 받을 부모가 없는 호출, 자기 자신에게 보낸 호출은 걸지 않는다.
+fn register_after_tell<H: HostCall>(
+    scanner: &Mutex<ErrorScanner>,
+    host: &H,
+    params: &Value,
+    target: Option<u32>,
+    registered_at: At,
+    threshold: Option<(Threshold, bool)>,
+) {
     let (threshold, running) = match threshold {
         Some((threshold, running)) => (Some(threshold), running),
         None => (None, false),
     };
     // 원격 출처(서버 쪽) 호출의 부모는 client 에 있다. 체크는 client 가 건다.
     if AttachOrigin::of(params).is_some() {
-        return Ok(resp);
+        return;
     }
     let caller = params
         .get("caller_surface")
         .and_then(Value::as_u64)
         .and_then(|v| u32::try_from(v).ok());
-    let target = crate::handlers::require_target_surface(params, tr).ok();
     if let (Some(caller), Some(target)) = (caller, target)
         && caller != target
     {
@@ -140,7 +163,6 @@ pub(crate) fn handle_tell_with_idle_check<H: HostCall>(
             },
         );
     }
-    Ok(resp)
 }
 
 /// spawn·respawn 뒤 물리 부모의 체크를 건다. 일을 준 경우(첫 프롬프트)에만 건다. 프롬프트 없이 띄운 자식은
@@ -218,7 +240,14 @@ pub(crate) fn after_remote_receive<H: HostCall>(
 }
 
 /// 재시작 뒤 모든 surface 의 meta 에서 남은 체크를 되살린다. 끝난 터미널의 체크는 버린다.
+/// 마치면(실패해도) 이력 보호를 푼다([`crate::error_scan::idle::IdleChecks::end_restore`]).
 pub(crate) fn restore_all<H: HostCall>(scanner: &Mutex<ErrorScanner>, host: &H) -> usize {
+    let restored = restore_surfaces(scanner, host);
+    lock_scanner(scanner).idle.end_restore();
+    restored
+}
+
+fn restore_surfaces<H: HostCall>(scanner: &Mutex<ErrorScanner>, host: &H) -> usize {
     let ids: Vec<u32> = match host.call("surface.list", json!({})) {
         Ok(list) => list
             .as_array()
