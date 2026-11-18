@@ -84,7 +84,7 @@ description = "Claude output matched an error pattern"
 
 [[contributes.hook_events]]
 key = "claude-error-stalled"
-description = "Claude produced no output for a sustained period while the host still sees an unfinished turn — likely stuck. After an error or during a background wait it fires for active or stale; without either it fires only while the state is active, since a turn that is not active is left to the parent's idle check. The notification text says which"
+description = "Claude produced no output for a sustained period while the host still sees an unfinished turn (active or stale) — likely stuck. Fires with or without a preceding error; the notification text says which. A stall without an error while the child is not active writes no line for a parent that has an idle check on the child or got its idle line in that quiet stretch; the idle check reports that quietness to it"
 
 [[contributes.hook_events]]
 key = "claude-quiet-released"
@@ -413,8 +413,8 @@ storage_key = "spawn_child_warn_threshold"
 default = 6.0
 min = 1.0
 
-# error_scan.rs 가 범위를 다시 제한한다. 끄는 값은 없다. 오류 없는 무출력 알림은 상태가 active 인 자식과
-# 백그라운드 작업 대기에만 이 값을 쓴다. active 가 아닌 조용함은 부모가 건 idle 체크(120초)가 맡는다.
+# error_scan.rs 가 범위를 다시 제한한다. 끄는 값은 없다. 상태가 active 가 아닌 오류 없는 무출력 알림은 그 자식에
+# idle 체크(120초)를 건 부모에게는 쓰지 않는다. 체크가 없는 부모는 이 값 뒤에 알림을 받는다.
 [[contributes.settings_pages.items]]
 kind = "number"
 id = "no_output_notice_secs"

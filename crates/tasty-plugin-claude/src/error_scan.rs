@@ -136,6 +136,9 @@ pub struct ErrorScanner {
     quiet: quiet::QuietTable,
     /// 부모가 등록한 idle 체크. 오류 감시 대상이 아닌 surface(원격 mirror 등)의 체크도 둔다.
     pub(crate) idle: idle::IdleChecks,
+    /// 마지막 정지 알림이 대기가 아닌 오류 없는 멈춤이고 상태가 `active` 가 아니었던 surface 와 그 조용한 구간의
+    /// 시작. 이 알림은 그 surface 에 idle 체크를 건 부모에게는 쓰지 않는다([`ErrorScanner::stall_left_to_idle`]).
+    stall_left_to_idle: HashMap<u32, Instant>,
 }
 
 /// 마지막으로 읽은 오류 없는 정지 알림 기준과 그 시각.
@@ -432,6 +435,18 @@ impl ErrorScanner {
         self.recent_output.remove(&surface_id);
         self.background_wait.remove(&surface_id);
         self.notice_recorded.remove(&surface_id);
+        self.stall_left_to_idle.remove(&surface_id);
+    }
+
+    /// 이 부모에게 오류 없는 정지 알림을 쓰지 않고 idle 체크에 맡기는가. 마지막 정지 알림이 대기가 아닌 오류 없는
+    /// 멈춤이고 상태가 `active` 가 아니었으며, 이 부모가 그 surface 에 체크를 걸어 두었거나 그 조용한 구간에 idle
+    /// 줄을 이미 받았을 때만 그렇다. 체크가 없는 부모는 지금처럼 정지 알림을 받는다.
+    pub(crate) fn stall_left_to_idle(&self, surface_id: u32, caller: u32) -> bool {
+        let Some(since) = self.stall_left_to_idle.get(&surface_id) else {
+            return false;
+        };
+        self.idle.has_check(surface_id, caller)
+            || self.idle.delivered_since(surface_id, caller, *since)
     }
 
     /// 오류 없는 정지 알림 기준을 정해진 간격으로 다시 읽는다. 조회에 실패하면 마지막 값을 유지한다.
@@ -854,13 +869,13 @@ impl ErrorScanner {
             self.fire_stall(host, surface_id, now, wording.as_ref());
             return;
         }
-        // 대기가 아닌 오류 없는 멈춤은 상태가 active 일 때만 알린다. active 가 아닌(stale 등) 조용함은 부모가 건
-        // idle 체크가 맡는다. 같은 조용함을 두 알림이 따로 알리지 않게 한다.
+        // 대기가 아닌 오류 없는 멈춤의 상태가 active 가 아니면(stale 등) 이 조용함은 idle 체크도 알린다. 정지 알림은
+        // 그대로 보내되, 그 surface 에 체크를 건 부모에게는 쓰지 않는다. 같은 조용함을 두 알림이 따로 알리지 않게 한다.
         if wait.is_none() && child_state != "active" {
-            if let Some(w) = self.watch.get_mut(&surface_id) {
-                w.settled = true;
-            }
-            return;
+            self.stall_left_to_idle
+                .insert(surface_id, now.checked_sub(quiet).unwrap_or(now));
+        } else {
+            self.stall_left_to_idle.remove(&surface_id);
         }
         let notice = match wait {
             Some(b) => match (&b.files, file_quiet) {
@@ -1459,6 +1474,17 @@ mod tests {
                 {
                     Ok(json!({}))
                 }
+                "surface.meta.get" => {
+                    let key = params["key"].as_str().unwrap_or_default();
+                    let last = self
+                        .meta_sets
+                        .borrow()
+                        .iter()
+                        .rev()
+                        .find(|(k, _)| k == key)
+                        .map(|(_, v)| v.clone());
+                    Ok(json!({ "value": last }))
+                }
                 "surface.fire_hook" => {
                     let event = params["event"].as_str().unwrap_or_default().to_string();
                     self.fired.borrow_mut().push(event);
@@ -1928,18 +1954,88 @@ mod tests {
         );
     }
 
-    /// 호스트가 stale로 판정한 오류 없는 멈춤은 부모가 건 idle 체크가 맡으므로 정지 알림을 보내지 않는다.
-    /// 다음 출력 변화나 훅 전에는 상태를 다시 묻지 않는다.
+    /// 호스트가 stale로 판정한 오류 없는 멈춤도 idle 체크가 없으면 지금처럼 기준 시간 뒤 정지 알림을 보낸다.
     #[test]
-    fn a_stale_state_without_an_error_is_left_to_the_idle_check() {
+    fn stale_state_fires_stall() {
         let host = ScanHost::new("…\n", "stale");
         let mut s = ErrorScanner::new();
         let t0 = Instant::now();
         s.scan_one_at(&host, 1, t0);
-        s.scan_one_at(&host, 1, t0 + NO_OUTPUT_NOTICE_DEFAULT);
-        s.scan_one_at(&host, 1, t0 + NO_OUTPUT_NOTICE_DEFAULT * 3);
+        s.scan_one_at(
+            &host,
+            1,
+            t0 + NO_OUTPUT_NOTICE_DEFAULT - Duration::from_secs(1),
+        );
         assert_eq!(host.stalled_count(), 0);
-        assert!(s.is_settled(1));
+        s.scan_one_at(&host, 1, t0 + NO_OUTPUT_NOTICE_DEFAULT);
+        assert_eq!(host.stalled_count(), 1);
+        assert_eq!(
+            host.stall_notice().expect("판정")["kind"],
+            STALL_KIND_NO_ERROR
+        );
+        // 체크가 없는 부모에게는 정지 줄이 간다.
+        crate::notice::test_log::take();
+        let m = std::sync::Mutex::new(s);
+        notify_error(&m, &host, 4);
+        assert_eq!(lines_of(4), 1);
+    }
+
+    fn notify_error(scanner: &std::sync::Mutex<ErrorScanner>, host: &ScanHost, caller: u32) {
+        let tr = tasty_plugin_sdk::i18n::Translator::load(
+            &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lang"),
+            "en",
+        );
+        crate::notifications::handle_notify_error(
+            scanner,
+            host,
+            &json!({ "caller_surface": caller, "target_surface": 1 }),
+            &tr,
+        )
+        .expect("notify-error");
+    }
+
+    /// 부모 `caller` 가 받은 줄 수. 시험 로그를 비운다.
+    fn lines_of(caller: u32) -> usize {
+        crate::notice::test_log::take()
+            .iter()
+            .filter(|(c, _)| *c == caller)
+            .count()
+    }
+
+    /// 상태가 active 가 아닌 오류 없는 멈춤에서 idle 체크를 건 부모는 idle 줄 하나만 받고 정지 줄은 받지 않는다.
+    /// 그 조용한 구간에 idle 줄을 이미 받은 부모(3)와 아직 체크가 걸려 있는 부모(5)가 그렇다. 체크를 걸지 않은 부모(4)는
+    /// 지금처럼 정지 줄을 받는다.
+    #[test]
+    fn a_stale_stall_is_left_to_the_idle_check_of_the_parents_that_set_one() {
+        use idle::{At, Owner};
+        crate::notice::test_log::take();
+        let host = ScanHost::new("…\n", "stale");
+        let t0 = Instant::now();
+        let m = std::sync::Mutex::new(ErrorScanner::new());
+        let register = |caller: u32, at: Instant| {
+            lock_scanner(&m).idle_register(
+                &host,
+                1,
+                caller,
+                idle::Origin::Manual,
+                Owner::at(At { instant: at, ms: 0 }),
+            );
+        };
+        register(3, t0);
+        lock_scanner(&m).scan_one_at(&host, 1, t0);
+        idle::run_idle_checks(&m, &host, "{0} {1} {2}", t0 + Duration::from_secs(120));
+        assert_eq!(lines_of(3), 1, "idle 줄 하나");
+        register(5, t0 + Duration::from_secs(500));
+        lock_scanner(&m).scan_one_at(&host, 1, t0 + NO_OUTPUT_NOTICE_DEFAULT);
+        assert_eq!(
+            host.stalled_count(),
+            1,
+            "정지 훅은 부모마다 판정하도록 보낸다"
+        );
+        for (caller, expected) in [(3, 0), (5, 0), (4, 1)] {
+            notify_error(&m, &host, caller);
+            assert_eq!(lines_of(caller), expected, "부모 {caller}");
+        }
     }
 
     /// 오류 뒤 멈춤은 stale 이어도 지금처럼 알린다. 오류 알림은 idle 체크와 다른 알림이다.

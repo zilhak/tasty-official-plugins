@@ -389,6 +389,16 @@ pub(crate) fn handle_notify_error<H: HostCall>(
         })? as u32;
 
     let (kind, mut message) = notify_error_message(tr, host, target_surface);
+    // 상태가 active 가 아닌 오류 없는 멈춤은 이 부모가 건 idle 체크가 알린다. 체크가 없는 부모에게만 쓴다.
+    if kind == NoticeKind::StalledNoError
+        && crate::error_scan::lock_scanner(scanner)
+            .stall_left_to_idle(target_surface, caller_surface)
+    {
+        tracing::info!(
+            "claude notify-error s{target_surface}→s{caller_surface}: no-output stall left to the parent's idle check"
+        );
+        return Ok(json!({ "skipped": "idle_check" }));
+    }
     if kind.notice_type() == NoticeType::Error {
         message.push_str(&crate::quiet_notice::error_bundle(
             scanner,

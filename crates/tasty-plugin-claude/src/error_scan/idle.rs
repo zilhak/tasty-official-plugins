@@ -49,6 +49,8 @@ const HISTORY_KEPT: Duration = Duration::from_secs(5 * 60);
 pub(crate) const HISTORY_TARGETS_MAX: usize = 256;
 /// 대상 하나에 두는 완료 이력 수.
 const HISTORY_PER_TARGET: usize = 8;
+/// idle 줄을 쓴 기록 상한. 오류 없는 정지 알림과 겹치는지 가리는 데 쓴다.
+const DELIVERED_MAX: usize = 1024;
 
 /// 체크를 건 경로. 응답·meta·로그에 적는다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +220,8 @@ pub(crate) struct IdleChecks {
     history: HashMap<u32, VecDeque<(Instant, Finish)>>,
     /// 쓰지 못한 meta 의 대상. 다음 회차에 다시 쓴다.
     unsaved: HashSet<u32>,
+    /// idle 줄을 쓴 (대상, 부모)와 그 시각.
+    delivered: HashMap<(u32, u32), Instant>,
     next_id: u64,
 }
 
@@ -361,6 +365,7 @@ impl IdleChecks {
     /// 대상의 체크를 모두 지운다(세션 교체·추적 종료). 완료·전달 기록도 지운다.
     pub(crate) fn drop_target(&mut self, target: u32) -> usize {
         self.history.remove(&target);
+        self.delivered.retain(|(t, _), _| *t != target);
         let before = self.checks.len();
         self.checks.retain(|(t, _), _| *t != target);
         before - self.checks.len()
@@ -386,9 +391,36 @@ impl IdleChecks {
             .filter(|c| c.id == probe.id)
     }
 
+    /// 부모가 대상에 체크를 걸어 두었는가.
+    pub(crate) fn has_check(&self, target: u32, caller: u32) -> bool {
+        self.checks.contains_key(&(target, caller))
+    }
+
     /// 대상에 걸린 체크가 있는가.
     pub(crate) fn has_any(&self, target: u32) -> bool {
         self.checks.keys().any(|(t, _)| *t == target)
+    }
+
+    /// 부모가 `since` 뒤에 이 대상의 idle 줄을 받았는가.
+    pub(crate) fn delivered_since(&self, target: u32, caller: u32, since: Instant) -> bool {
+        self.delivered
+            .get(&(target, caller))
+            .is_some_and(|at| *at >= since)
+    }
+
+    fn record_delivered(&mut self, target: u32, caller: u32, now: Instant) {
+        self.delivered.insert((target, caller), now);
+        while self.delivered.len() > DELIVERED_MAX {
+            let Some(oldest) = self
+                .delivered
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            self.delivered.remove(&oldest);
+        }
     }
 
     /// 시험용 — 대상의 체크 (부모, id) 목록.
@@ -774,6 +806,7 @@ impl ErrorScanner {
                 );
                 self.idle.checks.remove(&(probe.target, probe.caller));
                 self.idle.unsaved.remove(&probe.target);
+                self.idle.record_delivered(probe.target, probe.caller, now);
                 Step::Delivered
             }
             Err(e) => {
