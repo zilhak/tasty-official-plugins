@@ -38,9 +38,11 @@ defaults:
     shell: bash
 
 jobs:
+  # create-release, release-meta, and publish build nothing for a platform, so any Linux
+  # runner takes them. Only the package matrix is tied to its platform's runner.
   create-release:
     if: github.event_name == 'push'
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 10
     permissions:
       contents: write
@@ -121,7 +123,7 @@ jobs:
   release-meta:
     needs: create-release
     if: ${{ !cancelled() && (needs.create-release.result == 'success' || github.event_name == 'workflow_dispatch') }}
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -276,7 +278,7 @@ jobs:
   publish:
     needs: [create-release, release-meta, package]
     if: github.event_name == 'push'
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 30
     permissions:
       contents: write

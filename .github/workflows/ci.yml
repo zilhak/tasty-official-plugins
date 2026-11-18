@@ -35,9 +35,11 @@ defaults:
     shell: bash
 
 jobs:
+  # Any Linux runner, x64 or ARM64, whichever is free: the plugin code branches on the
+  # operating system, not the CPU, so both run the same Linux code paths; see docs/ci.md.
   check:
     name: fmt, clippy, test
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,8 +93,8 @@ jobs:
             cargo test -p tasty-plugin-markdown --locked --no-fail-fast -- --ignored --exact \
               render::bed_focus_webkit_tests::bed_focus_sheet_switches_state_values_in_place
 
-  # Unit tests with the Windows and macOS code paths. The Windows and Linux ARM64
-  # targets are only built, in the build job; see docs/ci.md.
+  # Unit tests with the Windows and macOS code paths. The Windows ARM64 target is only
+  # built, in the build job; see docs/ci.md.
   test:
     name: test ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
@@ -192,10 +194,11 @@ jobs:
 
   # shellcheck on every shell script and actionlint on every workflow. Both tools are
   # downloaded from their release pages, checked against pinned SHA-256 sums, and kept
-  # in the runner tool cache, so the runner needs nothing but network access.
+  # in the runner tool cache, so the runner needs nothing but network access. Any Linux
+  # runner: the install script pins both x86_64 and aarch64 releases.
   lint:
     name: shellcheck, actionlint
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -214,9 +217,10 @@ jobs:
         run: bash scripts/lint-scripts.sh
 
   # Separate job: a new advisory fails this job without touching check and build.
+  # Any Linux runner: the result depends only on Cargo.lock.
   audit:
     name: cargo audit
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 15
     env:
       CARGO_AUDIT_VERSION: 0.22.2
@@ -252,9 +256,10 @@ jobs:
 
   # Separate job: the license result depends only on the commit, while audit can fail on a
   # new advisory. Only the license policy in deny.toml is checked; see docs/ci.md.
+  # Any Linux runner: deny.toml checks every target, whatever the host.
   licenses:
     name: cargo deny licenses
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

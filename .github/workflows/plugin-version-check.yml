@@ -57,9 +57,12 @@ defaults:
     shell: bash
 
 jobs:
+  # Any Linux runner, x64 or ARM64: the check reads every target's dependencies (cargo tree
+  # --target all) and compares sources as text, so the host CPU does not change the result;
+  # see docs/ci.md.
   check:
     name: plugin version check
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 20
     steps:
       # Both commits of the range must be readable.
