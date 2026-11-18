@@ -39,6 +39,8 @@ pub(crate) const DELIVERY_RETRY: Duration = Duration::from_secs(30);
 
 /// 상태 조회 실패를 경고로 남기는 간격(회차 수). 감시 회차는 약 0.8초다.
 const STATE_ERROR_WARN_EVERY: u32 = 75;
+/// meta 쓰기 실패를 경고로 남기는 간격(대상별 연속 실패 수). 실패한 meta 는 회차마다 다시 쓴다.
+const META_ERROR_WARN_EVERY: u32 = 75;
 
 /// 등록한 체크를 남기는 대상 surface meta. 재시작 뒤 복원에 쓴다.
 pub(crate) const IDLE_CHECK_META_KEY: &str = "claude-idle-checks";
@@ -293,6 +295,8 @@ pub(crate) struct IdleChecks {
     history: HashMap<u32, VecDeque<(Instant, Finish)>>,
     /// 쓰지 못한 meta 의 대상. 다음 회차에 다시 쓴다.
     unsaved: HashSet<u32>,
+    /// 대상별 연속 meta 쓰기 실패 수. 경고를 [`META_ERROR_WARN_EVERY`] 번마다 한 줄로 줄인다.
+    meta_errors: HashMap<u32, u32>,
     /// idle 줄을 쓴 (대상, 부모)와 그 시각.
     delivered: HashMap<(u32, u32), Instant>,
     /// 플러그인 프로세스가 시작한 시각. 되살린 체크의 등록 시각으로 쓴다. 그래서 시작 뒤에 받은 완료는 되살리기
@@ -485,6 +489,7 @@ impl IdleChecks {
     pub(crate) fn drop_target(&mut self, target: u32) -> usize {
         self.history.remove(&target);
         self.delivered.retain(|(t, _), _| *t != target);
+        self.meta_errors.remove(&target);
         let before = self.checks.len();
         self.checks.retain(|(t, _), _| *t != target);
         before - self.checks.len()
@@ -709,7 +714,12 @@ impl ErrorScanner {
     }
 
     /// meta 를 쓴다. 실패하면 `false`.
-    fn write_idle_meta<H: HostCall>(&self, host: &H, target: u32, value: Option<String>) -> bool {
+    fn write_idle_meta<H: HostCall>(
+        &mut self,
+        host: &H,
+        target: u32,
+        value: Option<String>,
+    ) -> bool {
         let result = match value {
             Some(value) => host.call(
                 "surface.meta.set",
@@ -721,14 +731,32 @@ impl ErrorScanner {
             ),
         };
         match result {
-            Ok(_) => true,
+            Ok(_) => {
+                if let Some(failures) = self.idle.meta_errors.remove(&target) {
+                    tracing::info!(
+                        "claude idle check s{target}: {IDLE_CHECK_META_KEY} written after {failures} failed attempt(s)"
+                    );
+                }
+                true
+            }
             Err(e) => {
-                tracing::warn!(
-                    "claude idle check s{target}: writing {IDLE_CHECK_META_KEY} failed, retrying next round: {e}"
-                );
+                let failures = self.idle.meta_errors.entry(target).or_default();
+                if *failures % META_ERROR_WARN_EVERY == 0 {
+                    tracing::warn!(
+                        "claude idle check s{target}: writing {IDLE_CHECK_META_KEY} failed ({} time(s)), retrying every round: {e}",
+                        *failures + 1
+                    );
+                }
+                *failures += 1;
                 false
             }
         }
+    }
+
+    /// 시험용 — 대상의 연속 meta 쓰기 실패 수.
+    #[cfg(test)]
+    pub(crate) fn idle_meta_errors(&self, target: u32) -> u32 {
+        self.idle.meta_errors.get(&target).copied().unwrap_or(0)
     }
 
     /// 대상의 체크를 meta 에 남긴다. 실패하면 다음 회차에 다시 쓴다.
