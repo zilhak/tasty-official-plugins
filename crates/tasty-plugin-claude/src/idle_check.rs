@@ -41,7 +41,9 @@ fn check_target<H: HostCall>(
             &tr.t_fmt("claude.idle_check.not_running", &target.to_string()),
         ));
     }
-    let claude = lock_scanner(scanner).is_enabled(target)
+    // 잠금은 이 줄에서 푼다. 아래 meta·anchor 조회 동안 감시 루프를 막지 않는다.
+    let tracked = lock_scanner(scanner).is_enabled(target);
+    let claude = tracked
         || crate::stop_pairing::meta_value(host, target, SESSION_META_KEY).is_some()
         || crate::remote::child_anchor(host, target, tr)
             .ok()
