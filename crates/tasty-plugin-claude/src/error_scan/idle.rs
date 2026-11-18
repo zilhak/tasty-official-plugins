@@ -741,7 +741,7 @@ impl ErrorScanner {
             }
             Err(e) => {
                 let failures = self.idle.meta_errors.entry(target).or_default();
-                if *failures % META_ERROR_WARN_EVERY == 0 {
+                if failures.is_multiple_of(META_ERROR_WARN_EVERY) {
                     tracing::warn!(
                         "claude idle check s{target}: writing {IDLE_CHECK_META_KEY} failed ({} time(s)), retrying every round: {e}",
                         *failures + 1
