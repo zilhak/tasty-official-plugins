@@ -6,7 +6,7 @@
 - **코드**: `crates/tasty-plugin-clipboard-viewer/`
 - **화면**: [screens/clipboard-viewer.md](screens/clipboard-viewer.md)
 
-> **예제로서**: **도구 메뉴 항목 + popup** 예제. 클립보드를 host 백엔드 없이 **plugin 프로세스가 `arboard` 로 직접 read** 하는 [플러그인 권한 모델](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/plugin-permissions.md) 비-샌드박스 모델의 레퍼런스 → [plugin-development](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/plugin-development.md#도구-메뉴-항목--popup).
+> **예제로서**: **도구 메뉴 항목 + popup** 예제. 클립보드를 host 백엔드 없이 **plugin 프로세스가 `arboard` 로 직접 read** 하는 [호스트 호출 계약](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/plugin-permissions.md) 비-샌드박스 모델의 레퍼런스 → [plugin-development](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/plugin-development.md#도구-메뉴-항목--popup).
 
 ## 목적
 
@@ -17,7 +17,7 @@ Text/Files/Image/HTML 어디에도 속하지 않는 나머지 raw 포맷은 **"O
 
 ## 내부 동작
 
-- **tool** `open-viewer` — [도구 메뉴](https://github.com/zilhak/tasty/blob/develop/docs/features/tools-menu/index.md)에 항목 추가(`ui.tool_item`), action `open_popup{com.tasty.clipboard-viewer/viewer}`.
+- **tool** `open-viewer` — [도구 메뉴](https://github.com/zilhak/tasty/blob/develop/docs/features/tools-menu/index.md)에 항목 추가, action `open_popup{com.tasty.clipboard-viewer/viewer}`.
 - **command** `open_viewer` — 단축키로도 뷰어를 연다(`scope = "global"`, 기본값 `ctrl+shift+h` — 설정 > 단축키 > 플러그인에서 변경 가능). action 은 tool 항목과 동일한 `open_popup{com.tasty.clipboard-viewer/viewer}`.
 - **popup** `viewer` — trigger `ipc`. header(아이콘+타이틀+snapshot 뱃지+close) → type-bar(타입 1 개면 아이콘+뱃지, 2 개 이상이면 가로 세그먼트 스위치) → body(well 스크롤 미리보기) → footer(mime[+meta]+Close) 4단 구조.
 - popup open 시 `arboard::Clipboard` 로 클립보드를 1 회 읽어 사용 가능한 타입 목록을 만든다. 현재 Text/Files/Image/HTML/Other 타입이 채워진다(Files 는 `arboard::Get::file_list()`, Image 는 `arboard::Clipboard::get_image()` 로 치수(width/height)와 바이트 수만 보존하고 픽셀 데이터 자체는 들고 있지 않는다, 렌더링을 안 하므로 필요 없다, HTML 은 `arboard::Clipboard::get().html()`, Other 는 arboard 를 거치지 않고 `raw_formats` 모듈이 플랫폼 raw API 로 직접 열거). 타입 선택 → body 미리보기 갱신.
@@ -30,6 +30,7 @@ Text/Files/Image/HTML 어디에도 속하지 않는 나머지 raw 포맷은 **"O
 - **사용자**: 도구 메뉴 `Clipboard Viewer` 또는 설정 > 단축키 > 플러그인에서 지정한 단축키 → popup. type-bar 에서 타입 선택 → body 에서 내용 확인.
 - **AI Agent**: 단발 클립보드 읽기/쓰기는 host 가 아닌 각 에이전트 프로세스의 직접 접근 영역이다(docs/dev-guide/plugin-permissions.md). 이 plugin 은 IPC 네임스페이스를 노출하지 않는 순수 뷰어다.
 
+호스트는 이 직접 OS 읽기를 막지 않는다. 플러그인 프로세스는 사용자와 같은 OS 권한으로 실행된다.
 호스트의 polling·history DB·clipboard.copied 이벤트와 clipboard history CLI/IPC는 제공하지 않는다.
 샌드박스나 history 기능을 새로 도입할 때 직접 접근과 보존 범위를 다시 정한다.
 

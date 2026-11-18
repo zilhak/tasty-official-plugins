@@ -336,7 +336,7 @@ surface를 추측으로 다른 thread에 연결하지 않는다. CWD, 포커스,
 
 ### agent task 턴 보고
 
-훅은 [agent task](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/agent-runner.md#agent-task)의 턴 경계를 `agent.task_turn_report`(`provider: "codex"`)로 호스트에 알린다. 이 호출에는 매니페스트의 `agent.turn_report` 권한을 쓴다(다른 agent.* 는 열지 않는 권한). `terminal.set_state` 보다 먼저 보낸다. 시작 보고(prompt-submit)에는 훅이 받은 프롬프트에 지시 끝의 회차 표지(`[tasty-task-attempt:<token>]`)가 있었는지와 그 토큰을 싣고(`prompt_seen`·`attempt_marker`), 프롬프트 본문은 보내지 않는다. 프롬프트는 UserPromptSubmit 의 stdin `prompt` 에서 읽는다. 호스트는 그 surface 에 묶인 agent task 회차가 있을 때만 적용한다. 보고 실패는 경고 로그만 남긴다. 변환은 `task_turn.rs` 에 있다.
+훅은 [agent task](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/agent-runner.md#agent-task)의 턴 경계를 `agent.task_turn_report`(`provider: "codex"`)로 호스트에 알린다. 호스트는 보고한 플러그인이 `codex` namespace 를 소유하는지 확인한다. `terminal.set_state` 보다 먼저 보낸다. 시작 보고(prompt-submit)에는 훅이 받은 프롬프트에 지시 끝의 회차 표지(`[tasty-task-attempt:<token>]`)가 있었는지와 그 토큰을 싣고(`prompt_seen`·`attempt_marker`), 프롬프트 본문은 보내지 않는다. 프롬프트는 UserPromptSubmit 의 stdin `prompt` 에서 읽는다. 호스트는 그 surface 에 묶인 agent task 회차가 있을 때만 적용한다. 보고 실패는 경고 로그만 남긴다. 변환은 `task_turn.rs` 에 있다.
 
 | 훅 token | 보고 |
 |---|---|
