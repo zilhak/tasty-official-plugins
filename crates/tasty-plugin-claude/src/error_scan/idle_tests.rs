@@ -1138,3 +1138,48 @@ fn the_running_flag_survives_a_restart() {
     );
     assert_eq!(host.idle_meta(), None);
 }
+
+/// 시작과 복원 사이에 건너뛴 앞 턴의 Stop 이 다시 와도, 복원은 건너뛴 끝을 먼저 되살린 뒤 이력을 적용하므로 그 Stop
+/// 으로 체크를 끝내지 않는다. 다음 턴의 끝이 끝낸다. prompt_id 가 있으면 다른 prompt, 없으면 오른 순번이 다음 턴이다.
+#[test]
+fn a_replayed_skipped_stop_before_the_restore_keeps_the_check() {
+    for keyed in [true, false] {
+        test_log::take();
+        let host = FakeHost::new("active");
+        let t = Instant::now();
+        let stop = |at: Instant, seq: u64, prompt: &'static str| {
+            Finish::turn(at, seq, keyed.then_some(prompt))
+        };
+        let scanner = Mutex::new(ErrorScanner::new());
+        tell_check(&scanner, &host, t, "active", 1);
+        lock_scanner(&scanner).idle_complete(&host, TARGET, stop(t + secs(1), 2, "old"));
+        assert_eq!(
+            checks(&scanner).len(),
+            1,
+            "keyed={keyed}: 앞 턴의 끝은 건너뛴다"
+        );
+
+        let restarted = Mutex::new(ErrorScanner::new());
+        lock_scanner(&restarted).idle.begin_restore(t + secs(2));
+        lock_scanner(&restarted).idle_complete(&host, TARGET, stop(t + secs(3), 2, "old"));
+        assert_eq!(
+            lock_scanner(&restarted).idle_restore(&host, TARGET, t + secs(4)),
+            1,
+            "keyed={keyed}: 복원 전에 다시 온 앞 턴의 Stop 은 체크를 끝내지 않는다"
+        );
+        lock_scanner(&restarted).idle.end_restore();
+        assert_eq!(checks(&restarted).len(), 1, "keyed={keyed}");
+        assert!(host.idle_meta().is_some(), "keyed={keyed}");
+        let next = if keyed {
+            stop(t + secs(5), 2, "new")
+        } else {
+            stop(t + secs(5), 3, "new")
+        };
+        lock_scanner(&restarted).idle_complete(&host, TARGET, next);
+        assert!(
+            checks(&restarted).is_empty(),
+            "keyed={keyed}: 다음 턴의 끝이 끝낸다"
+        );
+        assert_eq!(host.idle_meta(), None, "keyed={keyed}");
+    }
+}
