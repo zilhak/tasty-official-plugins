@@ -333,6 +333,7 @@ fn the_tell_threshold_follows_the_state_before_sending() {
             kind: StopKind::Idle,
             final_answer: None,
             turn: None,
+            seq: 0,
         },
         1,
         std::time::Instant::now(),

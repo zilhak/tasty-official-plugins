@@ -112,6 +112,7 @@ impl<H: HostCallSink> StopTail<'_, H> {
             kind,
             final_answer,
             turn,
+            seq: activity_now(self.state, self.host, surface_id),
         };
         let settled =
             lock_pairing(self.pairing).stop(session_id, held, gates, std::time::Instant::now());
@@ -211,8 +212,8 @@ impl<H: HostCallSink> StopTail<'_, H> {
     }
 
     /// 턴 종료 Stop 의 처리. 보류하지 않은 Stop 과 같은 호출·기록을 만든다. `stopped_at` 은 그 Stop 을 받은
-    /// 시각이며, 그 이전에 등록한 idle 체크를 끝낸다.
-    fn run_idle_stop(&self, surface_id: u32, stopped_at: std::time::Instant) -> usize {
+    /// 시각과 그때의 활동 순번이며, 그 턴의 끝을 기다리던 idle 체크를 끝낸다.
+    fn run_idle_stop(&self, surface_id: u32, stopped_at: crate::error_scan::idle::Finish) -> usize {
         // stop 의 호출 목록은 번역 문구를 쓰지 않는다.
         let mut calls = apply_hook("stop", surface_id, None, None, None, &Translator::default())
             .unwrap_or_else(|e| {
@@ -260,7 +261,7 @@ pub(crate) fn handle_claude_hook<H: HostCallSink>(
         .ok_or_else(|| IpcMethodError::invalid_params(tr.t("claude.hook.missing_event")))?;
 
     let surface_id = resolve_surface_id(params, tr)?;
-    // 이 훅을 받은 시각. 턴 종료로 확정되면 그 이전에 등록한 idle 체크를 끝낸다.
+    // 이 훅을 받은 시각. 턴 종료로 확정되면 그 이전에 등록했고 이 턴의 끝을 기다리던 idle 체크를 끝낸다.
     let received_at = std::time::Instant::now();
     crate::error_scan::lock_scanner(scanner).note_hook(surface_id);
     let session = params
@@ -401,7 +402,11 @@ pub(crate) fn handle_claude_hook<H: HostCallSink>(
     // 여기까지 온 stop·stop-failure 는 확정된 턴 종료다(대기·게이트 보류·서브에이전트 실패는 앞에서 돌아갔다).
     // 세션 종료 뒤에는 그 세션의 체크가 남지 않는다.
     if ends_idle_checks(event) {
-        crate::error_scan::lock_scanner(scanner).idle_complete(host, surface_id, received_at);
+        let finish = crate::error_scan::idle::Finish::Turn {
+            at: received_at,
+            seq: activity_now(state, host, surface_id),
+        };
+        crate::error_scan::lock_scanner(scanner).idle_complete(host, surface_id, finish);
     }
 
     // 게이트 판정은 별도 경로지만 세션 종료 시 모든 게이트의 회차 상태를 정리한다.
@@ -904,6 +909,23 @@ fn extract_tokens(text: &str) -> Option<u64> {
         i += 1;
     }
     None
+}
+
+/// 지금의 활동 순번. idle 체크가 이 턴 종료가 어느 작업의 끝인지 가르는 데 쓴다. 이 프로세스가 아직 올리지 않았으면
+/// meta 에서 읽는다.
+pub(crate) fn activity_now<H: HostCallSink>(
+    state: &Mutex<ClaudeState>,
+    host: &H,
+    surface_id: u32,
+) -> u64 {
+    let known = lock_state(state).activity_of(surface_id);
+    known.unwrap_or_else(|| {
+        tasty_plugin_agent_common::completion_gate::activity_seq(
+            host,
+            surface_id,
+            ACTIVITY_SEQ_META_KEY,
+        )
+    })
 }
 
 /// 새 활동을 알리는 이벤트. 최종 상태가 active 일 때만 순번을 올린다(입력 대기로 시작한 세션은 제외).
@@ -4509,14 +4531,35 @@ mod tests {
     mod idle_checks {
         use super::*;
 
+        use crate::error_scan::idle::{At, Origin, Owner};
+
         fn with_check(rig: &HookRig) -> u64 {
             crate::error_scan::lock_scanner(&rig.scanner)
                 .idle_register(
                     &rig.host,
                     HookRig::SURFACE,
                     3,
-                    crate::error_scan::idle::Origin::Manual,
-                    std::time::Instant::now(),
+                    Origin::Manual,
+                    Owner::at(At::now()),
+                )
+                .id
+        }
+
+        /// tell 처럼 보내기 전의 대상 상태와 활동 순번으로 정한 문턱의 체크를 건다.
+        fn with_tell_check(rig: &HookRig, state: &str) -> u64 {
+            let seq = activity_now(&rig.state, &rig.host, HookRig::SURFACE);
+            let threshold =
+                tasty_plugin_agent_common::completion_gate::threshold(Some(state), seq, false);
+            crate::error_scan::lock_scanner(&rig.scanner)
+                .idle_register(
+                    &rig.host,
+                    HookRig::SURFACE,
+                    3,
+                    Origin::Tell,
+                    Owner {
+                        at: At::now(),
+                        threshold: Some(threshold),
+                    },
                 )
                 .id
         }
@@ -4576,6 +4619,38 @@ mod tests {
             rig.run(gated_stop("p1"));
             rig.gate(json!({}), "p1");
             assert!(checks(&rig).is_empty(), "pass 로 확정된 Stop 은 끝낸다");
+        }
+
+        /// 실행 중인 대상에 보낸 tell 의 체크는 진행 중이던 앞 턴의 Stop 으로 끝나지 않는다. 메시지를 처리하는 다음
+        /// 턴(새 프롬프트로 연 턴)의 Stop 이 끝낸다. 판정은 완료 알림의 활동 순번 문턱과 같다.
+        #[test]
+        fn a_tell_to_a_running_target_ends_at_the_next_turn_not_the_running_one() {
+            let mut rig = HookRig::new();
+            rig.run(hook("prompt-submit"));
+            let id = with_tell_check(&rig, "active");
+            rig.run(hook("post-tool-use"));
+            rig.run(hook("stop"));
+            assert_eq!(checks(&rig), vec![(3, id)], "진행 중이던 앞 턴의 끝");
+            rig.run(hook("prompt-submit"));
+            rig.run(hook("post-tool-use"));
+            rig.run(hook("stop"));
+            assert!(checks(&rig).is_empty(), "메시지를 처리한 턴의 끝");
+        }
+
+        /// 게이트가 붙은 세션에서도 같다. 보류했다 확정한 Stop 은 Stop 을 받은 때의 활동 순번으로 판정한다.
+        #[test]
+        fn a_gated_stop_of_the_running_turn_keeps_the_tell_check() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut rig = HookRig::with_gates(dir.path(), 1);
+            rig.run(hook("prompt-submit"));
+            let id = with_tell_check(&rig, "active");
+            rig.run(gated_stop("p1"));
+            rig.gate(json!({}), "p1");
+            assert_eq!(checks(&rig), vec![(3, id)], "앞 턴의 끝");
+            rig.run(hook("prompt-submit"));
+            rig.run(gated_stop("p2"));
+            rig.gate(json!({}), "p2");
+            assert!(checks(&rig).is_empty(), "다음 턴의 끝");
         }
 
         /// 판정이 오지 않아 시간 초과로 확정된 Stop 도 체크를 끝낸다.

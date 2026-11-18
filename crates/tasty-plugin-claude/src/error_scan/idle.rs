@@ -2,23 +2,30 @@
 //!
 //! 체크 하나는 (대상 surface, 받을 부모 surface) 한 쌍에 하나다. 등록 시각부터 대상의 `terminal.state` 를 감시 회차마다
 //! 묻고, `active` 를 볼 때마다 기준 시각을 그때로 옮긴다. 근거(evidence)는 가리지 않는다. 마지막 `active` 뒤
-//! [`IDLE_CHECK_WAIT`] 가 지나도록 확정된 완료가 없으면 부모 완료 로그에 idle 줄 하나를 쓰고 체크를 끝낸다.
+//! [`IDLE_CHECK_WAIT`] 가 지나도록 그 체크의 작업이 끝났다는 확정 완료가 없으면 부모 완료 로그에 idle 줄 하나를 쓰고
+//! 체크를 끝낸다.
 //!
-//! - 확정된 완료(턴 종료 Stop·StopFailure, 게이트 확정, 세션 종료, 원격 턴 결과)는 그 Stop 을 받은 시각 이전에 등록한
-//!   체크를 지운다. 그 뒤에 등록한 체크는 남는다. 늦게 확정된 앞 턴의 완료가 새 등록을 지우지 않게 하려는 것이다.
+//! - 확정 완료([`Finish`])가 어느 체크를 끝내는지는 체크의 소유([`Owner`])로 가른다. 로컬 턴 종료는 등록 뒤에 받은 Stop
+//!   이어야 하고, tell 이 정한 완료 문턱(활동 순번)이 있으면 완료 알림과 같은 판정([`completion_gate::decide`])을
+//!   따른다. 실행 중인 대상에 보낸 tell 은 진행 중이던 앞 턴의 끝으로 끝나지 않는다. 원격 자식의 결과는 그 결과를
+//!   낳은 지시(route 토큰)의 발급 시각이 등록 뒤일 때만 체크를 끝낸다.
 //! - 같은 부모·대상을 다시 등록하면 새 id 의 체크로 바꾼다. 앞 체크의 진행 중인 판정은 id 가 달라 버린다.
 //! - 상태 조회 실패는 비활동으로 세지 않는다. 그 회차에는 줄을 쓰지 않는다.
-//! - 부모 로그 쓰기에 실패하면 체크를 남기고 [`DELIVERY_RETRY`] 뒤에 조건을 다시 확인해 쓴다. 쓰기에 성공한 체크만 끝낸다.
+//! - 줄을 쓰기 전에 meta 에서 그 체크를 먼저 지운다. 지우지 못하면 쓰지 않고 다음 회차에 다시 한다. 그래서 쓴 줄의
+//!   등록은 재시작 뒤 되살아나지 않는다. 부모 로그 쓰기에 실패하면 체크와 meta 를 되돌리고 [`DELIVERY_RETRY`] 뒤에
+//!   조건을 다시 확인해 쓴다.
 //! - 백그라운드 작업 대기(대기 Stop 기록)와 surface 전체 무출력 선언(`claude quiet`)이 있는 동안은 `active` 처럼
 //!   기준 시각을 옮긴다. 그 동안의 조용함은 기존 무출력 알림 규칙이 맡는다.
-//! - 등록은 대상 surface meta [`IDLE_CHECK_META_KEY`] 에 남긴다. 플러그인이 다시 시작되면 남은 등록만 되살리고
-//!   그 시각부터 [`IDLE_CHECK_WAIT`] 를 다시 센다. 끝난 체크는 meta 에서 지우므로 되살아나지 않는다.
+//! - 등록은 대상 surface meta [`IDLE_CHECK_META_KEY`] 에 남긴다. 쓰지 못한 meta 는 다음 회차에 다시 쓴다. 플러그인이
+//!   다시 시작되면 남은 등록만 되살리고 그 시각부터 [`IDLE_CHECK_WAIT`] 를 다시 센다. 되살리기 전에 받은 확정 완료는
+//!   되살릴 등록에 먼저 적용한다.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use tasty_plugin_agent_common::completion_gate::{self, Threshold};
 use tasty_plugin_agent_common::host_call::HostCall;
 
 use super::{ErrorScanner, lock_scanner, unix_now_ms};
@@ -35,6 +42,13 @@ const STATE_ERROR_WARN_EVERY: u32 = 75;
 
 /// 등록한 체크를 남기는 대상 surface meta. 재시작 뒤 복원에 쓴다.
 pub(crate) const IDLE_CHECK_META_KEY: &str = "claude-idle-checks";
+
+/// 완료 이력을 두는 시간. 이력은 보내기와 등록 사이, 시작과 복원 사이에 온 완료를 가리는 데만 쓴다.
+const HISTORY_KEPT: Duration = Duration::from_secs(5 * 60);
+/// 완료 이력을 두는 대상 수 상한. 넘으면 가장 오래된 대상부터 지운다.
+pub(crate) const HISTORY_TARGETS_MAX: usize = 256;
+/// 대상 하나에 두는 완료 이력 수.
+const HISTORY_PER_TARGET: usize = 8;
 
 /// 체크를 건 경로. 응답·meta·로그에 적는다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,12 +80,99 @@ impl Origin {
     }
 }
 
+/// 한 시점. 로컬 완료는 [`Instant`] 로, 원격 지시의 발급 시각은 Unix ms 로 비교한다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct At {
+    pub instant: Instant,
+    pub ms: u64,
+}
+
+impl At {
+    pub(crate) fn now() -> Self {
+        Self {
+            instant: Instant::now(),
+            ms: unix_now_ms(),
+        }
+    }
+}
+
+/// 체크가 기다리는 작업. 어떤 확정 완료가 이 체크를 끝내는지 정한다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Owner {
+    /// 등록 시각. tell 은 보내기 전에 잰다.
+    pub at: At,
+    /// tell 이 보내기 전에 정한 완료 문턱. 없으면 등록 뒤의 턴 종료면 끝난다.
+    pub threshold: Option<Threshold>,
+}
+
+impl Owner {
+    pub(crate) fn at(at: At) -> Self {
+        Self {
+            at,
+            threshold: None,
+        }
+    }
+}
+
+/// 확정된 완료.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Finish {
+    /// 로컬 Claude 의 턴 종료 확정(Stop·StopFailure·세션 종료). Stop 을 받은 시각과 그때의 활동 순번.
+    Turn { at: Instant, seq: u64 },
+    /// 원격 자식의 기록된 턴 결과. 그 결과를 낳은 지시의 route 토큰 발급 시각(Unix ms). 모르면 `None`.
+    Remote { issued_ms: Option<u64> },
+    /// 원격 자식이 끝났다.
+    RemoteExit,
+}
+
+/// 확정 완료가 체크 하나에 주는 결과.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Effect {
+    End,
+    Keep,
+    /// 진행 중이던 앞 턴의 끝이다. 이 문턱부터 세는 다음 턴의 끝을 기다린다.
+    Advance(Threshold),
+}
+
+/// `finish` 가 `owner` 의 체크에 주는 결과. `before_restore` 는 이전 프로세스의 등록을 되살리기 전에 받은 완료라
+/// 등록 시각과 비교하지 않는다(등록은 그 전 프로세스에서 했다).
+fn effect(owner: &Owner, finish: Finish, before_restore: bool) -> Effect {
+    match finish {
+        Finish::Turn { at, seq } => {
+            if !before_restore && at < owner.at.instant {
+                return Effect::Keep;
+            }
+            let Some(threshold) = owner.threshold else {
+                return Effect::End;
+            };
+            // 완료 알림과 같은 판정이다. 턴 종료 훅 하나가 이 순번의 끝을 받았다고 보고 그 결정을 따른다.
+            let tail = completion_gate::Tail {
+                event: completion_gate::NoticeEvent::Idle,
+                done_from: threshold.done_from,
+                arm: 0,
+                twice: threshold.twice,
+            };
+            let verdict = completion_gate::decide(tail, Some("idle"), seq, false);
+            match (verdict.decision, verdict.next) {
+                (completion_gate::Decision::Done, completion_gate::Next::Keep(next)) => {
+                    Effect::Advance(Threshold::once(next.done_from))
+                }
+                (completion_gate::Decision::Done, _) => Effect::End,
+                _ => Effect::Keep,
+            }
+        }
+        Finish::Remote {
+            issued_ms: Some(issued),
+        } if issued >= owner.at.ms => Effect::End,
+        Finish::Remote { .. } => Effect::Keep,
+        Finish::RemoteExit => Effect::End,
+    }
+}
+
 struct Check {
     id: u64,
     origin: Origin,
-    /// 소유 판정에 쓰는 등록 시각. 이 시각 이후에 받은 Stop 의 확정만 이 체크를 끝낸다.
-    registered_at: Instant,
-    registered_ms: u64,
+    owner: Owner,
     /// 마지막으로 `active` 를 본 시각(처음에는 등록 시각).
     last_active: Instant,
     /// 마지막으로 읽은 상태. 줄에 적는다.
@@ -82,12 +183,41 @@ struct Check {
     state_errors: u32,
 }
 
+impl Check {
+    fn new(id: u64, origin: Origin, owner: Owner, now: Instant) -> Self {
+        Self {
+            id,
+            origin,
+            owner,
+            last_active: now,
+            last_state: None,
+            retry_at: None,
+            delivery_failures: 0,
+            state_errors: 0,
+        }
+    }
+
+    /// 완료를 적용한다. 체크가 끝났으면 `true`.
+    fn apply(&mut self, finish: Finish, before_restore: bool) -> bool {
+        match effect(&self.owner, finish, before_restore) {
+            Effect::End => true,
+            Effect::Keep => false,
+            Effect::Advance(threshold) => {
+                self.owner.threshold = Some(threshold);
+                false
+            }
+        }
+    }
+}
+
 /// idle 체크 표. [`ErrorScanner`] 잠금 아래에 둔다.
 #[derive(Default)]
 pub(crate) struct IdleChecks {
     checks: HashMap<(u32, u32), Check>,
-    /// 대상별 마지막 확정 완료의 Stop 수신 시각. 그 뒤에 넣는 등록이 이미 지난 완료와 겹치는지 가린다.
-    completed_at: HashMap<u32, Instant>,
+    /// 대상별 최근 확정 완료(받은 시각, 완료). 보내기와 등록 사이, 시작과 복원 사이에 온 완료를 새 등록에 적용한다.
+    history: HashMap<u32, VecDeque<(Instant, Finish)>>,
+    /// 쓰지 못한 meta 의 대상. 다음 회차에 다시 쓴다.
+    unsaved: HashSet<u32>,
     next_id: u64,
 }
 
@@ -134,6 +264,16 @@ pub(crate) enum Step {
     Dropped,
 }
 
+/// meta 에 남은 등록 하나.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Stored {
+    pub caller: u32,
+    pub origin: Origin,
+    /// 등록 Unix ms.
+    pub ms: u64,
+    pub threshold: Option<Threshold>,
+}
+
 impl IdleChecks {
     fn new_id(&mut self) -> u64 {
         if self.next_id == 0 {
@@ -145,21 +285,21 @@ impl IdleChecks {
         id
     }
 
-    /// 체크를 넣는다. 같은 부모·대상의 앞 체크는 바꾼다. 등록 시각 이후의 완료를 이미 받았으면 넣지 않는다.
+    /// 체크를 넣는다. 같은 부모·대상의 앞 체크는 바꾼다. 등록 뒤의 완료를 이미 받았으면 그 완료를 적용한다.
     pub(crate) fn register(
         &mut self,
         target: u32,
         caller: u32,
         origin: Origin,
-        registered_at: Instant,
-        registered_ms: u64,
+        owner: Owner,
     ) -> Registered {
         let id = self.new_id();
-        if self
-            .completed_at
+        let mut check = Check::new(id, origin, owner, owner.at.instant);
+        let finished = self
+            .history
             .get(&target)
-            .is_some_and(|done| *done >= registered_at)
-        {
+            .is_some_and(|h| h.iter().any(|(_, f)| check.apply(*f, false)));
+        if finished {
             let replaced = self.checks.remove(&(target, caller)).map(|c| c.id);
             return Registered {
                 id,
@@ -167,23 +307,7 @@ impl IdleChecks {
                 completed: true,
             };
         }
-        let replaced = self
-            .checks
-            .insert(
-                (target, caller),
-                Check {
-                    id,
-                    origin,
-                    registered_at,
-                    registered_ms,
-                    last_active: registered_at,
-                    last_state: None,
-                    retry_at: None,
-                    delivery_failures: 0,
-                    state_errors: 0,
-                },
-            )
-            .map(|c| c.id);
+        let replaced = self.checks.insert((target, caller), check).map(|c| c.id);
         Registered {
             id,
             replaced,
@@ -191,27 +315,52 @@ impl IdleChecks {
         }
     }
 
-    /// 확정된 완료. `stopped_at` 이전에 등록한 체크를 지우고 지운 부모를 돌려준다.
-    pub(crate) fn complete(&mut self, target: u32, stopped_at: Instant) -> Vec<u32> {
-        let done = self.completed_at.entry(target).or_insert(stopped_at);
-        if stopped_at > *done {
-            *done = stopped_at;
-        }
-        let ended: Vec<(u32, u32)> = self
+    /// 확정된 완료를 이력에 남기고 대상의 체크에 적용한다. 끝난 부모를 돌려준다.
+    pub(crate) fn complete(&mut self, target: u32, finish: Finish, now: Instant) -> Vec<u32> {
+        self.remember(target, finish, now);
+        let mut ended: Vec<u32> = self
             .checks
-            .iter()
-            .filter(|((t, _), c)| *t == target && c.registered_at <= stopped_at)
-            .map(|(k, _)| *k)
+            .iter_mut()
+            .filter(|((t, _), _)| *t == target)
+            .filter_map(|((_, caller), c)| c.apply(finish, false).then_some(*caller))
             .collect();
+        ended.sort_unstable();
+        for caller in &ended {
+            self.checks.remove(&(target, *caller));
+        }
         ended
-            .into_iter()
-            .filter_map(|k| self.checks.remove(&k).map(|_| k.1))
-            .collect()
     }
 
-    /// 대상의 체크를 모두 지운다(세션 교체·추적 종료). 완료 기록도 지운다.
+    /// 완료 이력에 넣는다. 오래된 이력과 상한을 넘는 대상을 함께 지운다.
+    fn remember(&mut self, target: u32, finish: Finish, now: Instant) {
+        self.history.retain(|_, h| {
+            h.retain(|(at, _)| now.saturating_duration_since(*at) < HISTORY_KEPT);
+            !h.is_empty()
+        });
+        let entries = self.history.entry(target).or_default();
+        entries.push_back((now, finish));
+        while entries.len() > HISTORY_PER_TARGET {
+            entries.pop_front();
+        }
+        while self.history.len() > HISTORY_TARGETS_MAX {
+            let oldest = self
+                .history
+                .iter()
+                .filter(|(t, _)| **t != target)
+                .min_by_key(|(_, h)| h.back().map(|(at, _)| *at))
+                .map(|(t, _)| *t);
+            match oldest {
+                Some(t) => {
+                    self.history.remove(&t);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// 대상의 체크를 모두 지운다(세션 교체·추적 종료). 완료·전달 기록도 지운다.
     pub(crate) fn drop_target(&mut self, target: u32) -> usize {
-        self.completed_at.remove(&target);
+        self.history.remove(&target);
         let before = self.checks.len();
         self.checks.retain(|(t, _), _| *t != target);
         before - self.checks.len()
@@ -237,6 +386,11 @@ impl IdleChecks {
             .filter(|c| c.id == probe.id)
     }
 
+    /// 대상에 걸린 체크가 있는가.
+    pub(crate) fn has_any(&self, target: u32) -> bool {
+        self.checks.keys().any(|(t, _)| *t == target)
+    }
+
     /// 시험용 — 대상의 체크 (부모, id) 목록.
     #[cfg(test)]
     pub(crate) fn of_target(&self, target: u32) -> Vec<(u32, u64)> {
@@ -250,19 +404,30 @@ impl IdleChecks {
         out
     }
 
-    /// meta 에 남길 값. 체크가 없으면 `None`.
-    fn meta_value(&self, target: u32) -> Option<String> {
+    /// 시험용 — 완료 이력을 둔 대상 수.
+    #[cfg(test)]
+    pub(crate) fn history_targets(&self) -> usize {
+        self.history.len()
+    }
+
+    /// meta 에 남길 값. `skip` 부모의 체크는 뺀다. 남는 체크가 없으면 `None`.
+    fn meta_value(&self, target: u32, skip: Option<u32>) -> Option<String> {
         let mut checks: Vec<Value> = self
             .checks
             .iter()
-            .filter(|((t, _), _)| *t == target)
+            .filter(|((t, caller), _)| *t == target && Some(*caller) != skip)
             .map(|((_, caller), c)| {
-                json!({
+                let mut v = json!({
                     "caller": caller,
                     "id": c.id,
                     "origin": c.origin.as_str(),
-                    "registered_ms": c.registered_ms,
-                })
+                    "registered_ms": c.owner.at.ms,
+                });
+                if let Some(th) = c.owner.threshold {
+                    v["done_from"] = json!(th.done_from);
+                    v["twice"] = json!(th.twice);
+                }
+                v
             })
             .collect();
         if checks.is_empty() {
@@ -273,8 +438,8 @@ impl IdleChecks {
     }
 }
 
-/// meta 에 남은 등록(부모, 경로, 등록 Unix ms). 읽을 수 없는 항목은 건너뛴다.
-pub(crate) fn parse_meta(raw: &str) -> Vec<(u32, Origin, u64)> {
+/// meta 에 남은 등록. 읽을 수 없는 항목은 건너뛴다.
+pub(crate) fn parse_meta(raw: &str) -> Vec<Stored> {
     let Ok(v) = serde_json::from_str::<Value>(raw) else {
         tracing::warn!("claude idle check meta is not JSON: {raw}");
         return Vec::new();
@@ -287,7 +452,19 @@ pub(crate) fn parse_meta(raw: &str) -> Vec<(u32, Origin, u64)> {
                     let caller = u32::try_from(c.get("caller")?.as_u64()?).ok()?;
                     let origin = Origin::parse(c.get("origin").and_then(Value::as_str)?);
                     let ms = c.get("registered_ms").and_then(Value::as_u64).unwrap_or(0);
-                    Some((caller, origin, ms))
+                    let threshold =
+                        c.get("done_from")
+                            .and_then(Value::as_u64)
+                            .map(|done_from| Threshold {
+                                done_from,
+                                twice: c.get("twice").and_then(Value::as_bool).unwrap_or(false),
+                            });
+                    Some(Stored {
+                        caller,
+                        origin,
+                        ms,
+                        threshold,
+                    })
                 })
                 .collect()
         })
@@ -318,6 +495,12 @@ pub(crate) fn idle_line(template: &str, target: u32, quiet: Duration, state: &st
     )
 }
 
+/// 기한이 지난 체크의 처리.
+enum Due {
+    Step(Step),
+    Deliver { quiet: Duration, state: String },
+}
+
 impl ErrorScanner {
     /// 체크를 등록하고 meta 에 남긴다.
     pub(crate) fn idle_register<H: HostCall>(
@@ -326,11 +509,9 @@ impl ErrorScanner {
         target: u32,
         caller: u32,
         origin: Origin,
-        registered_at: Instant,
+        owner: Owner,
     ) -> Registered {
-        let registered = self
-            .idle
-            .register(target, caller, origin, registered_at, unix_now_ms());
+        let registered = self.idle.register(target, caller, origin, owner);
         tracing::info!(
             "claude idle check s{target}→s{caller}: registered #{} ({}){}{}",
             registered.id,
@@ -349,18 +530,16 @@ impl ErrorScanner {
         registered
     }
 
-    /// 확정된 완료로 체크를 끝낸다. 남은 체크가 바뀌었으면 meta 를 다시 쓴다.
-    pub(crate) fn idle_complete<H: HostCall>(
-        &mut self,
-        host: &H,
-        target: u32,
-        stopped_at: Instant,
-    ) {
-        let ended = self.idle.complete(target, stopped_at);
+    /// 확정된 완료를 적용한다. 끝난 체크가 있으면 meta 를 다시 쓴다.
+    pub(crate) fn idle_complete<H: HostCall>(&mut self, host: &H, target: u32, finish: Finish) {
+        let ended = self.idle.complete(target, finish, Instant::now());
         if !ended.is_empty() {
             tracing::info!(
                 "claude idle check s{target}: finished turn confirmed — ended the check(s) of parent(s) {ended:?}"
             );
+            self.save_idle(host, target);
+        } else if self.idle.has_any(target) {
+            // 앞 턴의 끝으로 문턱만 옮겼을 수 있다. 재시작 뒤에도 그 문턱으로 판정하도록 남긴다.
             self.save_idle(host, target);
         }
     }
@@ -373,8 +552,9 @@ impl ErrorScanner {
         }
     }
 
-    fn save_idle<H: HostCall>(&self, host: &H, target: u32) {
-        let result = match self.idle.meta_value(target) {
+    /// meta 를 쓴다. 실패하면 `false`.
+    fn write_idle_meta<H: HostCall>(&self, host: &H, target: u32, value: Option<String>) -> bool {
+        let result = match value {
             Some(value) => host.call(
                 "surface.meta.set",
                 json!({ "surface_id": target, "key": IDLE_CHECK_META_KEY, "value": value }),
@@ -384,14 +564,38 @@ impl ErrorScanner {
                 json!({ "surface_id": target, "key": IDLE_CHECK_META_KEY }),
             ),
         };
-        if let Err(e) = result {
-            tracing::warn!(
-                "claude idle check s{target}: writing {IDLE_CHECK_META_KEY} failed: {e}"
-            );
+        match result {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(
+                    "claude idle check s{target}: writing {IDLE_CHECK_META_KEY} failed, retrying next round: {e}"
+                );
+                false
+            }
         }
     }
 
-    /// 재시작 전 meta 의 등록을 되살린다. 이미 있는 체크는 두고, 되살린 수를 돌려준다.
+    /// 대상의 체크를 meta 에 남긴다. 실패하면 다음 회차에 다시 쓴다.
+    fn save_idle<H: HostCall>(&mut self, host: &H, target: u32) {
+        let value = self.idle.meta_value(target, None);
+        if self.write_idle_meta(host, target, value) {
+            self.idle.unsaved.remove(&target);
+        } else {
+            self.idle.unsaved.insert(target);
+        }
+    }
+
+    /// 쓰지 못한 meta 를 다시 쓴다.
+    pub(crate) fn idle_retry_saves<H: HostCall>(&mut self, host: &H) {
+        let mut targets: Vec<u32> = self.idle.unsaved.iter().copied().collect();
+        targets.sort_unstable();
+        for target in targets {
+            self.save_idle(host, target);
+        }
+    }
+
+    /// 재시작 전 meta 의 등록을 되살린다. 되살리기 전에 받은 확정 완료를 먼저 적용해 끝난 등록은 버리고 meta 에서도
+    /// 지운다. 이미 있는 체크는 둔다. 되살린 수를 돌려준다.
     pub(crate) fn idle_restore<H: HostCall>(
         &mut self,
         host: &H,
@@ -401,26 +605,31 @@ impl ErrorScanner {
         let Some(raw) = crate::stop_pairing::meta_value(host, target, IDLE_CHECK_META_KEY) else {
             return 0;
         };
-        let mut restored = 0;
-        for (caller, origin, ms) in parse_meta(&raw) {
-            if self.idle.checks.contains_key(&(target, caller)) {
+        let history: Vec<Finish> = self
+            .idle
+            .history
+            .get(&target)
+            .map(|h| h.iter().map(|(_, f)| *f).collect())
+            .unwrap_or_default();
+        let (mut restored, mut ended) = (0, 0);
+        for stored in parse_meta(&raw) {
+            if self.idle.checks.contains_key(&(target, stored.caller)) {
                 continue;
             }
-            let id = self.idle.new_id();
-            self.idle.checks.insert(
-                (target, caller),
-                Check {
-                    id,
-                    origin,
-                    registered_at: now,
-                    registered_ms: ms,
-                    last_active: now,
-                    last_state: None,
-                    retry_at: None,
-                    delivery_failures: 0,
-                    state_errors: 0,
+            let owner = Owner {
+                at: At {
+                    instant: now,
+                    ms: stored.ms,
                 },
-            );
+                threshold: stored.threshold,
+            };
+            let id = self.idle.new_id();
+            let mut check = Check::new(id, stored.origin, owner, now);
+            if history.iter().any(|f| check.apply(*f, true)) {
+                ended += 1;
+                continue;
+            }
+            self.idle.checks.insert((target, stored.caller), check);
             restored += 1;
         }
         if restored > 0 {
@@ -428,6 +637,13 @@ impl ErrorScanner {
                 "claude idle check s{target}: restored {restored} check(s) — counting {}s again from now",
                 IDLE_CHECK_WAIT.as_secs()
             );
+        }
+        if ended > 0 {
+            tracing::info!(
+                "claude idle check s{target}: {ended} stored check(s) ended by a finished turn before the restore"
+            );
+        }
+        if restored > 0 || ended > 0 {
             self.save_idle(host, target);
         }
         restored
@@ -459,28 +675,50 @@ impl ErrorScanner {
     ) -> Step {
         let paused = matches!(observation, Observation::NotActive(_))
             && self.idle_paused(host, probe.target, unix_now_ms());
-        let gone = observation == Observation::Gone;
+        match self.idle_due(probe, observation, paused, now) {
+            Due::Step(Step::Dropped) => {
+                self.idle.checks.remove(&(probe.target, probe.caller));
+                self.save_idle(host, probe.target);
+                Step::Dropped
+            }
+            Due::Step(step) => step,
+            Due::Deliver { quiet, state } => {
+                self.idle_deliver(host, probe, quiet, &state, now, template)
+            }
+        }
+    }
+
+    /// 조회 결과를 체크에 반영하고 할 일을 정한다.
+    fn idle_due(
+        &mut self,
+        probe: Probe,
+        observation: Observation,
+        paused: bool,
+        now: Instant,
+    ) -> Due {
         let Some(check) = self.idle.current(probe) else {
-            return Step::Stale;
+            return Due::Step(Step::Stale);
         };
         let state = match observation {
             Observation::Active => {
                 check.last_active = now;
                 check.last_state = Some("active".into());
                 check.state_errors = 0;
-                return Step::Waiting;
+                return Due::Step(Step::Waiting);
             }
             Observation::Exited | Observation::Gone => {
                 tracing::info!(
                     "claude idle check s{}→s{}: target {} — check #{} dropped",
                     probe.target,
                     probe.caller,
-                    if gone { "surface is gone" } else { "exited" },
+                    if observation == Observation::Gone {
+                        "surface is gone"
+                    } else {
+                        "exited"
+                    },
                     probe.id
                 );
-                self.idle.checks.remove(&(probe.target, probe.caller));
-                self.save_idle(host, probe.target);
-                return Step::Dropped;
+                return Due::Step(Step::Dropped);
             }
             Observation::Error(e) => {
                 if check.state_errors % STATE_ERROR_WARN_EVERY == 0 {
@@ -492,7 +730,7 @@ impl ErrorScanner {
                     );
                 }
                 check.state_errors += 1;
-                return Step::Waiting;
+                return Due::Step(Step::Waiting);
             }
             Observation::NotActive(state) => state,
         };
@@ -500,13 +738,31 @@ impl ErrorScanner {
         check.last_state = Some(state.clone());
         if paused {
             check.last_active = now;
-            return Step::Waiting;
+            return Due::Step(Step::Waiting);
         }
         let quiet = now.saturating_duration_since(check.last_active);
         if quiet < IDLE_CHECK_WAIT || check.retry_at.is_some_and(|r| now < r) {
-            return Step::Waiting;
+            return Due::Step(Step::Waiting);
         }
-        let line = idle_line(template, probe.target, quiet, &state);
+        Due::Deliver { quiet, state }
+    }
+
+    /// 기한이 지난 체크의 줄을 쓴다. meta 에서 먼저 지워야 쓴다. 쓰기에 실패하면 meta 를 되돌리고 나중에 다시 쓴다.
+    fn idle_deliver<H: HostCall>(
+        &mut self,
+        host: &H,
+        probe: Probe,
+        quiet: Duration,
+        state: &str,
+        now: Instant,
+        template: &str,
+    ) -> Step {
+        let rest = self.idle.meta_value(probe.target, Some(probe.caller));
+        if !self.write_idle_meta(host, probe.target, rest) {
+            // 지우지 못한 채 쓰면 재시작 뒤 같은 등록이 다시 알린다. 다음 회차에 다시 한다.
+            return Step::DeliveryFailed;
+        }
+        let line = idle_line(template, probe.target, quiet, state);
         match crate::notice::append(probe.caller, NoticeKind::IdleCheck, &line) {
             Ok(()) => {
                 tracing::info!(
@@ -517,33 +773,41 @@ impl ErrorScanner {
                     probe.id
                 );
                 self.idle.checks.remove(&(probe.target, probe.caller));
-                self.save_idle(host, probe.target);
+                self.idle.unsaved.remove(&probe.target);
                 Step::Delivered
             }
             Err(e) => {
-                check.delivery_failures += 1;
-                check.retry_at = Some(now + DELIVERY_RETRY);
-                tracing::warn!(
-                    "claude idle check s{}→s{}: writing the idle line to the parent log failed ({} time(s)), retrying in {}s while the target stays inactive: {e}",
-                    probe.target,
-                    probe.caller,
-                    check.delivery_failures,
-                    DELIVERY_RETRY.as_secs()
-                );
+                if let Some(check) = self.idle.current(probe) {
+                    check.delivery_failures += 1;
+                    check.retry_at = Some(now + DELIVERY_RETRY);
+                    tracing::warn!(
+                        "claude idle check s{}→s{}: writing the idle line to the parent log failed ({} time(s)), retrying in {}s while the target stays inactive: {e}",
+                        probe.target,
+                        probe.caller,
+                        check.delivery_failures,
+                        DELIVERY_RETRY.as_secs()
+                    );
+                }
+                // 체크가 남았으므로 meta 에도 다시 남긴다.
+                self.save_idle(host, probe.target);
                 Step::DeliveryFailed
             }
         }
     }
 }
 
-/// 감시 회차 하나. 체크마다 잠금을 풀고 상태를 물은 뒤 다시 잠가 반영한다.
+/// 감시 회차 하나. 쓰지 못한 meta 를 다시 쓰고, 체크마다 잠금을 풀고 상태를 물은 뒤 다시 잠가 반영한다.
 pub(crate) fn run_idle_checks<H: HostCall>(
     scanner: &Mutex<ErrorScanner>,
     host: &H,
     template: &str,
     now: Instant,
 ) -> Vec<(Probe, Step)> {
-    let probes = lock_scanner(scanner).idle.probes();
+    let probes = {
+        let mut guard = lock_scanner(scanner);
+        guard.idle_retry_saves(host);
+        guard.idle.probes()
+    };
     probes
         .into_iter()
         .map(|probe| {

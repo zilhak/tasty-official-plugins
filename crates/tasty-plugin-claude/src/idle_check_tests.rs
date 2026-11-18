@@ -8,6 +8,7 @@ use tasty_plugin_agent_common::host_call::HostCall;
 use tasty_plugin_sdk::i18n::Translator;
 
 use super::*;
+use crate::error_scan::idle::IDLE_CHECK_META_KEY;
 use crate::error_scan::{ErrorScanner, ScanTarget, lock_scanner};
 
 const CHILD: u32 = 7;
@@ -20,20 +21,25 @@ fn tr() -> Translator {
     )
 }
 
-/// 상태와 Claude 세션 meta 를 정하는 호스트. 모든 호출을 기록한다.
-struct TargetHost {
+/// 상태와 Claude 세션 meta 를 정하는 호스트. idle meta 는 실제처럼 저장하고, 모든 호출을 기록한다.
+struct TargetHost<'a> {
     state: Result<&'static str, &'static str>,
     session: bool,
     tell_fails: bool,
+    /// `terminal.tell` 을 받는 동안 할 일(보낸 직후 처리 전에 온 Stop 등).
+    on_tell: Option<Box<dyn Fn() + 'a>>,
+    idle_meta: RefCell<Option<String>>,
     calls: RefCell<Vec<(String, Value)>>,
 }
 
-impl TargetHost {
+impl TargetHost<'_> {
     fn new(state: &'static str) -> Self {
         Self {
             state: Ok(state),
             session: true,
             tell_fails: false,
+            on_tell: None,
+            idle_meta: RefCell::new(None),
             calls: RefCell::new(Vec::new()),
         }
     }
@@ -51,12 +57,29 @@ fn host_error(method: &str, message: &str) -> tasty_plugin_sdk::PluginError {
     }
 }
 
-impl HostCall for TargetHost {
+impl HostCall for TargetHost<'_> {
     fn call(&self, method: &str, params: Value) -> Result<Value, tasty_plugin_sdk::PluginError> {
         self.calls
             .borrow_mut()
             .push((method.to_string(), params.clone()));
+        let idle_key = params["key"] == IDLE_CHECK_META_KEY;
         match method {
+            "terminal.tell" if !self.tell_fails => {
+                if let Some(f) = &self.on_tell {
+                    f();
+                }
+                Ok(json!({}))
+            }
+            "surface.list" => Ok(json!([{ "id": CHILD }])),
+            "surface.meta.set" if idle_key => {
+                *self.idle_meta.borrow_mut() = params["value"].as_str().map(String::from);
+                Ok(json!({}))
+            }
+            "surface.meta.unset" if idle_key => {
+                *self.idle_meta.borrow_mut() = None;
+                Ok(json!({}))
+            }
+            "surface.meta.get" if idle_key => Ok(json!({ "value": *self.idle_meta.borrow() })),
             "terminal.state" => self
                 .state
                 .map(|s| json!({ "state": s }))
@@ -233,7 +256,7 @@ fn a_tell_registers_a_check_only_when_the_message_was_sent() {
 #[test]
 fn a_child_gets_a_check_only_from_a_surface_parent_that_gave_it_work() {
     let host = TargetHost::new("active");
-    let now = std::time::Instant::now();
+    let now = At::now();
     for (target, with_prompt, expected) in [
         (ParentTarget::Legacy(Some(PARENT)), true, 1),
         (ParentTarget::Legacy(Some(PARENT)), false, 0),
@@ -251,4 +274,121 @@ fn a_child_gets_a_check_only_from_a_surface_parent_that_gave_it_work() {
         );
         assert_eq!(checks(&scanner).len(), expected, "{target:?} {with_prompt}");
     }
+}
+
+/// 원격 자식: 기록된 결과는 그 결과의 route 토큰을 발급한 시각이 체크 등록 뒤일 때만 체크를 끝낸다. t=0 에 등록하고
+/// t=130 에 다시 등록한 뒤 t=131 에 앞 지시의 결과가 기록돼도 새 체크는 남는다. 재전송·거절은 끝내지 않고 종료는 끝낸다.
+#[test]
+fn a_late_result_of_an_earlier_remote_instruction_keeps_the_new_check() {
+    let host = TargetHost::new("active");
+    let dir = tempfile::tempdir().unwrap();
+    let returns = Returns::new(Some(dir.path()));
+    let to = crate::codex_return::RouteTo::Surface {
+        surface: PARENT,
+        session: None,
+    };
+    let token = returns.issue_attach_route(&to).expect("token");
+    let issued = returns.attach_route_issued_ms(&token).expect("issued");
+    let params = |status: &str| {
+        json!({
+            "surface_id": CHILD,
+            "payload": { "completion": {
+                "status": status,
+                "completion_key": "k",
+                "route": token,
+            } },
+        })
+    };
+    let t0 = std::time::Instant::now();
+    let register = |scanner: &Mutex<ErrorScanner>, secs: u64| {
+        lock_scanner(scanner).idle_register(
+            &host,
+            CHILD,
+            PARENT,
+            Origin::Manual,
+            Owner::at(At {
+                instant: t0 + std::time::Duration::from_secs(secs),
+                ms: issued + secs * 1000,
+            }),
+        )
+    };
+    // 지시와 함께 건 체크(t=0)는 그 지시의 결과로 끝난다.
+    for (status, response, ended) in [
+        ("turn_ended", "recorded", true),
+        ("turn_failed", "recorded", true),
+        ("exited", "recorded", true),
+        ("turn_ended", "duplicate", false),
+        ("turn_ended", "rejected", false),
+    ] {
+        let scanner = Mutex::new(ErrorScanner::new());
+        register(&scanner, 0);
+        after_remote_receive(
+            &scanner,
+            &returns,
+            &host,
+            &params(status),
+            &json!({ "status": response }),
+        );
+        assert_eq!(checks(&scanner).is_empty(), ended, "{status}/{response}");
+    }
+    // t=130 에 다시 건 체크는 t=0 지시의 늦은 결과로 끝나지 않는다.
+    let scanner = Mutex::new(ErrorScanner::new());
+    register(&scanner, 0);
+    let newer = register(&scanner, 130);
+    after_remote_receive(
+        &scanner,
+        &returns,
+        &host,
+        &params("turn_ended"),
+        &json!({ "status": "recorded" }),
+    );
+    assert_eq!(checks(&scanner), vec![(PARENT, newer.id)]);
+    // 종료는 지시와 관계없이 끝낸다.
+    after_remote_receive(
+        &scanner,
+        &returns,
+        &host,
+        &params("exited"),
+        &json!({ "status": "recorded" }),
+    );
+    assert!(checks(&scanner).is_empty());
+}
+
+/// 실행 중인 대상에 보낸 tell 은 보내기 전 상태·순번으로 정한 문턱으로 건다. 진행 중이던 턴의 끝(같은 순번)은 이
+/// 체크를 끝내지 않는다.
+#[test]
+fn a_tell_to_a_running_target_keeps_its_check_past_the_running_turn() {
+    let tr = tr();
+    let dir = tempfile::tempdir().unwrap();
+    let returns = Returns::new(Some(dir.path()));
+    let pairing = Mutex::new(StopPairing::default());
+    let host = TargetHost::new("active");
+    let scanner = Mutex::new(ErrorScanner::new());
+    handle_tell_with_idle_check(
+        &scanner,
+        &returns,
+        &pairing,
+        &host,
+        &json!({ "surface": CHILD, "caller_surface": PARENT, "message": "more" }),
+        &tr,
+    )
+    .expect("sent");
+    lock_scanner(&scanner).idle_complete(
+        &host,
+        CHILD,
+        Finish::Turn {
+            at: std::time::Instant::now(),
+            seq: 0,
+        },
+    );
+    assert_eq!(checks(&scanner).len(), 1, "진행 중이던 턴의 끝");
+    lock_scanner(&scanner).idle_complete(
+        &host,
+        CHILD,
+        Finish::Turn {
+            at: std::time::Instant::now(),
+            seq: 1,
+        },
+    );
+    assert!(checks(&scanner).is_empty(), "다음 턴의 끝");
 }

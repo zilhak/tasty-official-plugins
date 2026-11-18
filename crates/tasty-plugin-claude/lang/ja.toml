@@ -3,7 +3,7 @@ desc = "Claude Code CLI連携（launch、spawn、killなど）"
 
 [claude]
 "settings.spawn_child_warn_threshold" = "子の数の警告しきい値"
-"settings.no_output_notice_secs" = "子が active またはバックグラウンド作業待ちなのに出力がないとき、親に通知するまでの待ち時間（秒）"
+"settings.no_output_notice_secs" = "子の出力がないとき親に通知するまでの待ち時間（秒）"
 "settings.continue_checklist_round_limit" = "ゲートの既定ラウンド上限（ゲートが独自の値を指定しない場合）"
 "settings.default_permission_mode" = "子セッションの既定パーミッションモード"
 "settings.auto_resume_enabled" = "一時的な API エラー（サーバー過負荷）の後に自動で再開する"
@@ -194,7 +194,7 @@ description = "指定したClaude子の親を表示"
 description = "子一つの状態を照会：idle、needs_input、active、exited（実際のサーフェスと照合）"
 
 [claude.cli.sub.tell]
-description = "Claudeインスタンスに複数行メッセージを送信（末尾で確定）。即時に戻ります。このメッセージで始まったターンが終わると1行、入力待ちのたびに1行（ターン終了と別の文言）、終了すると1行を呼び出し元サーフェスに残します。その後対象が自ら開いたターンと、作業を始めない状態変化は行を残しません。進行中または入力待ちの対象に送った tell は、メッセージが次のターンで処理される場合を見逃さないよう、ターン終了行が2回出ることがあります。 idle チェックも登録します。対象がターンを終えずに120秒間 active に見えなければ、もう1行残します（'claude idle-check' を参照）。"
+description = "Claudeインスタンスに複数行メッセージを送信（末尾で確定）。即時に戻ります。このメッセージで始まったターンが終わると1行、入力待ちのたびに1行（ターン終了と別の文言）、終了すると1行を呼び出し元サーフェスに残します。その後対象が自ら開いたターンと、作業を始めない状態変化は行を残しません。進行中または入力待ちの対象に送った tell は、メッセージが次のターンで処理される場合を見逃さないよう、ターン終了行が2回出ることがあります。 idle チェックも登録します。対象がこのメッセージを処理するターンを終えずに120秒間 active に見えなければ、もう1行残します。実行中の対象で進行中だったターンの終わりは数えません（'claude idle-check' を参照）。"
 
 [claude.cli.sub.broadcast]
 description = "親Claudeインスタンスの全ての子へテキストを一斉送信"

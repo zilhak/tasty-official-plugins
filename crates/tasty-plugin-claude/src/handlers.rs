@@ -380,6 +380,8 @@ pub(crate) fn handle_broadcast<H: HostCall>(
 /// terminal.tell에 메시지를 전달한다. 줄바꿈과 제출 처리는 호스트가 담당한다.
 /// Codex 호출이면 명시한 대상이 그 대화의 자식인지 확인하고, 이 턴의 결과를 그 대화로 돌려보내도록
 /// 경로를 먼저 저장한 뒤 보낸다.
+/// 실행 경로는 idle 체크를 함께 거는 [`crate::idle_check::handle_tell_with_idle_check`] 를 쓴다.
+#[cfg(test)]
 pub(crate) fn handle_tell<H: HostCall>(
     returns: &Returns,
     pairing: &Mutex<StopPairing>,
@@ -387,8 +389,21 @@ pub(crate) fn handle_tell<H: HostCall>(
     params: &Value,
     tr: &Translator,
 ) -> Result<Value, IpcMethodError> {
+    handle_tell_with_threshold(returns, pairing, host, params, tr).map(|(resp, _)| resp)
+}
+
+/// [`handle_tell`] 과 같고, 로컬 대상이면 보내기 전에 정한 완료 문턱도 돌려준다. idle 체크가 그 문턱으로 이 메시지를
+/// 처리하는 턴의 끝을 가린다. 원격 대상과 원격 출처 호출은 `None` 이다.
+pub(crate) fn handle_tell_with_threshold<H: HostCall>(
+    returns: &Returns,
+    pairing: &Mutex<StopPairing>,
+    host: &H,
+    params: &Value,
+    tr: &Translator,
+) -> Result<(Value, Option<Threshold>), IpcMethodError> {
     if let Some(origin) = AttachOrigin::of(params) {
-        return crate::remote::serve_tell(returns, pairing, host, params, &origin, tr);
+        return crate::remote::serve_tell(returns, pairing, host, params, &origin, tr)
+            .map(|resp| (resp, None));
     }
     let surface_id = require_target_surface(params, tr)?;
     let message = params
@@ -443,6 +458,7 @@ pub(crate) fn handle_tell<H: HostCall>(
         tr,
     )
     .map_err(rollback)?;
+    let local = remote.is_none();
     let (resp, done_from) = match remote {
         Some(anchor) => match crate::remote::tell(host, anchor, surface_id, message, route, tr) {
             // 원격 자식의 문턱은 서버가 보내기 전에 정해 응답에 싣는다. 없으면 업그레이드 전 서버다.
@@ -471,7 +487,7 @@ pub(crate) fn handle_tell<H: HostCall>(
         register_notify_hooks(host, caller_surface as u32, surface_id, "tell", done_from);
     }
 
-    Ok(resp)
+    Ok((resp, done_from.filter(|_| local)))
 }
 
 /// 원격 tell·spawn 응답에서 서버가 정한 완료 문턱을 싣는 키.
@@ -794,7 +810,7 @@ pub(crate) fn handle_respawn(
         .map(String::from);
     let profile_file = resolve_profile_file_param(data_dir, params, tr)?;
     let permission_mode = resolve_permission_mode(host, params, profile_file.as_deref(), tr)?;
-    let registered_at = std::time::Instant::now();
+    let registered_at = crate::error_scan::idle::At::now();
 
     // 호스트가 cwd에 따른 PTY 교체와 자식 메타데이터·idle 상태를 처리한다.
     let mut rp = forward(params, &["cwd", "role", "nickname"]);
@@ -820,19 +836,13 @@ pub(crate) fn handle_respawn(
 
     // 재실행 뒤 같은 오류도 알릴 수 있도록 중복 기록을 지운다.
     crate::retrack::enable_and_record(host, scanner, child_surface_id, ScanTarget::Child);
-    {
-        let mut scanner = crate::error_scan::lock_scanner(scanner);
-        scanner.reset_dedupe(child_surface_id);
-        // 앞 세션에 걸린 idle 체크는 새 세션의 것이 아니다.
-        scanner.idle_drop(host, child_surface_id);
-    }
-    crate::idle_check::register_for_child(
+    crate::error_scan::lock_scanner(scanner).reset_dedupe(child_surface_id);
+    crate::idle_check::after_respawn(
         scanner,
         host,
         &target,
         child_surface_id,
         prompt.is_some(),
-        crate::error_scan::idle::Origin::Respawn,
         registered_at,
     );
 
@@ -1055,7 +1065,7 @@ pub(crate) fn handle_spawn<H: HostCall>(
     }
     let options = crate::session_options::SessionOptions::parse(params, tr)?;
     let target = require_parent(host, returns, params, tr)?;
-    let registered_at = std::time::Instant::now();
+    let registered_at = crate::error_scan::idle::At::now();
     let with_prompt = params.get("prompt").and_then(|v| v.as_str()).is_some();
     if let Some(anchor) = crate::remote::spawn_anchor(host, params, tr)? {
         let out = crate::remote::spawn(returns, host, params, &target, anchor, tr)?;

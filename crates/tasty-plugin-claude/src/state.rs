@@ -48,6 +48,11 @@ impl ClaudeState {
         *seq
     }
 
+    /// 이 프로세스가 아는 활동 순번. 아직 올린 적이 없으면 `None` 이다(meta 에서 읽는다).
+    pub fn activity_of(&self, surface: u32) -> Option<u64> {
+        self.activity.get(&surface).copied()
+    }
+
     /// 질문 대기 표지를 켜거나 끈다.
     pub fn set_asking(&mut self, surface: u32, asking: bool) {
         if asking {

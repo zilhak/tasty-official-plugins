@@ -23,6 +23,8 @@ struct FakeHost {
     /// 조회 실패 뒤 `surface.locate` 의 `exists`.
     exists: RefCell<bool>,
     meta: RefCell<HashMap<(u32, String), String>>,
+    /// 다음 idle meta 쓰기(set·unset) 몇 번을 실패시킨다.
+    meta_fails: RefCell<u32>,
     calls: RefCell<Vec<(String, Value)>>,
 }
 
@@ -32,6 +34,7 @@ impl FakeHost {
             state: RefCell::new(Ok(state)),
             exists: RefCell::new(true),
             meta: RefCell::new(HashMap::new()),
+            meta_fails: RefCell::new(0),
             calls: RefCell::new(Vec::new()),
         }
     }
@@ -74,6 +77,17 @@ impl HostCall for FakeHost {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        if matches!(method, "surface.meta.set" | "surface.meta.unset")
+            && key == IDLE_CHECK_META_KEY
+            && *self.meta_fails.borrow() > 0
+        {
+            *self.meta_fails.borrow_mut() -= 1;
+            return Err(tasty_plugin_sdk::PluginError::HostCall {
+                method: method.to_string(),
+                message: "meta store busy".into(),
+                code: None,
+            });
+        }
         Ok(match method {
             "terminal.state" => match *self.state.borrow() {
                 Ok(state) => json!({ "state": state, "evidence": "test" }),
@@ -104,10 +118,30 @@ impl HostCall for FakeHost {
     }
 }
 
+/// `t` 에 등록한 소유. 원격 비교에 쓰는 Unix ms 는 `ms` 다.
+fn owner_at(t: Instant, ms: u64) -> Owner {
+    Owner::at(At { instant: t, ms })
+}
+
+/// `t` 에 받은 로컬 턴 종료. 활동 순번은 `seq`.
+fn turn(t: Instant, seq: u64) -> Finish {
+    Finish::Turn { at: t, seq }
+}
+
+/// 부모 `caller` 의 체크를 `t` 에 따로 등록한다.
+fn register<H: HostCall>(
+    scanner: &Mutex<ErrorScanner>,
+    host: &H,
+    caller: u32,
+    t: Instant,
+) -> Registered {
+    lock_scanner(scanner).idle_register(host, TARGET, caller, Origin::Manual, owner_at(t, 0))
+}
+
 /// 체크 하나를 t0 에 등록한 스캐너.
 fn registered(host: &FakeHost, t0: Instant) -> Mutex<ErrorScanner> {
     let scanner = Mutex::new(ErrorScanner::new());
-    lock_scanner(&scanner).idle_register(host, TARGET, PARENT, Origin::Manual, t0);
+    register(&scanner, host, PARENT, t0);
     scanner
 }
 
@@ -203,7 +237,7 @@ fn every_active_resets_the_timer_whatever_its_evidence() {
         let host = EvidenceHost { evidence };
         let scanner = Mutex::new(ErrorScanner::new());
         let t0 = Instant::now();
-        lock_scanner(&scanner).idle_register(&host, TARGET, PARENT, Origin::Manual, t0);
+        register(&scanner, &host, PARENT, t0);
         for s in (0..=900).step_by(30) {
             run_idle_checks(&scanner, &host, TEMPLATE, t0 + secs(s));
         }
@@ -221,7 +255,7 @@ fn a_finished_turn_at_119_seconds_ends_the_check_for_good() {
     let t0 = Instant::now();
     let scanner = registered(&host, t0);
     assert!(host.idle_meta().is_some(), "등록은 복원 근거를 남긴다");
-    lock_scanner(&scanner).idle_complete(&host, TARGET, t0 + secs(119));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(119), 1));
     assert!(checks(&scanner).is_empty());
     assert_eq!(host.idle_meta(), None);
     for s in [120, 300, 1000] {
@@ -246,7 +280,7 @@ fn an_expiry_probe_taken_before_a_finished_turn_is_dropped() {
     let scanner = registered(&host, t0);
     let probe = lock_scanner(&scanner).idle.probes()[0];
     let observation = observe(&host, TARGET);
-    lock_scanner(&scanner).idle_complete(&host, TARGET, t0 + secs(119));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(119), 1));
     let step =
         lock_scanner(&scanner).idle_step(&host, probe, observation, t0 + secs(121), TEMPLATE);
     assert_eq!(step, Step::Stale);
@@ -275,7 +309,7 @@ fn registering_again_after_a_line_starts_a_fresh_120_seconds() {
     let scanner = registered(&host, t0);
     assert_eq!(tick(&scanner, &host, t0 + secs(120)).len(), 1);
     let t1 = t0 + secs(125);
-    let again = lock_scanner(&scanner).idle_register(&host, TARGET, PARENT, Origin::Manual, t1);
+    let again = register(&scanner, &host, PARENT, t1);
     assert!(!again.completed);
     assert_eq!(again.replaced, None, "앞 체크는 이미 끝났다");
     assert!(tick(&scanner, &host, t1 + secs(119)).is_empty());
@@ -289,9 +323,8 @@ fn a_finished_turn_before_registering_does_not_end_the_new_check() {
     let host = FakeHost::new("idle");
     let t0 = Instant::now();
     let scanner = Mutex::new(ErrorScanner::new());
-    lock_scanner(&scanner).idle_complete(&host, TARGET, t0);
-    let r =
-        lock_scanner(&scanner).idle_register(&host, TARGET, PARENT, Origin::Manual, t0 + secs(1));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0, 1));
+    let r = register(&scanner, &host, PARENT, t0 + secs(1));
     assert!(!r.completed);
     assert_eq!(tick(&scanner, &host, t0 + secs(121)).len(), 1);
 }
@@ -303,8 +336,9 @@ fn a_finish_between_sending_and_registering_ends_the_check_at_once() {
     let host = FakeHost::new("idle");
     let t0 = Instant::now();
     let scanner = Mutex::new(ErrorScanner::new());
-    lock_scanner(&scanner).idle_complete(&host, TARGET, t0 + secs(1));
-    let r = lock_scanner(&scanner).idle_register(&host, TARGET, PARENT, Origin::Tell, t0);
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(1), 1));
+    let r =
+        lock_scanner(&scanner).idle_register(&host, TARGET, PARENT, Origin::Tell, owner_at(t0, 0));
     assert!(r.completed);
     assert!(checks(&scanner).is_empty());
     assert_eq!(host.idle_meta(), None);
@@ -323,13 +357,13 @@ fn late_events_of_an_earlier_check_leave_the_new_one_alone() {
     let observation = observe(&host, TARGET);
     // 그 사이 부모가 다시 등록했다.
     let t1 = t0 + secs(130);
-    let new = lock_scanner(&scanner).idle_register(&host, TARGET, PARENT, Origin::Manual, t1);
+    let new = register(&scanner, &host, PARENT, t1);
     assert_eq!(new.replaced, Some(old.id));
     let step = lock_scanner(&scanner).idle_step(&host, old, observation, t1, TEMPLATE);
     assert_eq!(step, Step::Stale, "앞 체크의 만기는 버린다");
     assert!(test_log::take().is_empty());
     // 다시 등록하기 전에 받은 Stop 이 늦게 확정됐다(게이트 시간 초과 등).
-    lock_scanner(&scanner).idle_complete(&host, TARGET, t0 + secs(100));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(100), 1));
     assert_eq!(checks(&scanner), vec![(PARENT, new.id)], "새 체크는 남는다");
     assert!(tick(&scanner, &host, t1 + secs(119)).is_empty());
     assert_eq!(
@@ -347,15 +381,15 @@ fn each_parent_owns_its_own_check() {
     let host = FakeHost::new("idle");
     let t0 = Instant::now();
     let scanner = registered(&host, t0);
-    lock_scanner(&scanner).idle_register(&host, TARGET, 4, Origin::Manual, t0 + secs(60));
+    register(&scanner, &host, 4, t0 + secs(60));
     let lines = tick(&scanner, &host, t0 + secs(120));
     assert_eq!(lines.iter().map(|l| l.0).collect::<Vec<_>>(), vec![PARENT]);
     let lines = tick(&scanner, &host, t0 + secs(180));
     assert_eq!(lines.iter().map(|l| l.0).collect::<Vec<_>>(), vec![4]);
     // 완료는 그 시각 이전에 등록한 모든 부모의 체크를 끝낸다.
-    lock_scanner(&scanner).idle_register(&host, TARGET, PARENT, Origin::Manual, t0 + secs(200));
-    lock_scanner(&scanner).idle_register(&host, TARGET, 4, Origin::Manual, t0 + secs(200));
-    lock_scanner(&scanner).idle_complete(&host, TARGET, t0 + secs(210));
+    register(&scanner, &host, PARENT, t0 + secs(200));
+    register(&scanner, &host, 4, t0 + secs(200));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(210), 1));
     assert!(checks(&scanner).is_empty());
 }
 
@@ -484,8 +518,8 @@ fn a_restart_restores_only_the_live_registrations() {
     let host = FakeHost::new("idle");
     let t0 = Instant::now();
     let scanner = registered(&host, t0);
-    lock_scanner(&scanner).idle_register(&host, TARGET, 4, Origin::Tell, t0);
-    lock_scanner(&scanner).idle_complete(&host, 99, t0);
+    register(&scanner, &host, 4, t0);
+    lock_scanner(&scanner).idle_complete(&host, 99, turn(t0, 1));
     // 부모 4 의 체크는 알림으로 끝났다고 하자.
     {
         let mut s = lock_scanner(&scanner);
@@ -508,32 +542,213 @@ fn a_restart_restores_only_the_live_registrations() {
     assert!(parse_meta(r#"{"checks":[{"caller":"x"}]}"#).is_empty());
 }
 
-/// 원격 자식의 턴 결과가 기록되면 그 자식의 체크를 끝낸다. 재전송과 거절은 끝내지 않는다.
+/// tell 이 정한 완료 문턱을 가진 체크. `state` 는 보내기 전 대상 상태, `seq` 는 그때의 활동 순번이다.
+fn tell_check(
+    scanner: &Mutex<ErrorScanner>,
+    host: &FakeHost,
+    t: Instant,
+    state: &str,
+    seq: u64,
+) -> Registered {
+    let threshold = completion_gate::threshold(Some(state), seq, false);
+    lock_scanner(scanner).idle_register(
+        host,
+        TARGET,
+        PARENT,
+        Origin::Tell,
+        Owner {
+            at: At { instant: t, ms: 0 },
+            threshold: Some(threshold),
+        },
+    )
+}
+
+/// 실행 중인 대상에 보낸 tell: 진행 중이던 앞 턴의 Stop 은 이 메시지의 끝이 아니므로 체크가 남는다. 그 뒤 새 활동이
+/// 열린 다음 턴의 Stop 이 체크를 끝낸다.
 #[test]
-fn a_recorded_remote_turn_result_ends_the_check() {
+fn a_tell_to_a_running_target_waits_for_the_turn_that_handles_the_message() {
+    test_log::take();
     let host = FakeHost::new("active");
     let t0 = Instant::now();
-    let params = |status: &str| {
-        json!({
-            "surface_id": TARGET,
-            "payload": { "completion": { "status": status, "completion_key": "k" } },
-        })
-    };
-    for (status, response, ended) in [
-        ("turn_ended", "recorded", true),
-        ("turn_failed", "recorded", true),
-        ("exited", "recorded", true),
-        ("turn_ended", "duplicate", false),
-        ("turn_ended", "rejected", false),
-    ] {
-        let scanner = registered(&host, t0);
-        crate::idle_check::after_remote_receive(
-            &scanner,
-            &host,
-            &params(status),
-            &json!({ "status": response }),
-            t0 + secs(1),
-        );
-        assert_eq!(checks(&scanner).is_empty(), ended, "{status}/{response}");
+    let scanner = Mutex::new(ErrorScanner::new());
+    tell_check(&scanner, &host, t0, "active", 5);
+    // 앞 턴이 도구를 더 쓰고(순번 7) 끝났다.
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(10), 7));
+    assert_eq!(
+        checks(&scanner).len(),
+        1,
+        "앞 턴의 끝은 이 체크를 끝내지 않는다"
+    );
+    assert!(
+        host.idle_meta().unwrap().contains("\"done_from\":8"),
+        "다음 턴부터 센다: {:?}",
+        host.idle_meta()
+    );
+    // 메시지를 처리하는 다음 턴(순번 8)이 끝났다.
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(40), 8));
+    assert!(checks(&scanner).is_empty());
+    assert_eq!(host.idle_meta(), None);
+    assert!(tick(&scanner, &host, t0 + secs(500)).is_empty());
+}
+
+/// 실행 중인 대상에 보낸 tell 의 앞 턴이 끝난 뒤 다음 턴이 시작되지 않거나 멈추면, 마지막 active 뒤 120초에 idle 1건이다.
+#[test]
+fn a_tell_whose_next_turn_never_ends_writes_one_idle_line() {
+    test_log::take();
+    let host = FakeHost::new("active");
+    let t0 = Instant::now();
+    let scanner = Mutex::new(ErrorScanner::new());
+    tell_check(&scanner, &host, t0, "active", 5);
+    assert!(tick(&scanner, &host, t0 + secs(10)).is_empty());
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(10), 7));
+    host.set_state("idle");
+    assert!(tick(&scanner, &host, t0 + secs(129)).is_empty());
+    assert_eq!(tick(&scanner, &host, t0 + secs(130)).len(), 1);
+    assert!(tick(&scanner, &host, t0 + secs(400)).is_empty());
+}
+
+/// 쉬고 있는 대상에 보낸 tell 은 메시지가 연 턴(보내기 전 순번 + 1 이상)의 끝에서만 끝난다. 그 전에 온 앞 턴의 늦은
+/// Stop 은 끝내지 않는다.
+#[test]
+fn a_tell_to_an_idle_target_ends_only_at_the_turn_the_message_opened() {
+    test_log::take();
+    let host = FakeHost::new("idle");
+    let t0 = Instant::now();
+    let scanner = Mutex::new(ErrorScanner::new());
+    tell_check(&scanner, &host, t0, "idle", 5);
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(1), 5));
+    assert_eq!(checks(&scanner).len(), 1);
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(20), 6));
+    assert!(checks(&scanner).is_empty());
+}
+
+/// 시작 복원 경합: 이전 프로세스가 meta 에 남긴 체크의 완료가 되살리기 전에 오면, 복원은 그 등록을 되살리지 않고
+/// meta 도 지운다.
+#[test]
+fn a_finish_before_the_restore_keeps_the_stored_check_from_coming_back() {
+    test_log::take();
+    let host = FakeHost::new("idle");
+    let t0 = Instant::now();
+    let _old = registered(&host, t0);
+    assert!(host.idle_meta().is_some());
+    let restarted = Mutex::new(ErrorScanner::new());
+    lock_scanner(&restarted).idle_complete(&host, TARGET, turn(t0 + secs(119), 3));
+    assert_eq!(
+        lock_scanner(&restarted).idle_restore(&host, TARGET, t0 + secs(120)),
+        0
+    );
+    assert_eq!(host.idle_meta(), None, "끝난 등록은 meta 에서도 지운다");
+    assert!(tick(&restarted, &host, t0 + secs(400)).is_empty());
+}
+
+/// meta 쓰기 실패: 줄을 쓰기 전에 meta 에서 체크를 먼저 지우고, 지우지 못하면 쓰지 않고 다음 회차에 다시 한다.
+/// 쓴 등록은 재시작 뒤 되살아나지 않는다.
+#[test]
+fn a_delivered_check_does_not_come_back_after_a_failed_meta_write() {
+    test_log::take();
+    let host = FakeHost::new("idle");
+    let t0 = Instant::now();
+    let scanner = registered(&host, t0);
+    *host.meta_fails.borrow_mut() = 1;
+    assert!(
+        tick(&scanner, &host, t0 + secs(120)).is_empty(),
+        "meta 를 못 지웠으면 쓰지 않는다"
+    );
+    assert!(host.idle_meta().is_some());
+    assert_eq!(tick(&scanner, &host, t0 + secs(121)).len(), 1);
+    assert_eq!(host.idle_meta(), None);
+    let restarted = Mutex::new(ErrorScanner::new());
+    assert_eq!(
+        lock_scanner(&restarted).idle_restore(&host, TARGET, t0 + secs(130)),
+        0
+    );
+    assert!(tick(&restarted, &host, t0 + secs(250)).is_empty());
+    assert!(tick(&restarted, &host, t0 + secs(1000)).is_empty());
+}
+
+/// 완료 경로의 meta 쓰기 실패도 다음 회차에 다시 써서, 재시작 뒤 끝난 체크가 되살아나지 않는다.
+#[test]
+fn a_finished_check_does_not_come_back_after_a_failed_meta_write() {
+    test_log::take();
+    let host = FakeHost::new("idle");
+    let t0 = Instant::now();
+    let scanner = registered(&host, t0);
+    *host.meta_fails.borrow_mut() = 1;
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(30), 2));
+    assert!(checks(&scanner).is_empty());
+    assert!(host.idle_meta().is_some(), "쓰기에 실패해 meta 가 남았다");
+    assert!(tick(&scanner, &host, t0 + secs(31)).is_empty());
+    assert_eq!(host.idle_meta(), None, "다음 회차에 다시 썼다");
+    let restarted = Mutex::new(ErrorScanner::new());
+    assert_eq!(
+        lock_scanner(&restarted).idle_restore(&host, TARGET, t0 + secs(40)),
+        0
+    );
+    assert!(tick(&restarted, &host, t0 + secs(200)).is_empty());
+}
+
+/// 체크가 없는 대상(원격 mirror 등)의 완료 이력은 상한 안에서만 남는다.
+#[test]
+fn finished_turns_of_targets_without_checks_do_not_pile_up() {
+    let mut idle = IdleChecks::default();
+    let now = Instant::now();
+    for target in 1..=1000 {
+        idle.complete(target, turn(now, 1), now);
     }
+    assert!(
+        idle.history_targets() <= HISTORY_TARGETS_MAX,
+        "{}",
+        idle.history_targets()
+    );
+    for target in 2000..2010 {
+        idle.complete(target, Finish::RemoteExit, now);
+    }
+    assert!(idle.history_targets() <= HISTORY_TARGETS_MAX);
+}
+
+/// 원격 결과는 그 결과를 낳은 지시를 체크 등록 뒤에 보냈을 때만 체크를 끝낸다. 종료는 모두 끝낸다.
+#[test]
+fn a_remote_result_ends_only_checks_registered_before_its_instruction() {
+    test_log::take();
+    let host = FakeHost::new("active");
+    let t0 = Instant::now();
+    let scanner = Mutex::new(ErrorScanner::new());
+    lock_scanner(&scanner).idle_register(&host, TARGET, PARENT, Origin::Tell, owner_at(t0, 1_000));
+    // 다시 건 체크(t=130).
+    lock_scanner(&scanner).idle_register(
+        &host,
+        TARGET,
+        PARENT,
+        Origin::Manual,
+        owner_at(t0 + secs(130), 131_000),
+    );
+    lock_scanner(&scanner).idle_complete(
+        &host,
+        TARGET,
+        Finish::Remote {
+            issued_ms: Some(1_000),
+        },
+    );
+    assert_eq!(
+        checks(&scanner).len(),
+        1,
+        "앞 지시의 결과는 새 체크를 끝내지 않는다"
+    );
+    lock_scanner(&scanner).idle_complete(&host, TARGET, Finish::Remote { issued_ms: None });
+    assert_eq!(
+        checks(&scanner).len(),
+        1,
+        "지시를 모르는 결과도 끝내지 않는다"
+    );
+    lock_scanner(&scanner).idle_complete(
+        &host,
+        TARGET,
+        Finish::Remote {
+            issued_ms: Some(140_000),
+        },
+    );
+    assert!(checks(&scanner).is_empty());
+    register(&scanner, &host, PARENT, t0 + secs(200));
+    lock_scanner(&scanner).idle_complete(&host, TARGET, Finish::RemoteExit);
+    assert!(checks(&scanner).is_empty());
 }

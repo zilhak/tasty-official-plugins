@@ -77,13 +77,14 @@ pub(crate) struct Settled {
     pub final_answer: Option<String>,
     /// Stop 이 왔을 때의 Codex 결과 경로 턴. 확정이 늦어도 이 턴의 결과로 claim 한다.
     pub turn: Option<crate::codex_return::TurnId>,
-    /// Stop 을 받은 시각. 확정이 늦어도 그 뒤에 등록한 idle 체크는 이 완료로 끝내지 않는다.
+    /// Stop 을 받은 시각과 그때의 활동 순번. 확정이 늦어도 그 뒤에 등록한 idle 체크나 다음 턴을 기다리는 체크는
+    /// 이 완료로 끝내지 않는다.
     pub stopped_at: StopTime,
 }
 
-/// Stop 을 받은 시각. idle 체크의 소유 판정에만 쓰며, 확정 결과의 비교(시험의 `==`)에서는 보지 않는다.
+/// Stop 을 받은 시각과 활동 순번. idle 체크의 소유 판정에만 쓰며, 확정 결과의 비교(시험의 `==`)에서는 보지 않는다.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct StopTime(pub Instant);
+pub(crate) struct StopTime(pub crate::error_scan::idle::Finish);
 
 impl PartialEq for StopTime {
     fn eq(&self, _: &Self) -> bool {
@@ -118,6 +119,8 @@ pub(crate) struct HeldStop {
     pub final_answer: Option<String>,
     /// Stop 이 왔을 때의 Codex 결과 경로 턴.
     pub turn: Option<crate::codex_return::TurnId>,
+    /// Stop 이 왔을 때의 활동 순번. 확정이 늦어도 이 순번의 턴 끝으로 idle 체크를 판정한다.
+    pub seq: u64,
 }
 
 struct PendingStop {
@@ -130,6 +133,7 @@ struct PendingStop {
     verdicts: Vec<Verdict>,
     block_cap: Option<u32>,
     since: Instant,
+    seq: u64,
 }
 
 struct Orphan {
@@ -193,6 +197,7 @@ impl StopPairing {
             kind,
             final_answer,
             turn,
+            seq,
         } = held;
         let mut entry = PendingStop {
             surface_id,
@@ -204,6 +209,7 @@ impl StopPairing {
             verdicts: Vec::new(),
             block_cap: None,
             since: now,
+            seq,
         };
         if let Some(queue) = self.orphans.get_mut(session) {
             while entry.verdicts.len() < entry.expected {
@@ -318,7 +324,7 @@ impl StopPairing {
             turn_ended: true,
             final_answer: e.final_answer,
             turn: e.turn,
-            stopped_at: StopTime(e.since),
+            stopped_at: StopTime(finish(e.since, e.seq)),
         })
     }
 
@@ -377,9 +383,13 @@ impl StopPairing {
             turn_ended,
             final_answer: entry.final_answer,
             turn: entry.turn,
-            stopped_at: StopTime(entry.since),
+            stopped_at: StopTime(finish(entry.since, entry.seq)),
         }
     }
+}
+
+fn finish(at: Instant, seq: u64) -> crate::error_scan::idle::Finish {
+    crate::error_scan::idle::Finish::Turn { at, seq }
 }
 
 /// 게이트 응답에서 판정을 읽는다. `decision: "block"` 이 아니면 pass 다.
@@ -556,6 +566,7 @@ mod tests {
             kind,
             final_answer: None,
             turn: None,
+            seq: 0,
         }
     }
 
@@ -567,7 +578,7 @@ mod tests {
             turn_ended: true,
             final_answer: None,
             turn: None,
-            stopped_at: StopTime(Instant::now()),
+            stopped_at: StopTime(finish(Instant::now(), 0)),
         }
     }
 
@@ -583,7 +594,7 @@ mod tests {
             turn_ended: false,
             final_answer: None,
             turn: None,
-            stopped_at: StopTime(Instant::now()),
+            stopped_at: StopTime(finish(Instant::now(), 0)),
         }
     }
 

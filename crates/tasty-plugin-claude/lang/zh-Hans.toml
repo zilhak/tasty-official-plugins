@@ -3,7 +3,7 @@ desc = "Claude Code CLI 集成（launch、spawn、kill 等）"
 
 [claude]
 "settings.spawn_child_warn_threshold" = "子数量警告阈值"
-"settings.no_output_notice_secs" = "子仍为 active 或在等待后台任务但无输出时，通知父之前的等待秒数"
+"settings.no_output_notice_secs" = "子无输出时通知父之前的等待秒数"
 "settings.continue_checklist_round_limit" = "Gate 默认轮数上限（Gate 未设置时使用）"
 "settings.default_permission_mode" = "子会话的默认权限模式"
 "settings.auto_resume_enabled" = "临时 API 错误（服务器过载）后自动继续"
@@ -195,7 +195,7 @@ description = "显示指定 Claude 子实例的父实例"
 description = "查询单个子实例的状态：idle、needs_input、active 或 exited（与实际存续的 Surface 交叉核对）"
 
 [claude.cli.sub.tell]
-description = "向 Claude 实例发送消息（支持多行，在末尾提交）。立即返回；此消息开始的轮次结束时写一行，每次等待输入时写一行（措辞与轮次结束不同），退出时写一行到调用方 Surface。此后目标自行开启的轮次以及未开始工作的状态变化不写行。发送给正在运行或等待输入的目标的 tell，为了不漏掉消息在下一轮处理的情况，轮次结束行可能出现两次。同时注册 idle 检查：若目标未结束轮次且 120 秒内未处于 active，会再写一行（参见 'claude idle-check'）。"
+description = "向 Claude 实例发送消息（支持多行，在末尾提交）。立即返回；此消息开始的轮次结束时写一行，每次等待输入时写一行（措辞与轮次结束不同），退出时写一行到调用方 Surface。此后目标自行开启的轮次以及未开始工作的状态变化不写行。发送给正在运行或等待输入的目标的 tell，为了不漏掉消息在下一轮处理的情况，轮次结束行可能出现两次。同时注册 idle 检查：若目标未结束处理此消息的轮次且 120 秒内未处于 active，会再写一行；对正在运行的目标，进行中的那一轮结束不计入（参见 'claude idle-check'）。"
 
 [claude.cli.sub.broadcast]
 description = "向 Claude 父实例的所有子实例广播文本"

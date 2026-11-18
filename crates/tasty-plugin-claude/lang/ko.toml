@@ -3,7 +3,7 @@ desc = "Claude Code CLI 연동(launch, spawn, kill 등)"
 
 [claude]
 "settings.spawn_child_warn_threshold" = "자식 수 경고 기준"
-"settings.no_output_notice_secs" = "자식이 active이거나 백그라운드 작업을 기다리는데 출력이 없을 때 부모에게 알리기 전 대기 시간(초)"
+"settings.no_output_notice_secs" = "자식 출력이 없을 때 부모에게 알리기 전 대기 시간(초)"
 "settings.continue_checklist_round_limit" = "게이트 기본 라운드 상한 (게이트가 자체 값을 지정하지 않았을 때)"
 "settings.default_permission_mode" = "자식 세션 기본 권한 모드"
 "settings.auto_resume_enabled" = "일시적인 API 에러(서버 과부하) 뒤 자동으로 이어서 진행"
@@ -194,7 +194,7 @@ description = "지정한 Claude 자식의 부모 표시"
 description = "자식 하나의 상태 조회: idle, needs_input, active, exited(실제 서피스와 대조)"
 
 [claude.cli.sub.tell]
-description = "Claude 인스턴스에 여러 줄 메시지 전송(끝에서 제출). 즉시 반환합니다. 이 메시지로 시작한 턴이 끝나면 한 줄, 입력을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 호출자 서피스에 남깁니다. 그 뒤 대상이 스스로 연 턴과 일을 시작하지 않은 상태 변화는 줄을 남기지 않습니다. 진행 중이거나 입력을 기다리는 대상에 보낸 tell은, 메시지가 다음 턴에 처리되는 경우를 놓치지 않으려고 턴 종료 줄이 두 번 나올 수 있습니다. idle 체크도 등록합니다. 대상이 턴을 끝내지 않고 120초 동안 active로 보이지 않으면 한 줄을 더 남깁니다('claude idle-check' 참고)."
+description = "Claude 인스턴스에 여러 줄 메시지 전송(끝에서 제출). 즉시 반환합니다. 이 메시지로 시작한 턴이 끝나면 한 줄, 입력을 기다릴 때마다 한 줄(턴 종료와 다른 문구), 종료하면 한 줄을 호출자 서피스에 남깁니다. 그 뒤 대상이 스스로 연 턴과 일을 시작하지 않은 상태 변화는 줄을 남기지 않습니다. 진행 중이거나 입력을 기다리는 대상에 보낸 tell은, 메시지가 다음 턴에 처리되는 경우를 놓치지 않으려고 턴 종료 줄이 두 번 나올 수 있습니다. idle 체크도 등록합니다. 대상이 이 메시지를 처리하는 턴을 끝내지 않고 120초 동안 active로 보이지 않으면 한 줄을 더 남깁니다. 실행 중인 대상에서 진행 중이던 턴의 끝은 세지 않습니다('claude idle-check' 참고)."
 
 [claude.cli.sub.broadcast]
 description = "부모 Claude 인스턴스의 모든 자식에게 텍스트 일괄 전송"

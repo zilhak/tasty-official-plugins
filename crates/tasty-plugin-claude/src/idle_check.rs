@@ -2,15 +2,14 @@
 //! 원격 턴 결과로 끝내는 경로도 여기서 체크 표([`crate::error_scan::idle`])로 잇는다.
 
 use std::sync::Mutex;
-use std::time::Instant;
 
 use serde_json::{Value, json};
 use tasty_plugin_agent_common::host_call::HostCall;
-use tasty_plugin_agent_common::remote_attach::AttachOrigin;
+use tasty_plugin_agent_common::remote_attach::{self, AttachOrigin};
 use tasty_plugin_sdk::{IpcMethodError, i18n::Translator};
 
 use crate::codex_return::{ParentTarget, Returns};
-use crate::error_scan::idle::{IDLE_CHECK_WAIT, Origin};
+use crate::error_scan::idle::{At, Finish, IDLE_CHECK_WAIT, Origin, Owner};
 use crate::error_scan::{ErrorScanner, lock_scanner};
 use crate::stop_pairing::StopPairing;
 
@@ -77,10 +76,15 @@ pub(crate) fn handle_idle_check<H: HostCall>(
             &tr.t_fmt("claude.idle_check.self_target", &target.to_string()),
         ));
     }
-    let registered_at = Instant::now();
+    let registered_at = At::now();
     let state = check_target(scanner, host, target, tr)?;
-    let registered =
-        lock_scanner(scanner).idle_register(host, target, caller, Origin::Manual, registered_at);
+    let registered = lock_scanner(scanner).idle_register(
+        host,
+        target,
+        caller,
+        Origin::Manual,
+        Owner::at(registered_at),
+    );
     Ok(json!({
         "registered": !registered.completed,
         "id": registered.id,
@@ -92,8 +96,9 @@ pub(crate) fn handle_idle_check<H: HostCall>(
     }))
 }
 
-/// `claude.tell` 에 idle 체크 등록을 잇는다. 보내기 전의 시각으로 등록하므로, 보낸 뒤 처리 전에 끝난 턴도
-/// 이 체크를 끝낸다. 보내기에 실패하면(오류 응답) 체크를 걸지 않는다. 받을 부모가 없으면 걸지 않는다.
+/// `claude.tell` 에 idle 체크 등록을 잇는다. 보내기 전의 시각과, 로컬 대상이면 보내기 전에 정한 완료 문턱으로 등록한다.
+/// 그래서 보낸 뒤 등록 전에 끝난 이 메시지의 턴은 이 체크를 끝내고, 실행 중인 대상에서 진행 중이던 앞 턴의 끝은 끝내지
+/// 않는다. 보내기에 실패하면(오류 응답) 체크를 걸지 않는다. 받을 부모가 없으면 걸지 않는다.
 pub(crate) fn handle_tell_with_idle_check<H: HostCall>(
     scanner: &Mutex<ErrorScanner>,
     returns: &Returns,
@@ -102,8 +107,9 @@ pub(crate) fn handle_tell_with_idle_check<H: HostCall>(
     params: &Value,
     tr: &Translator,
 ) -> Result<Value, IpcMethodError> {
-    let registered_at = Instant::now();
-    let resp = crate::handlers::handle_tell(returns, pairing, host, params, tr)?;
+    let registered_at = At::now();
+    let (resp, threshold) =
+        crate::handlers::handle_tell_with_threshold(returns, pairing, host, params, tr)?;
     // 원격 출처(서버 쪽) 호출의 부모는 client 에 있다. 체크는 client 가 건다.
     if AttachOrigin::of(params).is_some() {
         return Ok(resp);
@@ -116,7 +122,16 @@ pub(crate) fn handle_tell_with_idle_check<H: HostCall>(
     if let (Some(caller), Some(target)) = (caller, target)
         && caller != target
     {
-        lock_scanner(scanner).idle_register(host, target, caller, Origin::Tell, registered_at);
+        lock_scanner(scanner).idle_register(
+            host,
+            target,
+            caller,
+            Origin::Tell,
+            Owner {
+                at: registered_at,
+                threshold,
+            },
+        );
     }
     Ok(resp)
 }
@@ -130,39 +145,69 @@ pub(crate) fn register_for_child<H: HostCall>(
     child: u32,
     with_prompt: bool,
     origin: Origin,
-    registered_at: Instant,
+    registered_at: At,
 ) {
     if let ParentTarget::Legacy(Some(parent)) = target
         && with_prompt
         && *parent != child
     {
-        lock_scanner(scanner).idle_register(host, child, *parent, origin, registered_at);
+        lock_scanner(scanner).idle_register(host, child, *parent, origin, Owner::at(registered_at));
     }
 }
 
-/// `claude.remote_receive` 로 원격 자식의 턴 결과가 기록됐으면 그 자식의 체크를 끝낸다. 서버가 확정한 턴 끝
-/// (`turn_ended`·`turn_failed`)과 종료(`exited`)만 보낸다. 재전송(`duplicate`)과 거절은 보지 않는다.
+/// respawn 뒤: 앞 세션에 걸린 체크는 새 세션의 것이 아니므로 모두 지우고, 프롬프트를 줬으면 부모의 새 체크를 건다.
+pub(crate) fn after_respawn<H: HostCall>(
+    scanner: &Mutex<ErrorScanner>,
+    host: &H,
+    target: &ParentTarget,
+    child: u32,
+    with_prompt: bool,
+    registered_at: At,
+) {
+    lock_scanner(scanner).idle_drop(host, child);
+    register_for_child(
+        scanner,
+        host,
+        target,
+        child,
+        with_prompt,
+        Origin::Respawn,
+        registered_at,
+    );
+}
+
+/// `claude.remote_receive` 로 원격 자식의 턴 결과가 기록됐으면 그 결과의 작업을 기다리던 체크를 끝낸다. 서버가 확정한
+/// 턴 끝(`turn_ended`·`turn_failed`)은 그 결과의 route 토큰을 발급한 시각이 등록 뒤인 체크만 끝낸다. 늦게 온 앞 지시의
+/// 결과가 다시 건 체크를 끝내지 않게 하려는 것이다. 종료(`exited`)는 모두 끝낸다. 재전송(`duplicate`)과 거절은 보지 않는다.
 pub(crate) fn after_remote_receive<H: HostCall>(
     scanner: &Mutex<ErrorScanner>,
+    returns: &Returns,
     host: &H,
     params: &Value,
     response: &Value,
-    received_at: Instant,
 ) {
     if response.get("status").and_then(Value::as_str) != Some("recorded") {
         return;
     }
-    let Some((surface, payload)) = tasty_plugin_agent_common::remote_attach::received(params)
-    else {
+    let Some((surface, payload)) = remote_attach::received(params) else {
         return;
     };
-    let status = payload
-        .get(crate::codex_return::PAYLOAD_KEY)
+    let completion = payload.get(crate::codex_return::PAYLOAD_KEY);
+    let finish = match completion
         .and_then(|c| c.get("status"))
-        .and_then(Value::as_str);
-    if matches!(status, Some("turn_ended" | "turn_failed" | "exited")) {
-        lock_scanner(scanner).idle_complete(host, surface, received_at);
-    }
+        .and_then(Value::as_str)
+    {
+        Some("turn_ended" | "turn_failed") => Finish::Remote {
+            issued_ms: completion
+                .and_then(|c| c.get(remote_attach::ROUTE_FIELD))
+                .and_then(Value::as_str)
+                .filter(|t| remote_attach::is_route_token(t))
+                .and_then(|token| returns.attach_route_issued_ms(token)),
+        },
+        Some("exited") => Finish::RemoteExit,
+        _ => return,
+    };
+    lock_scanner(scanner).idle_complete(host, surface, finish);
 }
 
 /// 재시작 뒤 모든 surface 의 meta 에서 남은 체크를 되살린다. 끝난 터미널의 체크는 버린다.
@@ -182,7 +227,7 @@ pub(crate) fn restore_all<H: HostCall>(scanner: &Mutex<ErrorScanner>, host: &H) 
             return 0;
         }
     };
-    let now = Instant::now();
+    let now = std::time::Instant::now();
     ids.into_iter()
         .map(|id| {
             let n = lock_scanner(scanner).idle_restore(host, id, now);

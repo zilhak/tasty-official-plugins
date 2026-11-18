@@ -247,15 +247,14 @@ impl Plugin for ClaudePlugin {
             ),
             // attach 서버에서 온 원격 자식의 턴 결과. 이 처리 안에서 claude namespace 를 다시 부르지 않는다.
             "claude.remote_receive" => {
-                let received_at = std::time::Instant::now();
                 let response =
                     remote::receive(&self.returns, &ctx.host, &ctx.params, &self.translator)?;
                 idle_check::after_remote_receive(
                     &self.scanner,
+                    &self.returns,
                     &ctx.host,
                     &ctx.params,
                     &response,
-                    received_at,
                 );
                 Ok(response)
             }

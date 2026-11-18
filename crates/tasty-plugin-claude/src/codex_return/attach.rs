@@ -233,6 +233,24 @@ impl Returns {
         })
     }
 
+    /// client: route 토큰을 발급한 시각(Unix ms). 기록이 없거나 읽지 못하면 `None`. idle 체크가 원격 결과의 작업이
+    /// 체크 등록 뒤에 보낸 지시인지 가르는 데 쓴다.
+    pub(crate) fn attach_route_issued_ms(&self, token: &str) -> Option<u64> {
+        if !self.is_available() {
+            return None;
+        }
+        self.update(|book| {
+            let issued = book
+                .attach_routes
+                .iter()
+                .find(|r| r.token == token)
+                .map(|r| r.issued_at_ms);
+            (issued, false)
+        })
+        .ok()
+        .flatten()
+    }
+
     /// 물리 surface 부모의 결과: 본문을 먼저 저장하고, 그 부모의 완료 로그에 결과 ID 와 조회 명령을 남긴 뒤 답한다.
     /// 부모 surface 가 없거나 지시 뒤 부모 세션이 바뀌었으면 저장만 하고 알리지 않는다.
     fn receive_for_surface<H: HostCall>(
