@@ -4559,6 +4559,7 @@ mod tests {
                     Owner {
                         at: At::now(),
                         threshold: Some(threshold),
+                        running: state == "active",
                     },
                 )
                 .id
@@ -4635,6 +4636,24 @@ mod tests {
             rig.run(hook("post-tool-use"));
             rig.run(hook("stop"));
             assert!(checks(&rig).is_empty(), "메시지를 처리한 턴의 끝");
+        }
+
+        /// 입력을 기다리던 대상에 보낸 답은 대기하던 턴을 이어 간다. 새 prompt-submit 없이 그 턴의 Stop 하나가
+        /// 체크를 끝낸다.
+        #[test]
+        fn a_tell_answering_a_wait_for_input_ends_at_that_turn() {
+            let mut rig = HookRig::new();
+            rig.run(hook("prompt-submit"));
+            rig.run(json!({
+                "event": "notification",
+                "surface": HookRig::SURFACE,
+                "session": "sess-1",
+                "notification_type": "permission_prompt",
+            }));
+            with_tell_check(&rig, "needs_input");
+            rig.run(hook("post-tool-use"));
+            rig.run(hook("stop"));
+            assert!(checks(&rig).is_empty(), "답을 처리한 턴의 끝");
         }
 
         /// 게이트가 붙은 세션에서도 같다. 보류했다 확정한 Stop 은 Stop 을 받은 때의 활동 순번으로 판정한다.

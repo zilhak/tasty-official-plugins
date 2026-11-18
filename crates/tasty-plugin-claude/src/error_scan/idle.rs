@@ -105,6 +105,9 @@ pub(crate) struct Owner {
     pub at: At,
     /// tell 이 보내기 전에 정한 완료 문턱. 없으면 등록 뒤의 턴 종료면 끝난다.
     pub threshold: Option<Threshold>,
+    /// tell 을 보낼 때 대상이 턴을 진행 중이었다(`active`). 그때만 문턱을 넘은 첫 끝을 진행 중이던 앞 턴의 끝으로
+    /// 보고 건너뛴다. 입력 대기(`needs_input`)에 보낸 답은 대기하던 턴을 이어 가므로 그 턴의 끝이 이 체크를 끝낸다.
+    pub running: bool,
 }
 
 impl Owner {
@@ -112,6 +115,7 @@ impl Owner {
         Self {
             at,
             threshold: None,
+            running: false,
         }
     }
 }
@@ -147,8 +151,9 @@ fn effect(owner: &Owner, finish: Finish, before_restore: bool) -> Effect {
             let Some(threshold) = owner.threshold else {
                 return Effect::End;
             };
-            // 완료 알림과 같은 판정(`completion_gate::decide`)으로 이 끝이 문턱을 넘었는지 본다. 두 번 세는 문턱(실행
-            // 중이던 대상)의 첫 끝은 진행 중이던 앞 턴의 끝이므로 체크를 남기고, 그 뒤의 다음 턴 끝을 기다린다.
+            // 완료 알림과 같은 판정(`completion_gate::decide`)으로 이 끝이 문턱을 넘었는지 본다. 보낼 때 실행 중이던
+            // 대상이면 두 번 세는 문턱의 첫 끝은 진행 중이던 앞 턴의 끝이므로 체크를 남기고, 그 뒤의 다음 턴 끝을
+            // 기다린다. 입력 대기에 보낸 답은 첫 끝에서 끝난다.
             let tail = completion_gate::Tail {
                 event: completion_gate::NoticeEvent::Idle,
                 done_from: threshold.done_from,
@@ -160,7 +165,9 @@ fn effect(owner: &Owner, finish: Finish, before_restore: bool) -> Effect {
                 // 다음 문턱은 이 끝의 순번이다(`decide` 의 `seq + 1` 이 아니다). Claude Code 는 실행 중에 받은 메시지의
                 // prompt-submit 을 줄에 넣는 즉시 보내므로, 앞 턴의 Stop 이 이미 그 순번을 보고 다음 턴의 Stop 은
                 // 순번을 더 올리지 못할 수 있다. 앞 턴의 끝 뒤에 오는 확정 완료는 다음 턴의 끝이다.
-                (completion_gate::Decision::Done, completion_gate::Next::Keep(_)) => {
+                (completion_gate::Decision::Done, completion_gate::Next::Keep(_))
+                    if owner.running =>
+                {
                     Effect::Advance(Threshold::once(seq))
                 }
                 (completion_gate::Decision::Done, _) => Effect::End,
@@ -280,6 +287,8 @@ pub(crate) struct Stored {
     /// 등록 Unix ms.
     pub ms: u64,
     pub threshold: Option<Threshold>,
+    /// 보낼 때 대상이 턴을 진행 중이었다([`Owner::running`]).
+    pub running: bool,
 }
 
 impl IdleChecks {
@@ -462,6 +471,9 @@ impl IdleChecks {
                 if let Some(th) = c.owner.threshold {
                     v["done_from"] = json!(th.done_from);
                     v["twice"] = json!(th.twice);
+                    if c.owner.running {
+                        v["running"] = json!(true);
+                    }
                 }
                 v
             })
@@ -495,11 +507,13 @@ pub(crate) fn parse_meta(raw: &str) -> Vec<Stored> {
                                 done_from,
                                 twice: c.get("twice").and_then(Value::as_bool).unwrap_or(false),
                             });
+                    let running = c.get("running").and_then(Value::as_bool).unwrap_or(false);
                     Some(Stored {
                         caller,
                         origin,
                         ms,
                         threshold,
+                        running,
                     })
                 })
                 .collect()
@@ -658,6 +672,7 @@ impl ErrorScanner {
                     ms: stored.ms,
                 },
                 threshold: stored.threshold,
+                running: stored.running,
             };
             let id = self.idle.new_id();
             let mut check = Check::new(id, stored.origin, owner, now);

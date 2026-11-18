@@ -601,6 +601,7 @@ fn tell_check(
         Owner {
             at: At { instant: t, ms: 0 },
             threshold: Some(threshold),
+            running: state == "active",
         },
     )
 }
@@ -666,6 +667,26 @@ fn a_tell_queued_behind_a_running_turn_ends_at_the_turn_after_it() {
     host.set_state("idle");
     assert!(tick(&scanner, &host, t0 + secs(120)).is_empty());
     assert_eq!(tick(&scanner, &host, t0 + secs(121)).len(), 1);
+}
+
+/// 입력을 기다리던 대상에 보낸 tell: 답은 대기하던 턴을 이어 가므로 그 턴의 Stop 하나가 체크를 끝낸다. 그 뒤 쉬어도
+/// idle 줄이 없다.
+#[test]
+fn a_tell_answering_a_wait_for_input_ends_at_the_single_stop() {
+    test_log::take();
+    let host = FakeHost::new("needs_input");
+    let t0 = Instant::now();
+    let scanner = Mutex::new(ErrorScanner::new());
+    tell_check(&scanner, &host, t0, "needs_input", 4);
+    assert!(host.idle_meta().unwrap().contains("\"twice\":true"));
+    assert!(!host.idle_meta().unwrap().contains("running"));
+    host.set_state("active");
+    assert!(tick(&scanner, &host, t0 + secs(5)).is_empty());
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(10), 5));
+    assert!(checks(&scanner).is_empty(), "답을 처리한 턴의 끝");
+    host.set_state("idle");
+    assert!(tick(&scanner, &host, t0 + secs(200)).is_empty());
+    assert!(test_log::take().is_empty());
 }
 
 /// 실행 중인 대상에 보낸 tell 의 앞 턴이 끝난 뒤 다음 턴이 시작되지 않거나 멈추면, 마지막 active 뒤 120초에 idle 1건이다.

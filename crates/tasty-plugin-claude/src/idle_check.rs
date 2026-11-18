@@ -112,6 +112,10 @@ pub(crate) fn handle_tell_with_idle_check<H: HostCall>(
     let registered_at = At::now();
     let (resp, threshold) =
         crate::handlers::handle_tell_with_threshold(returns, pairing, host, params, tr)?;
+    let (threshold, running) = match threshold {
+        Some((threshold, running)) => (Some(threshold), running),
+        None => (None, false),
+    };
     // 원격 출처(서버 쪽) 호출의 부모는 client 에 있다. 체크는 client 가 건다.
     if AttachOrigin::of(params).is_some() {
         return Ok(resp);
@@ -132,6 +136,7 @@ pub(crate) fn handle_tell_with_idle_check<H: HostCall>(
             Owner {
                 at: registered_at,
                 threshold,
+                running,
             },
         );
     }

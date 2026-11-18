@@ -392,15 +392,16 @@ pub(crate) fn handle_tell<H: HostCall>(
     handle_tell_with_threshold(returns, pairing, host, params, tr).map(|(resp, _)| resp)
 }
 
-/// [`handle_tell`] 과 같고, 로컬 대상이면 보내기 전에 정한 완료 문턱도 돌려준다. idle 체크가 그 문턱으로 이 메시지를
-/// 처리하는 턴의 끝을 가린다. 원격 대상과 원격 출처 호출은 `None` 이다.
+/// [`handle_tell`] 과 같고, 로컬 대상이면 보내기 전에 정한 완료 문턱과 그때 대상이 턴을 진행 중이었는지(`active`,
+/// 보류 Stop 없음)도 돌려준다. idle 체크가 그것으로 이 메시지를 처리하는 턴의 끝을 가린다. 원격 대상과 원격 출처
+/// 호출은 `None` 이다.
 pub(crate) fn handle_tell_with_threshold<H: HostCall>(
     returns: &Returns,
     pairing: &Mutex<StopPairing>,
     host: &H,
     params: &Value,
     tr: &Translator,
-) -> Result<(Value, Option<Threshold>), IpcMethodError> {
+) -> Result<(Value, Option<(Threshold, bool)>), IpcMethodError> {
     if let Some(origin) = AttachOrigin::of(params) {
         return crate::remote::serve_tell(returns, pairing, host, params, &origin, tr)
             .map(|resp| (resp, None));
@@ -458,7 +459,7 @@ pub(crate) fn handle_tell_with_threshold<H: HostCall>(
         tr,
     )
     .map_err(rollback)?;
-    let local = remote.is_none();
+    let mut running = false;
     let (resp, done_from) = match remote {
         Some(anchor) => match crate::remote::tell(host, anchor, surface_id, message, route, tr) {
             // 원격 자식의 문턱은 서버가 보내기 전에 정해 응답에 싣는다. 없으면 업그레이드 전 서버다.
@@ -471,7 +472,8 @@ pub(crate) fn handle_tell_with_threshold<H: HostCall>(
         },
         None => {
             // 보내면 호스트가 바로 active 로 바꾸므로 문턱은 보내기 전에 정한다.
-            let done_from = tell_threshold(pairing, host, surface_id);
+            let (done_from, was_running) = tell_threshold_and_running(pairing, host, surface_id);
+            running = was_running;
             let resp = host_call(
                 host,
                 "terminal.tell",
@@ -481,13 +483,14 @@ pub(crate) fn handle_tell_with_threshold<H: HostCall>(
             (resp, Some(done_from))
         }
     };
+    let local = remote.is_none();
 
     // 알림을 받을 caller_surface가 없으면 훅 등록만 생략하고 tell 결과는 유지한다.
     if let Some(caller_surface) = params.get("caller_surface").and_then(|v| v.as_u64()) {
         register_notify_hooks(host, caller_surface as u32, surface_id, "tell", done_from);
     }
 
-    Ok((resp, done_from.filter(|_| local)))
+    Ok((resp, done_from.filter(|_| local).map(|t| (t, running))))
 }
 
 /// 원격 tell·spawn 응답에서 서버가 정한 완료 문턱을 싣는 키.
@@ -500,10 +503,24 @@ pub(crate) fn tell_threshold<H: HostCall>(
     host: &H,
     surface_id: u32,
 ) -> Threshold {
+    tell_threshold_and_running(pairing, host, surface_id).0
+}
+
+/// [`tell_threshold`] 과 같고, 보내기 전 대상이 턴을 진행 중이었는지(상태 `active`, 끝난 턴의 보류 Stop 없음)도
+/// 돌려준다. 입력 대기(`needs_input`)는 진행 중으로 세지 않는다. 답은 대기하던 턴을 이어 간다.
+pub(crate) fn tell_threshold_and_running<H: HostCall>(
+    pairing: &Mutex<StopPairing>,
+    host: &H,
+    surface_id: u32,
+) -> (Threshold, bool) {
     let state = tasty_plugin_agent_common::completion_gate::target_state(host, surface_id);
     let seq = crate::notifications::activity_seq(host, surface_id);
     let held = crate::stop_pairing::lock_pairing(pairing).holds_turn_end(surface_id);
-    tasty_plugin_agent_common::completion_gate::threshold(state.as_deref(), seq, held)
+    let running = state.as_deref() == Some("active") && !held;
+    (
+        tasty_plugin_agent_common::completion_gate::threshold(state.as_deref(), seq, held),
+        running,
+    )
 }
 
 /// 완료 알림을 받을 호출 surface.
