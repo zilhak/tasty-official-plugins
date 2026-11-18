@@ -92,7 +92,7 @@ Codex 대화에서 실행한 `spawn`·`tell`·`children`·`broadcast`·`kill`·`
 - **경로 정리**: 그 밖의 SessionEnd는 끝난 시각을 남기고 경로를 24시간 둔다. 복원된 같은 세션이 오면 다시 이어진다. 기간이 지난 경로는 다음 `session-start`나 spawn 때 지운다. `claude kill`이 닫은 자식의 경로는 바로 지운다. 보낼 요청은 경로와 따로 저장하므로 경로를 지워도 남는다.
 - **턴 순번**: `prompt-submit`마다 경로의 턴 순번을 올린다. 진행 중 턴에 합쳐진 입력은 한 턴이다. 순번은 경로 파일에 저장해 재시작 뒤에도 이어진다. 순번은 그 세션에 보류된 게이트 Stop을 앞 턴으로 확정한 뒤에 올린다.
 - **턴 식별자**: Stop이 온 때 경로 id·턴 순번·세션·surface·수신처(`receiver_id`)를 정하고(`turn_of`), 게이트 보류(`HeldStop`)와 확정(`Settled`)을 거쳐 그대로 들고 간다. 게이트 없는 Stop과 `stop-failure`도 호스트 보고 전에 정한다. 판정이 늦거나, 시간 초과 확정 스레드가 보고하기 전에 새 프롬프트가 몇 번 오거나, 새 턴 결과가 먼저 나가도 그 Stop의 결과는 원래 턴 키로 한 번 claim한다. 시간 초과 확정을 보고하기 전에 새 턴이 열리면 상태 보고(idle)는 버리지만 Codex 결과는 보낸다.
-- **결과 생산**: 턴 종료가 확정된 곳에서만 만든다. 게이트 없는 Stop과 게이트 판정이 턴 종료로 확정된 Stop은 `report_ended`, `stop-failure`는 실패 보고 자리다. 게이트가 이어 가게 한 Stop과 백그라운드 작업을 기다리는 Stop은 결과가 아니다. 확정 전에 `session-end`가 오면 그 턴을 `exited`로 한 번 보낸다.
+- **결과 생산**: 턴 종료가 확정된 곳에서만 만든다. 게이트 없는 Stop과 게이트 판정이 턴 종료로 확정된 Stop은 `report_ended`, `stop-failure`는 실패 보고 자리다. 게이트가 이어 가게 한 Stop과 백그라운드 작업을 기다리는 Stop은 결과가 아니다. 남은 작업이 모두 Monitor인 Stop은 턴 종료라 결과다. 결과는 턴마다 하나이므로, Monitor 이벤트가 연 턴이 끝날 때마다 그 턴의 결과가 하나씩 더 나간다(부모 완료 줄의 spawn·tell당 1회 규칙과 별개다). 원격 mirror 자식의 결과도 같은 claim을 거친다. 확정 전에 `session-end`가 오면 그 턴을 `exited`로 한 번 보낸다.
 - **중복 방지**: `completion_key`는 `claude:<경로 id>:t<턴 순번>`이다. prompt_id가 없어도 된다. 경로마다 claim한 턴을 최근 64개까지 기억하고, 이미 claim한 턴이나 그보다 오래된 턴은 claim하지 않는다. `receiver_id`·`child_session`·`child_surface`는 경로가 그 뒤 다른 세션이나 수신처로 넘어갔어도 그 턴의 값이다. 판정을 기다리는 동안 다른 부모가 같은 자식에게 tell해도 그 턴의 결과는 그 턴의 부모에게 간다.
 - **저장 파일 잠금**: 같은 데이터 폴더를 두 플러그인 프로세스가 쓸 수 있으므로(업그레이드 겹침 등) 경로 파일 갱신은 프로세스 안 잠금과 `codex-return/routes.lock` 파일 잠금으로 직렬화한다. tmp 파일 이름에는 프로세스 id를 붙인다.
 - **송신**: 훅 처리는 claim과 보낼 요청을 같은 파일 쓰기로 남기고 송신 스레드(`claude-codex-return`)를 깨우기만 한다. `codex.deliver`는 그 스레드가 부르므로 Codex 응답이 늦어도 훅 처리가 막히지 않는다.
@@ -347,9 +347,9 @@ if [ -n "$TASTY_SURFACE_ID" ]; then tasty claude hook <token> || true; fi
 
 | Claude Code 이벤트 | matcher | tasty hook token | `terminal.set_state` | `surface.fire_hook` | surface meta | `surface.completion` kind |
 |---|---|---|---|---|---|---|
-| `Stop` | `""`(전체) | `stop` | `idle`. 단 백그라운드 작업을 기다리는 Stop(아래)은 `active`, Stop 게이트가 붙은 세션은 판정이 모일 때까지 `active`(아래 "Stop 게이트와 idle") | `claude-idle`(대기 Stop은 없음) | 대기 Stop은 `claude-background-wait` **set**, 그 밖의 Stop은 **unset** | `completion`(대기 Stop은 없음) |
+| `Stop` | `""`(전체) | `stop` | `idle`. 단 백그라운드 작업을 기다리는 Stop(아래, 남은 작업이 모두 Monitor면 대기가 아니다)은 `active`, Stop 게이트가 붙은 세션은 판정이 모일 때까지 `active`(아래 "Stop 게이트와 idle") | `claude-idle`(대기 Stop은 없음) | 대기 Stop은 `claude-background-wait` **set**, 그 밖의 Stop은 **unset** | `completion`(대기 Stop은 없음) |
 | `SubagentStop` | `""`(전체) | `subagent-stop` | — (로그만) | — | — | — |
-| `StopFailure` | `""`(전체) | `stop-failure` | `idle`. 단 메인 턴이 띄운 백그라운드 작업이 남아 있으면 `active`(아래) | `claude-idle` + `claude-stop-failure`(백그라운드 작업이 남은 경우는 `claude-stop-failure`만) | `claude-last-stop-failure` = stdin `error`(없으면 `unknown`) **set**. `claude-background-wait` **unset**. 백그라운드 작업이 남은 경우는 `claude-background-wait`를 **unset** 대신 **set**한다 | `completion`(백그라운드 작업이 남은 경우는 없음) |
+| `StopFailure` | `""`(전체) | `stop-failure` | `idle`. 단 메인 턴이 띄운 백그라운드 작업이 남아 있으면 `active`(아래, 남은 작업이 모두 Monitor면 `idle`) | `claude-idle` + `claude-stop-failure`(백그라운드 작업이 남은 경우는 `claude-stop-failure`만) | `claude-last-stop-failure` = stdin `error`(없으면 `unknown`) **set**. `claude-background-wait` **unset**. 백그라운드 작업이 남은 경우는 `claude-background-wait`를 **unset** 대신 **set**한다 | `completion`(백그라운드 작업이 남은 경우는 없음) |
 | `SessionEnd` | `""`(전체) | `session-end` | `idle` | `claude-idle` | `claude-session-id`·`restore.command`·`claude-last-stop-failure`·`claude-background-wait` **unset**. stdin `reason`이 `clear`·`resume`이 아니고(값이 없을 때 포함) 이 세션이 `claude-settings-session`과 같으면 `claude-settings-file`·`claude-settings-session`도 **unset** (프로필 meta 2키는 건드리지 않는다. 프로필 **부착 기록**에는 종료 표시만 하고 유예 뒤 회수 — 아래 "복원을 건너 프로필이 유지되는 방식") | `completion` |
 | `Notification` | `""`(전체) | `notification` | `notification_type`별(아래 "Notification 유형별 상태"). `needs_input`·`active`·변경 없음 | `needs-input`(`needs_input` 유형만) | — | `needs_input`(`needs_input` 유형만) |
 | `UserPromptSubmit` | `""`(전체) | `prompt-submit` | `active` | — | `claude-last-stop-failure`·`claude-background-wait` **unset** | — |
@@ -434,6 +434,9 @@ Meta를 먼저 쓴 뒤 이벤트를 보내며 새 턴(`prompt-submit`/`session-s
   `claude-last-stop-failure`를 기록한 뒤 `claude-stop-failure`만 fire한다. 두 meta는 이벤트보다 먼저 기록한다.
   `claude-idle`·`surface.completion`·telemetry `wall_time_ms`·자동 재개 처리는 하지 않는다.
   작업이 끝나 열린 턴의 `Stop`이 idle을 기록한다.
+- 남은 기록이 모두 Monitor면(Stop 목록으로 기록된 작업 가운데 "Monitor 기록"의 id이거나 종류가 `monitor`) 대기가 아니다.
+  `Stop`과 같은 기준으로 턴 종료로 처리한다: `idle`·`claude-idle`·`claude-stop-failure`·`surface.completion`, 재개 가능한 오류면
+  자동 재개 예약. 자동 재개의 성공 처리(시도 수 지우기)는 하지 않는다. Monitor와 다른 작업이 섞이면 위처럼 대기다.
 - spawn·tell은 `claude-stop-failure`에 상시 훅 `tasty claude notify-stop-failure`를 등록한다. 이 훅은 `claude-background-wait`가
   있을 때만 부모 완료 로그에 `[error] `로 시작하는 한 줄을 남긴다. 영어 문구는 `surface <N>: the turn ended on an API error (<오류>), but background work (<종류>) is still running, so the child keeps waiting`이다.
   대기 기록이 없는 StopFailure(턴 종료)는 `claude-idle` 완료 줄이 오류를 적으므로 이 훅은 아무것도 쓰지 않는다.
@@ -449,7 +452,7 @@ Meta를 먼저 쓴 뒤 이벤트를 보내며 새 턴(`prompt-submit`/`session-s
 그 턴의 `Stop`이 실제 종료가 된다. 그래서 `stop` 훅은 stdin의 `waiting_on_background_work`가
 있으면 그 값으로, 없으면 `background_tasks`에 끝나지 않은 항목이 있는지로 대기 여부를 판정한다.
 끝난 항목은 `status`가 `completed`·`failed`·`cancelled`·`canceled`·`killed`·`stopped`·`error`·`done` 중 하나(대소문자 무관)인 항목이며, 그 밖의 값이나 `status`가 없는
-항목은 끝나지 않은 것으로 센다. 항목의 종류(subagent·shell)는 가리지 않으며 Monitor만 남아도 대기다. 대기 Stop이면 상태를
+항목은 끝나지 않은 것으로 센다. 끝나지 않은 항목이 하나 이상이고 모두 Monitor(아래 "Monitor 기록")면 대기가 아니라 일반 턴 종료다. Monitor만 남기고 턴을 끝낸 자식은 쉬는 것으로 보기 때문이다. `waiting_on_background_work`가 참이어도 `background_tasks`가 있고 모두 Monitor면 목록을 따르고, 목록이 없거나 비었으면 종류를 알 수 없으므로 대기다. Monitor와 셸·서브에이전트가 섞이면 대기다. 대기 Stop이면 상태를
 `active`로만 보고하고 `claude-idle`·`surface.completion`·telemetry `wall_time_ms`·자동 재개의
 성공 처리를 하지 않는다. 두 필드가 없거나 해석할 수 없으면 이전처럼 턴 종료로 처리한다.
 대기 Stop은 surface meta `claude-background-wait`에 대기 시작 시각(`since_ms`, Unix ms)·끝나지 않은 작업 수(`tasks`)·
@@ -636,8 +639,11 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 - `type`이 `monitor`인 항목은 기록 없이도 Monitor로 본다. 2.1.319 코드의 정적 확인이며(`monitor_mcp`·`monitor_ws`) 실제 payload는 측정하지 않았다.
 - 기록이 없는 항목은 셸로 보고 지금처럼 알린다. 출력이 없는 것이 오류일 수 있어서다.
 - 턴이 진행 중이면 Monitor가 떠 있어도 대기가 아니므로 일반 기준으로 알린다.
-- 상태 판정은 바꾸지 않는다. 일을 마치고 Monitor만 남긴 자식은 `active`로 남고, Monitor가 끝날 때까지 부모에게 완료 신호도 정지 알림도 가지 않는다.
-- `StopFailure`의 상태와 `notify-stop-failure` 문구는 Monitor도 그대로 센다(`types`). 정지 알림만 `notice_types`를 쓴다.
+- 일을 마치고 Monitor만 남긴 `Stop`은 턴 종료다. 상태는 `idle`이고 `claude-idle`·`surface.completion`·결과 경로·idle 체크 완료가 일반 Stop과 같다. 그 spawn·tell의 완료 줄은 이 Stop에서 한 번 나간다. 그 뒤 Monitor 이벤트가 연 턴은 `active`였다가 다시 `idle`이 되지만, 새 `spawn`·`tell`이 없으면 완료 줄은 더 나가지 않는다(위 "부모 알림 줄이 생기는 경우"). DAG의 `spawn-wait`·`tell-wait` 노드도 이 `idle`로 끝나므로, Monitor가 남은 채 다음 노드가 시작될 수 있다.
+- Monitor 기록은 그 Stop 뒤에도 남는다. 다음 Stop의 판정과 끝 알림 처리에 쓴다.
+- 기록이 없으면(훅을 다시 설치하지 않았거나 Claude 프로세스를 새로 시작하지 않음) Monitor는 셸로 보이므로 지금처럼 대기로 남는다.
+- 이 규칙 이전 버전이 Monitor만 기다리는 대기로 기록한 자식(플러그인 재시작 뒤 `claude-background-wait`에서 복원된 대기 포함)은 옮기지 않는다. 다음 `Stop`이 올 때까지 `active`로 남고, 그동안 정지 알림은 보내지 않는다.
+- Monitor와 다른 작업이 섞인 `StopFailure`의 상태와 `notify-stop-failure` 문구는 Monitor도 그대로 센다(`types`). 정지 알림만 `notice_types`를 쓴다.
 - 미측정: `persistent: true` Monitor, 시간 초과로 끝날 때의 prompt, `--resume` 뒤 유지, 2.1.319 외 버전, 실행 중인 서브에이전트의 Monitor가 `Stop` 목록에 나오는지.
 
 **백그라운드 작업을 기다리는 자식**(대기 Stop 뒤, 위 "백그라운드 작업을 기다리는 Stop")은 기준을 따로 둔다.
@@ -670,7 +676,7 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 이때 부모 로그 문구는 "looks stuck" 대신 대기 사실만 적는다.
 영어 줄은 `[warning] surface <N>: waiting on background work (<종류>) for <분> min, with no output meanwhile`이다.
 종류는 `claude-background-wait`의 `notice_types`(없는 옛 meta는 `types`)이며, 비어 있으면 판정에 쓴 `waiting_on_background_work`를 적는다.
-분은 `since_ms`부터 지난 시간을 버림한 값이다. 끝나지 않는 백그라운드 명령을 남긴 자식은 idle이 되지 않으므로, 이 알림이 부모가 받는 신호다. Monitor만 남긴 자식에는 이 신호도 없다.
+분은 `since_ms`부터 지난 시간을 버림한 값이다. 끝나지 않는 백그라운드 명령을 남긴 자식은 idle이 되지 않으므로, 이 알림이 부모가 받는 신호다. Monitor만 남긴 자식은 idle이 되어 완료 줄을 받는다.
 
 같은 정적 구간에서는 한 번만 알리고 surface별로 최소 5분 간격을 둔다. 출력이 바뀌면 정적 구간을 다시 측정한다. 새 턴 신호도 중복 기록과 정적 측정을 초기화하지만 5분 쿨다운은 유지한다. 긴 추론이나 입력 대기와 실제 멈춤은 구분하지 못할 수 있다.
 
@@ -743,7 +749,7 @@ surface 전체 선언은 작업 종료나 대기가 아닌 Stop으로 끝나지 
 - 거절(아무것도 기록하지 않음): `--caller-surface` 없음·대상과 같음은 `invalid params`(-32602), 대상 상태를 읽지 못함은 일반 오류, 대상이 `exited`이거나 상태가 없음·Claude surface가 아님(오류 감시 대상, `claude-session-id` meta, 원격 자식 연결이 모두 없음)은 `invalid params`.
 - 자동 등록: `tell`은 메시지를 보낸 뒤 보내기 **전** 시각과, 로컬 대상이면 보내기 전에 정한 완료 문턱(아래 생명주기)으로 건다(보내기 실패면 걸지 않고, 받을 부모가 없거나 자기 자신에게 보낸 tell이면 걸지 않는다). `spawn`·`respawn`은 `--prompt`로 일을 준 물리 surface 부모에게만 건다. Codex 부모, 부모 없는 자식, 프롬프트 없이 띄운 자식, `child-profile`·`reboot`, 결과불명으로 늦게 묶인 원격 spawn에는 걸지 않는다. 서버 쪽(원격 출처) 호출은 걸지 않고 client가 건다.
 
-**시간.** 등록 시각을 기준으로 감시 회차(약 0.8초)마다 `terminal.state`를 묻는다. `active`면 근거(`evidence`)와 관계없이 기준 시각을 그때로 옮긴다. `pty_not_started`·`observation_unavailable`(원격 mirror 포함)도 같다. 마지막 기준 시각 뒤 120초가 지나고 그 회차의 상태가 `active`·`exited`가 아니면(`idle`·`needs_input`·`stale` 등) 줄을 쓴다. 120초는 고정값이며 설정이 없다. 호스트의 `CHILD_OUTPUT_SILENCE`(120초 무출력)·훅 침묵(300초)과 다른 값이므로, 마지막 출력부터 줄까지의 시간은 120초보다 길 수 있다. 백그라운드 작업 대기(대기 Stop 기록)와 끝나지 않은 surface 전체 무출력 선언이 있는 동안은 `active`처럼 기준 시각을 옮긴다. 그 조용함은 위 무출력 알림 규칙이 맡는다(Monitor 예외 포함).
+**시간.** 등록 시각을 기준으로 감시 회차(약 0.8초)마다 `terminal.state`를 묻는다. `active`면 근거(`evidence`)와 관계없이 기준 시각을 그때로 옮긴다. `pty_not_started`·`observation_unavailable`(원격 mirror 포함)도 같다. 마지막 기준 시각 뒤 120초가 지나고 그 회차의 상태가 `active`·`exited`가 아니면(`idle`·`needs_input`·`stale` 등) 줄을 쓴다. 120초는 고정값이며 설정이 없다. 호스트의 `CHILD_OUTPUT_SILENCE`(120초 무출력)·훅 침묵(300초)과 다른 값이므로, 마지막 출력부터 줄까지의 시간은 120초보다 길 수 있다. 백그라운드 작업 대기(대기 Stop 기록)와 끝나지 않은 surface 전체 무출력 선언이 있는 동안은 `active`처럼 기준 시각을 옮긴다. Monitor만 남긴 Stop은 대기로 기록하지 않으므로 기준 시각을 옮기지 않는다. 그 조용함은 위 무출력 알림 규칙이 맡는다(Monitor 예외 포함).
 
 **줄.** `[warning] surface <N>: idle check — no active state for <초>s and no finished-turn signal (state now: <상태>). The check has ended; look into the child, and if it should keep working, register a new check with: tasty claude idle-check --surface <N>`. 입력 대기·턴 종료·오류 줄과 문구와 종류(`IdleCheck`)가 다르다.
 
@@ -755,7 +761,7 @@ surface 전체 선언은 작업 종료나 대기가 아닌 Stop으로 끝나지 
 | 같은 부모·대상을 다시 등록 | 새 id로 바뀌고 그 시각부터 120초를 센다. 앞 체크의 진행 중인 만기 판정은 id가 달라 버린다. 쿨다운이 없어 앞 줄 때문에 밀리지 않는다 |
 | 확정된 로컬 턴 종료: 턴을 끝내는 `stop`·`stop-failure`, 게이트가 모두 pass하거나 판정 시간 초과로 확정된 Stop(`run_idle_stop`), 새 프롬프트가 확정한 보류 Stop, `session-end` | 그 Stop을 받은 시각 이전에 등록한 체크 가운데 그 체크의 작업이 끝난 것을 줄 없이 끝내고 meta에서 지운다. `idle-check`·`spawn`·`respawn`의 체크는 등록 뒤의 턴 종료면 끝난다. `tell`의 체크는 완료 줄과 같은 활동 순번 문턱(`done_from`·턴 종료 두 번 알림)으로 가른다: 쉬던 대상이면 메시지가 연 턴(보내기 전 순번 + 1 이상)의 끝이다. 입력을 기다리던 대상(`needs_input`)은 답을 처리한 턴의 끝에서 끝난다. 답은 대기하던 턴을 이어 가므로 그 턴의 Stop 하나로 끝난다. 실행 중이던 대상(보낼 때 `active`, 끝난 턴의 보류 Stop 없음)이면 문턱을 넘은 첫 끝(진행 중이던 턴의 끝)은 건너뛰고, 그 뒤에 오는 다른 턴의 확정 턴 종료가 끝낸다. 완료 줄과 달리 두 번째 끝에 순번이 더 오를 것을 요구하지 않는다. Claude Code는 실행 중에 받은 메시지의 `prompt-submit`을 줄에 넣을 때 보내므로, 앞 턴의 Stop이 이미 그 순번을 보고 다음 턴의 Stop은 순번을 더 올리지 못할 수 있다. 건너뛴 첫 끝과 같은 턴의 Stop이 다시 오면(같은 `prompt_id`, `prompt_id`가 없으면 같은 활동 순번) 다음 턴의 끝으로 세지 않는다. 보낼 때 실행 중이었는지와 건너뛴 첫 끝은 체크와 meta에 함께 남겨 재시작 뒤에도 쓴다. 보류했다 확정한 Stop은 Stop을 받은 때의 순번으로 판정한다. 그 뒤에 등록한 체크는 남는다. 다른 부모의 체크도 같은 규칙이다 |
 | 원격 자식의 턴 결과 기록(`turn_ended`·`turn_failed`) | 결과에 실린 route 토큰을 이 client가 발급한 시각(그 결과를 낳은 `spawn`·`tell`을 보낸 시각)이 체크 등록 시각 이후인 체크만 끝낸다. 토큰 기록이 없는 결과는 끝내지 않는다. 원격 자식 종료(`exited`)는 모두 끝낸다 |
-| 백그라운드 작업을 기다리는 Stop·StopFailure, 게이트가 block한 Stop, 판정을 기다리는 Stop, `subagent-stop`, 서브에이전트의 StopFailure | 끝내지 않는다 |
+| 백그라운드 작업을 기다리는 Stop·StopFailure(남은 작업이 모두 Monitor인 Stop·StopFailure는 대기가 아니라 위의 확정 턴 종료다), 게이트가 block한 Stop, 판정을 기다리는 Stop, `subagent-stop`, 서브에이전트의 StopFailure | 끝내지 않는다 |
 | 대상 `exited`, surface 없음, `kill`·release로 추적 끝남, `respawn` | 줄 없이 지운다 |
 | `terminal.state` 조회 실패 | 비활동으로 세지 않는다. 그 회차는 쓰지 않고 다음 회차에 다시 묻는다. 실패가 이어지면 플러그인 로그에 약 1분마다 warn을 남긴다 |
 | 부모 로그 쓰기 실패 | 전달로 보지 않는다. 체크를 남기고 30초 뒤 조건(여전히 120초 동안 `active` 없음)을 다시 확인해 쓴다. 그 사이 `active`가 오면 처음부터 센다. 성공한 한 번만 끝낸다. 실패마다 플러그인 로그에 warn을 남긴다 |
