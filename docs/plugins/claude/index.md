@@ -349,7 +349,7 @@ if [ -n "$TASTY_SURFACE_ID" ]; then tasty claude hook <token> || true; fi
 |---|---|---|---|---|---|---|
 | `Stop` | `""`(전체) | `stop` | `idle`. 단 백그라운드 작업을 기다리는 Stop(아래, 남은 작업이 모두 Monitor면 대기가 아니다)은 `active`, Stop 게이트가 붙은 세션은 판정이 모일 때까지 `active`(아래 "Stop 게이트와 idle") | `claude-idle`(대기 Stop은 없음) | 대기 Stop은 `claude-background-wait` **set**, 그 밖의 Stop은 **unset** | `completion`(대기 Stop은 없음) |
 | `SubagentStop` | `""`(전체) | `subagent-stop` | — (로그만) | — | — | — |
-| `StopFailure` | `""`(전체) | `stop-failure` | `idle`. 단 메인 턴이 띄운 백그라운드 작업이 남아 있으면 `active`(아래, 남은 작업이 모두 Monitor면 `idle`) | `claude-idle` + `claude-stop-failure`(백그라운드 작업이 남은 경우는 `claude-stop-failure`만) | `claude-last-stop-failure` = stdin `error`(없으면 `unknown`) **set**. `claude-background-wait` **unset**. 백그라운드 작업이 남은 경우는 `claude-background-wait`를 **unset** 대신 **set**한다 | `completion`(백그라운드 작업이 남은 경우는 없음) |
+| `StopFailure` | `""`(전체) | `stop-failure` | `idle`. 단 대기 StopFailure(메인 턴이 띄운 백그라운드 작업이 남아 있고 그 작업이 모두 Monitor는 아닌 경우, 아래)는 `active`. 남은 작업이 모두 Monitor면 대기가 아니라 `idle` | `claude-idle` + `claude-stop-failure`(대기 StopFailure는 `claude-stop-failure`만) | `claude-last-stop-failure` = stdin `error`(없으면 `unknown`) **set**. `claude-background-wait` **unset**. 대기 StopFailure는 `claude-background-wait`를 **unset** 대신 **set**한다 | `completion`(대기 StopFailure는 없음) |
 | `SessionEnd` | `""`(전체) | `session-end` | `idle` | `claude-idle` | `claude-session-id`·`restore.command`·`claude-last-stop-failure`·`claude-background-wait` **unset**. stdin `reason`이 `clear`·`resume`이 아니고(값이 없을 때 포함) 이 세션이 `claude-settings-session`과 같으면 `claude-settings-file`·`claude-settings-session`도 **unset** (프로필 meta 2키는 건드리지 않는다. 프로필 **부착 기록**에는 종료 표시만 하고 유예 뒤 회수 — 아래 "복원을 건너 프로필이 유지되는 방식") | `completion` |
 | `Notification` | `""`(전체) | `notification` | `notification_type`별(아래 "Notification 유형별 상태"). `needs_input`·`active`·변경 없음 | `needs-input`(`needs_input` 유형만) | — | `needs_input`(`needs_input` 유형만) |
 | `UserPromptSubmit` | `""`(전체) | `prompt-submit` | `active` | — | `claude-last-stop-failure`·`claude-background-wait` **unset** | — |
@@ -430,7 +430,7 @@ Meta를 먼저 쓴 뒤 이벤트를 보내며 새 턴(`prompt-submit`/`session-s
 - 끝: `UserPromptSubmit`의 `prompt`가 `<task-notification>`으로 시작하면 그 안의 `<task-id>` 작업을 지운다.
 - `Stop`의 `background_tasks`를 읽을 수 있으면 기록을 그 목록의 끝나지 않은 항목으로 바꾼다.
   `SessionStart`(압축 뒤의 `compact`는 제외)·`SessionEnd`는 기록을 버린다.
-- 기록이 남은 채 `StopFailure`가 오면 대기 Stop과 같이 `active`와 `claude-background-wait`를 보내고,
+- 기록이 남은 채 `StopFailure`가 오면(남은 기록이 모두 Monitor인 경우는 아래) 대기 StopFailure다. 대기 Stop과 같이 `active`와 `claude-background-wait`를 보내고,
   `claude-last-stop-failure`를 기록한 뒤 `claude-stop-failure`만 fire한다. 두 meta는 이벤트보다 먼저 기록한다.
   `claude-idle`·`surface.completion`·telemetry `wall_time_ms`·자동 재개 처리는 하지 않는다.
   작업이 끝나 열린 턴의 `Stop`이 idle을 기록한다.
@@ -457,7 +457,7 @@ Meta를 먼저 쓴 뒤 이벤트를 보내며 새 턴(`prompt-submit`/`session-s
 성공 처리를 하지 않는다. 두 필드가 없거나 해석할 수 없으면 이전처럼 턴 종료로 처리한다.
 대기 Stop은 surface meta `claude-background-wait`에 대기 시작 시각(`since_ms`, Unix ms)·끝나지 않은 작업 수(`tasks`)·
 작업 종류(`types`)·Monitor를 뺀 작업 종류(`notice_types`)·정지 알림 여부(`notified`)·출력 파일 단서(`watch`: `session`·`cwd`·작업 `id`와 이름)를 JSON으로 남긴다. 같은 대기에서 이어진 대기 Stop은 시작 시각과 알림 여부를 유지한다.
-정지 알림을 보내면 `notified`를 `true`로 다시 쓴다. 대기가 아닌 `Stop`·백그라운드 작업이 남지 않은 `StopFailure`·
+정지 알림을 보내면 `notified`를 `true`로 다시 쓴다. 대기가 아닌 `Stop`·대기가 아닌 `StopFailure`(백그라운드 작업이 남지 않았거나 모두 Monitor)·
 새 턴(`UserPromptSubmit`·`SessionStart`, 압축 뒤의 `compact`는 제외)·`SessionEnd`가 이 meta를 지운다. 정지 알림은 이 대기를 따로 다룬다(아래 "정지 알림").
 Claude Code 2.1.283 실측 payload에는 `background_tasks`(항목 `id`·`type`·`status`·`description`·
 `agent_type` 또는 `command`)만 있고 `waiting_on_background_work`는 없었다. 공식 hooks 문서
@@ -623,7 +623,7 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 
 상태는 출력 조건을 넘긴 뒤에만 조회한다. 조회한 상태가 `idle`·`needs_input`·`exited`이면 그 조용한 구간에서는 다시 조회하지 않는다. 대기 meta 복원 조회도 함께 멈춘다. 이 세 상태는 hook이 보고한 값이라 출력이 바뀌거나 그 surface에 hook이 와야 바뀐다. 누적 출력이 바뀌거나 그 surface의 hook(종류 무관)이 플러그인에 오면 다음 회차에 다시 조회한다. 그래서 상태가 `active`로 돌아온 뒤 알리는 시점은 매 회차 조회할 때와 같다. 새 턴 신호(`prompt-submit`/`session-start`/`active`, 압축 뒤의 `session-start`는 제외)는 `active`를 호스트에 보고하기 **전에** 정지 관측을 초기화한다. 순서가 반대면 그 사이의 스캔 회차가 이전 턴의 조용한 구간과 새 상태 `active`를 함께 보고 재개 직후 거짓 정지 알림을 낼 수 있다. 상태 조회에 실패하면(빈 값) 확인하지 않은 것으로 보고 다음 회차에 다시 묻는다. hook을 거치지 않고 `terminal.set_state`로 상태를 바꾸면 다음 출력 변화나 hook까지 반영되지 않는다. 추적 유지 판단(`terminal.parent`·`surface.locate`)은 이 규칙과 무관하게 매 회차 한다.
 
-**Monitor 기록.** Monitor는 이벤트가 있을 때만 출력하므로 조용한 것이 정상이다. 대기 Stop에서 Monitor는 정지 알림의 감시 대상·종류·이름에서 뺀다. 기다리는 작업이 모두 Monitor면 화면 기준과 출력 파일 기준 모두 알리지 않는다. Monitor와 다른 작업이 함께 있으면 다른 작업만으로 판정한다.
+**Monitor 기록.** Monitor는 이벤트가 있을 때만 출력하므로 조용한 것이 정상이다. 대기 Stop에서 Monitor는 정지 알림의 감시 대상·종류·이름에서 뺀다. 기다리는 작업이 모두 Monitor면 화면 기준과 출력 파일 기준 모두 알리지 않는다. Monitor만 남은 Stop·StopFailure는 이제 대기가 아니므로, 이런 대기는 이 규칙 이전 버전이 기록해 재시작 뒤 복원된 대기뿐이다(아래 "이 규칙 이전 버전이 Monitor만 기다리는 대기로 기록한 자식"). Monitor와 다른 작업이 함께 있으면 다른 작업만으로 판정한다.
 
 판별 근거는 Claude Code 2.1.319 실제 세션의 훅 입력이다.
 
@@ -669,7 +669,7 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 오류 문구 유무와 관계없이 이 기준을 쓴다.
 대기 한 번에 한 번만 알린다. 출력이 바뀌거나 쿨다운이 지나도 같은 대기에서는 다시 알리지 않는다.
 대기에 Monitor가 있으면, Monitor 이벤트의 새 턴으로 대기가 다시 시작돼도 출력 파일 기준으로 마지막에 알린 작업과 같고 그 알림 뒤로 파일 활동이 없으면 같은 조용한 구간으로 보고 다시 알리지 않는다. Monitor가 없는 대기는 새 대기마다 다시 알려 턴을 깨운다(아래 "무출력 알림 선언"으로 보류하거나 버릴 수 있다). `claude-background-quiet`의 `tasks`·`at_ms`로 판단하므로 플러그인을 다시 시작해도 이어진다.
-대기 기록은 플러그인 메모리에 두며 대기를 끝내는 이벤트(대기가 아닌 `Stop`·백그라운드 작업이 남지 않은 `StopFailure`·새 턴·`SessionEnd`)와 추적 해제가 지운다.
+대기 기록은 플러그인 메모리에 두며 대기를 끝내는 이벤트(대기가 아닌 `Stop`·대기가 아닌 `StopFailure`(백그라운드 작업이 남지 않았거나 모두 Monitor)·새 턴·`SessionEnd`)와 추적 해제가 지운다.
 플러그인이 다시 시작되면 메모리 기록은 사라지고 `claude-background-wait` meta는 남는다. 시작할 때 위 "추적" 절차가 이 meta로 기록을 되살린다.
 그 뒤에 meta가 생긴 surface도 일반 기준에 닿으면 알리기 전에 이 meta를 읽어 기록을 되살리고 대기 기준으로 다시 판정한다. 알림 문구도 이 meta를 읽으므로 기준과 문구가 같은 상태를 가리킨다.
 되살린 기록은 meta의 알림 여부와 출력 파일 단서를 이어받는다. 그래서 재시작 전에 알린 대기는 다시 알리지 않고, 출력 파일 감시도 이어 간다.
@@ -680,7 +680,7 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 
 같은 정적 구간에서는 한 번만 알리고 surface별로 최소 5분 간격을 둔다. 출력이 바뀌면 정적 구간을 다시 측정한다. 새 턴 신호도 중복 기록과 정적 측정을 초기화하지만 5분 쿨다운은 유지한다. 긴 추론이나 입력 대기와 실제 멈춤은 구분하지 못할 수 있다.
 
-`StopFailure`가 상태를 idle로 바꾸면 이 정지 알림의 조건에서 빠진다. 대신 `claude-idle` 훅으로 실행된 `notify-done`이 API 오류 종류를 붙여 로그를 쓰는 경로를 사용한다. 백그라운드 작업이 남아 `active`로 남는 StopFailure는 `notify-stop-failure`가 한 줄을 쓴다. 훅 호출과 로그 쓰기가 실패하지 않았다는 보장까지 뜻하지는 않는다.
+`StopFailure`가 상태를 idle로 바꾸면 이 정지 알림의 조건에서 빠진다. 대신 `claude-idle` 훅으로 실행된 `notify-done`이 API 오류 종류를 붙여 로그를 쓰는 경로를 사용한다. Monitor가 아닌 백그라운드 작업이 남아 `active`로 남는 대기 StopFailure는 `notify-stop-failure`가 한 줄을 쓴다. 훅 호출과 로그 쓰기가 실패하지 않았다는 보장까지 뜻하지는 않는다.
 
 정지 스캐너는 `terminal.set_state`를 호출하지 않는다. 관측 결과로 알림만 만들며 `claude children`의 상태를 직접 바꾸지 않는다.
 
