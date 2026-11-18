@@ -42,8 +42,39 @@ they are not shared with tasty.
 | `linux-x64` | `x86_64-unknown-linux-gnu` | `[self-hosted, Linux, X64]` |
 | `linux-arm64` | `aarch64-unknown-linux-gnu` | `[self-hosted, Linux, ARM64]` |
 
-The `check`, `lint`, `audit`, and `licenses` jobs run on `[self-hosted, Linux, X64]`, and
-the `test` job on the Windows x64 and macOS runners.
+The `test` job runs on the Windows x64 and macOS runners. The Linux jobs that build
+nothing for a platform ask for `[self-hosted, Linux]`, which both Linux runners carry, so
+the x64 or the ARM64 runner takes each one, whichever is free:
+
+| Workflow | Jobs on `[self-hosted, Linux]` |
+|---|---|
+| `ci.yml` | `check`, `lint`, `audit`, `licenses` |
+| `plugin-version-check.yml` | `check` |
+| `release.yml` | `create-release`, `release-meta`, `publish` |
+
+Only the `build` and `package` matrix entries are tied to a platform's runner. A job on
+the shared label gives the same result on either runner:
+
+- `check`: the plugin code branches on the operating system, not the CPU (no crate
+  tests `target_arch`), so both runners run the same Linux code paths. `target/` is in
+  the runner's own checkout and is removed by `actions/checkout` on every run.
+- `lint` and `licenses`: `scripts/install-lint-tools.sh` and
+  `scripts/install-cargo-deny.sh` pin the x86_64 and the aarch64 release with its own
+  SHA-256 sum, and the tool cache folder names the architecture or triple. `deny.toml`
+  sets no `targets`, so cargo-deny reads every platform's dependencies on either host.
+- `audit`: `cargo audit` reads only `Cargo.lock`. `cargo-audit` is built from source into
+  the runner's own tool cache.
+- Plugin version check: `cargo tree --target all` and `cargo metadata --no-deps` do not
+  depend on the host, and the judge (`strip-cfg-test`, built from source into the
+  runner's own tool cache) compares source text.
+- `release-meta`: `cargo metadata` without `--filter-platform`, the manifests, and the
+  tasty checkout at the pinned rev; nothing depends on the host. `create-release` and
+  `publish` run only `git`, `gh`, and `sha256sum`.
+
+Each runner folder has its own tool cache and checkout, so nothing built for one
+architecture is read by the other runner. The runners share no cache action (see
+[Actions and cache](#actions-and-cache)); each machine's Cargo home keeps only downloaded
+sources and the git checkouts of dependencies.
 
 These are the same five platforms that tasty releases. Linux ARM64 is included because
 tasty ships a Linux ARM64 package, and the full-package lock file needs a plugin hash
@@ -77,19 +108,18 @@ Each runner needs:
 | All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, `tar`, `awk`, and `sha256sum` or `shasum` (`scripts/package-plugin.sh`; Git for Windows provides them on Windows). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
 | Windows (both) | Git for Windows, whose bash runs `scripts/check.sh` (bash need not be on `PATH`: the jobs find `bin\bash.exe` from the location of `git` and put that folder first on `PATH`, ahead of the WSL bash in System32), PowerShell 7 (`pwsh`), and Visual Studio Build Tools with the MSVC x64 tools, `vswhere.exe`, and `dumpbin.exe` |
 | `[win-arm64]` | In addition, the MSVC ARM64 build tools (C dependencies are compiled for ARM64) and the `aarch64-pc-windows-msvc` Rust target installed for the toolchain above |
-| `[self-hosted, Linux, X64]` | For `plugin-version-check.yml`, `rustfmt` from the toolchain and access to GitHub to install `strip-cfg-test` and to fetch tasty commits that the Cargo git cache does not have. `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `lint` job needs no installed tools: it downloads shellcheck and actionlint into the runner tool cache, which needs access to GitHub, `curl`, and `tar` with `xz`. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum` |
-| `[self-hosted, Linux, ARM64]` | A C compiler |
+| `[self-hosted, Linux, X64]` and `[self-hosted, Linux, ARM64]` | Both Linux runners take the jobs on `[self-hosted, Linux]`, so both need everything here. For `plugin-version-check.yml`, `rustfmt` from the toolchain and access to GitHub to install `strip-cfg-test` and to fetch tasty commits that the Cargo git cache does not have. `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `lint` job needs no installed tools: it downloads shellcheck and actionlint into the runner tool cache, which needs access to GitHub, `curl`, and `tar` with `xz`. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum` |
 | `[self-hosted, macOS, ARM64]` | The Xcode command line tools, and access to GitHub to install `strip-cfg-test` into the runner tool cache for the `repo-gates` tests |
 
 ## Tests by platform
 
 | Platform | Job | What runs |
 |---|---|---|
-| `linux-x64` | `check` on `[self-hosted, Linux, X64]` | `scripts/check.sh test`: every test of every workspace crate that is not `#[ignore]` (the eight `#[ignore]` tests of `tasty-plugin-codex` and the two WebKitGTK tests do not run here) |
-| `linux-x64` | `check`, step "test (linux, webview layout)" | The two `#[ignore]` WebKitGTK tests of `tasty-plugin-markdown` under `xvfb-run`, with the same commands as tasty's `crossplatform-check.yml`. As in tasty, a failure is reported but does not fail the job yet |
+| `linux-x64` or `linux-arm64` | `check` on `[self-hosted, Linux]` | `scripts/check.sh test`: every test of every workspace crate that is not `#[ignore]` (the eight `#[ignore]` tests of `tasty-plugin-codex` and the two WebKitGTK tests do not run here) |
+| `linux-x64` or `linux-arm64` | `check`, step "test (linux, webview layout)" | The two `#[ignore]` WebKitGTK tests of `tasty-plugin-markdown` under `xvfb-run`, with the same commands as tasty's `crossplatform-check.yml`. As in tasty, a failure is reported but does not fail the job yet |
 | `windows-x64` | `test` on `[self-hosted, Windows, X64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast`, then `cargo test --locked -p plugin-guards` |
 | `macos-arm64` | `test` on `[self-hosted, macOS, ARM64]` | `scripts/check.sh lint`, then `scripts/check.sh test --lib --bins --no-fail-fast`, then `cargo test --locked -p plugin-guards`, then `cargo test --locked -p repo-gates` with `strip-cfg-test` from `scripts/install-judge.sh` |
-| `windows-arm64`, `linux-arm64` | `build` | Build only. The plugin code branches on the operating system, not the CPU, so the x64 test runs cover the same code paths |
+| `windows-arm64` | `build` | Build only. The plugin code branches on the operating system, not the CPU, so the Windows x64 test run covers the same code paths |
 
 The `--lib --bins` scope is the one tasty uses for its Windows and macOS unit tests.
 
@@ -100,9 +130,9 @@ Before them the job runs `cargo fetch --locked`, because the fixtures resolve wi
 --offline`, and installs `strip-cfg-test` as `plugin-version-check.yml` does. They do not
 run on Windows.
 
-Clippy (`scripts/check.sh lint`) runs natively on `linux-x64` (`check` job),
-`windows-x64`, and `macos-arm64` (`test` job). It does not run for `windows-arm64` or
-`linux-arm64`.
+Clippy (`scripts/check.sh lint`) runs natively on Linux (`check` job, on whichever Linux
+runner takes it), `windows-x64`, and `macos-arm64` (`test` job). It does not run for
+`windows-arm64`. The Linux run covers the Linux code paths for both Linux targets.
 
 The `check` job checks that the WebKitGTK 4.1 development files are installed on the
 runner. The `tasty-plugin-markdown` Linux dev-dependencies (`webkit2gtk`, `gtk`,
@@ -567,10 +597,10 @@ release steps are in [branching.md](branching.md).
 
 | Job | Runner | Permissions | What it does |
 |---|---|---|---|
-| `create-release` | `[self-hosted, Linux, X64]` | `contents: write` | Tag runs only. Fails unless the tag commit is an ancestor of `origin/main` and the tag equals `v` + `VERSION`. Fails if a published Release with the tag exists. Reuses a draft Release only if its notes record the same commit (`Commit: <sha>`), and fails otherwise. Without a Release, creates a draft whose notes give the commit and the tasty rev |
-| `release-meta` | `[self-hosted, Linux, X64]` | `contents: read` | Writes `release-meta.toml` with `scripts/release-meta.sh` and uploads it as the artifact `release-meta` |
+| `create-release` | `[self-hosted, Linux]` | `contents: write` | Tag runs only. Fails unless the tag commit is an ancestor of `origin/main` and the tag equals `v` + `VERSION`. Fails if a published Release with the tag exists. Reuses a draft Release only if its notes record the same commit (`Commit: <sha>`), and fails otherwise. Without a Release, creates a draft whose notes give the commit and the tasty rev |
+| `release-meta` | `[self-hosted, Linux]` | `contents: read` | Writes `release-meta.toml` with `scripts/release-meta.sh` and uploads it as the artifact `release-meta` |
 | `package` | the five platform runners | `contents: read` | Builds and packages the eight plugins and uploads the artifact `plugins-<platform>` |
-| `publish` | `[self-hosted, Linux, X64]` | `contents: write` | Tag runs only. Downloads the artifacts, runs `sha256sum -c` for each platform, checks that each platform has 8 archives, 8 hash lines, and 8 TSV rows, that `release-meta.toml` names this tag, commit, and the 8 plugins, and that there are 51 files. Uploads them to the draft, then publishes the Release |
+| `publish` | `[self-hosted, Linux]` | `contents: write` | Tag runs only. Downloads the artifacts, runs `sha256sum -c` for each platform, checks that each platform has 8 archives, 8 hash lines, and 8 TSV rows, that `release-meta.toml` names this tag, commit, and the 8 plugins, and that there are 51 files. Uploads them to the draft, then publishes the Release |
 
 On a tag run, `release-meta` and `package` start only after `create-release` succeeds.
 
