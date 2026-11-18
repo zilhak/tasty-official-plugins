@@ -42,6 +42,12 @@ const STATE_ERROR_WARN_EVERY: u32 = 75;
 /// meta 쓰기 실패를 경고로 남기는 간격(대상별 연속 실패 수). 실패한 meta 는 회차마다 다시 쓴다.
 const META_ERROR_WARN_EVERY: u32 = 75;
 
+/// 대상의 연속 meta 쓰기 실패가 이미 `failures` 번일 때 이번 실패를 경고로 남기는가. 처음 한 번과 그 뒤
+/// [`META_ERROR_WARN_EVERY`] 번마다다.
+pub(crate) fn meta_failure_warns(failures: u32) -> bool {
+    failures.is_multiple_of(META_ERROR_WARN_EVERY)
+}
+
 /// 등록한 체크를 남기는 대상 surface meta. 재시작 뒤 복원에 쓴다.
 pub(crate) const IDLE_CHECK_META_KEY: &str = "claude-idle-checks";
 
@@ -759,7 +765,7 @@ impl ErrorScanner {
             }
             Err(e) => {
                 let failures = self.idle.meta_errors.entry(target).or_default();
-                if failures.is_multiple_of(META_ERROR_WARN_EVERY) {
+                if meta_failure_warns(*failures) {
                     tracing::warn!(
                         "claude idle check s{target}: writing {IDLE_CHECK_META_KEY} failed ({} time(s)), retrying every round: {e}",
                         *failures + 1
