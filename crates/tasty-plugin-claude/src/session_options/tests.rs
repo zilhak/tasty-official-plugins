@@ -179,7 +179,7 @@ fn run_mock_child_commands(host: &Host, dir: &Path, commands: &[String]) -> Vec<
 fn assert_mock_rejection(executable: &Path, dir: &Path, command: &str, expected_argv: &[String]) {
     use std::process::Command;
 
-    std::fs::write(
+    tasty_test_support::write_executable(
         executable,
         "#!/usr/bin/python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\nsys.exit(42)\n",
     )
@@ -203,8 +203,6 @@ fn assert_mock_rejection(executable: &Path, dir: &Path, command: &str, expected_
 #[cfg(unix)]
 #[test]
 fn isolated_mock_cli_receives_independent_child_argv_profiles_and_omission() {
-    use std::os::unix::fs::PermissionsExt;
-
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -213,12 +211,11 @@ fn isolated_mock_cli_receives_independent_child_argv_profiles_and_omission() {
     let _subscriber = tracing::subscriber::set_default(subscriber);
     let dir = tempfile::tempdir().unwrap();
     let executable = dir.path().join("claude");
-    std::fs::write(
+    tasty_test_support::write_executable(
         &executable,
         "#!/usr/bin/python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n",
     )
     .unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let profile = dir.path().join("profile'$(false)`false`\".json");
     let profile_text = r#"{"model":"profile-model","effortLevel":"low","permissions":{"allow":["Read"]},"hooks":{}}"#;
     std::fs::write(&profile, profile_text).unwrap();
