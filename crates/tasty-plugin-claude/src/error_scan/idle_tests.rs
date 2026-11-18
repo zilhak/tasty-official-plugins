@@ -622,8 +622,8 @@ fn a_tell_to_a_running_target_waits_for_the_turn_that_handles_the_message() {
         "앞 턴의 끝은 이 체크를 끝내지 않는다"
     );
     assert!(
-        host.idle_meta().unwrap().contains("\"done_from\":8"),
-        "다음 턴부터 센다: {:?}",
+        host.idle_meta().unwrap().contains("\"done_from\":7"),
+        "이 끝 뒤의 다음 끝을 기다린다: {:?}",
         host.idle_meta()
     );
     // 메시지를 처리하는 다음 턴(순번 8)이 끝났다.
@@ -631,6 +631,41 @@ fn a_tell_to_a_running_target_waits_for_the_turn_that_handles_the_message() {
     assert!(checks(&scanner).is_empty());
     assert_eq!(host.idle_meta(), None);
     assert!(tick(&scanner, &host, t0 + secs(500)).is_empty());
+}
+
+/// 실행 중인 대상에 보낸 tell 의 prompt-submit 이 앞 턴이 끝나기 전에 온 경우(Claude Code 는 실행 중에 받은 메시지를
+/// 줄에 넣을 때 보낸다): 앞 턴의 Stop 과 다음 턴의 Stop 이 같은 순번이다. 앞 턴의 Stop 은 체크를 남기고, 다음 턴의
+/// Stop 이 끝낸다. 다음 턴의 Stop 이 오지 않으면 120초 뒤 idle 1건이다.
+#[test]
+fn a_tell_queued_behind_a_running_turn_ends_at_the_turn_after_it() {
+    test_log::take();
+    let host = FakeHost::new("active");
+    let t0 = Instant::now();
+    let scanner = Mutex::new(ErrorScanner::new());
+    tell_check(&scanner, &host, t0, "active", 1);
+    // 메시지를 줄에 넣을 때 온 prompt-submit 이 순번을 2로 올린 뒤 앞 턴이 끝났다.
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(1), 2));
+    assert_eq!(
+        checks(&scanner).len(),
+        1,
+        "앞 턴의 끝은 이 체크를 끝내지 않는다"
+    );
+    // 메시지를 처리한 다음 턴의 Stop 도 순번 2다.
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(2), 2));
+    assert!(checks(&scanner).is_empty(), "다음 턴의 끝이 체크를 끝낸다");
+    assert_eq!(host.idle_meta(), None);
+    host.set_state("idle");
+    assert!(tick(&scanner, &host, t0 + secs(500)).is_empty());
+
+    // 같은 순서에서 다음 턴의 Stop 이 오지 않으면 마지막 active 뒤 120초에 1건이다.
+    let scanner = Mutex::new(ErrorScanner::new());
+    host.set_state("active");
+    tell_check(&scanner, &host, t0, "active", 1);
+    assert!(tick(&scanner, &host, t0 + secs(1)).is_empty());
+    lock_scanner(&scanner).idle_complete(&host, TARGET, turn(t0 + secs(1), 2));
+    host.set_state("idle");
+    assert!(tick(&scanner, &host, t0 + secs(120)).is_empty());
+    assert_eq!(tick(&scanner, &host, t0 + secs(121)).len(), 1);
 }
 
 /// 실행 중인 대상에 보낸 tell 의 앞 턴이 끝난 뒤 다음 턴이 시작되지 않거나 멈추면, 마지막 active 뒤 120초에 idle 1건이다.

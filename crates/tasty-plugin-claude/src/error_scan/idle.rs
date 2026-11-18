@@ -147,7 +147,8 @@ fn effect(owner: &Owner, finish: Finish, before_restore: bool) -> Effect {
             let Some(threshold) = owner.threshold else {
                 return Effect::End;
             };
-            // 완료 알림과 같은 판정이다. 턴 종료 훅 하나가 이 순번의 끝을 받았다고 보고 그 결정을 따른다.
+            // 완료 알림과 같은 판정(`completion_gate::decide`)으로 이 끝이 문턱을 넘었는지 본다. 두 번 세는 문턱(실행
+            // 중이던 대상)의 첫 끝은 진행 중이던 앞 턴의 끝이므로 체크를 남기고, 그 뒤의 다음 턴 끝을 기다린다.
             let tail = completion_gate::Tail {
                 event: completion_gate::NoticeEvent::Idle,
                 done_from: threshold.done_from,
@@ -156,8 +157,11 @@ fn effect(owner: &Owner, finish: Finish, before_restore: bool) -> Effect {
             };
             let verdict = completion_gate::decide(tail, Some("idle"), seq, false);
             match (verdict.decision, verdict.next) {
-                (completion_gate::Decision::Done, completion_gate::Next::Keep(next)) => {
-                    Effect::Advance(Threshold::once(next.done_from))
+                // 다음 문턱은 이 끝의 순번이다(`decide` 의 `seq + 1` 이 아니다). Claude Code 는 실행 중에 받은 메시지의
+                // prompt-submit 을 줄에 넣는 즉시 보내므로, 앞 턴의 Stop 이 이미 그 순번을 보고 다음 턴의 Stop 은
+                // 순번을 더 올리지 못할 수 있다. 앞 턴의 끝 뒤에 오는 확정 완료는 다음 턴의 끝이다.
+                (completion_gate::Decision::Done, completion_gate::Next::Keep(_)) => {
+                    Effect::Advance(Threshold::once(seq))
                 }
                 (completion_gate::Decision::Done, _) => Effect::End,
                 _ => Effect::Keep,
