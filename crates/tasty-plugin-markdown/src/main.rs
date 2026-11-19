@@ -504,6 +504,25 @@ impl MarkdownPlugin {
     }
 }
 
+/// 대용량 확인 팝업을 그 문서의 surface 범위에 연다.
+fn show_large_confirm(
+    host: &HostHandle,
+    surface_id: u32,
+    path: &str,
+    size: u64,
+) -> Result<u64, PluginError> {
+    let context = json!({
+        "surface_id": surface_id,
+        "path": path,
+        "size": size,
+    });
+    host.show_popup(
+        LARGE_FILE_POPUP_ID,
+        PopupShowTarget::Surface { id: surface_id },
+        context,
+    )
+}
+
 fn subscribe_events(bus: &BusHandle) {
     for key in [
         THEME_CHANGED_EVENT,
@@ -867,9 +886,10 @@ impl MarkdownPlugin {
                     doc.pending_large = true;
                     doc.confirm_requested = true;
                 }
-                if !self.show_large_confirm(surface_id, &path, size)
-                    && let Some(doc) = self.docs.get_mut(&surface_id)
-                {
+                if let Some(host) = self.host.clone() {
+                    let shown = show_large_confirm(&host, surface_id, &path, size);
+                    self.apply_reload_confirm(surface_id, &path, size, shown);
+                } else if let Some(doc) = self.docs.get_mut(&surface_id) {
                     doc.confirm_refused();
                 }
             }
@@ -945,13 +965,9 @@ impl MarkdownPlugin {
         if let Some(path) = file.as_deref()
             && let Some(size) = file_exceeds_limit(path)
         {
-            if self.host.is_some() {
-                let shown = self.show_large_confirm(surface_id, path, size);
-                let mut doc = MdDoc::new_deferred(file);
-                if !shown {
-                    doc.confirm_refused();
-                }
-                return doc;
+            if let Some(host) = self.host.clone() {
+                let shown = show_large_confirm(&host, surface_id, path, size);
+                return self.deferred_doc_after_show(surface_id, path.to_string(), size, shown);
             }
             tracing::warn!("markdown large-file gate: host handle unavailable — loading anyway");
         }
@@ -971,22 +987,37 @@ impl MarkdownPlugin {
         }
     }
 
-    /// 대용량 확인 팝업을 그 문서의 surface 범위에 연다. 팝업이 이 surface에 떠 있으면 true다.
-    fn show_large_confirm(&mut self, surface_id: u32, path: &str, size: u64) -> bool {
-        let Some(host) = self.host.clone() else {
-            return false;
-        };
-        let context = json!({
-            "surface_id": surface_id,
-            "path": path,
-            "size": size,
-        });
-        let shown = host.show_popup(
-            LARGE_FILE_POPUP_ID,
-            PopupShowTarget::Surface { id: surface_id },
-            context,
-        );
-        self.record_confirm(surface_id, path, size, shown)
+    /// 생성·복원에서 연 확인 팝업의 `show_popup` 결과를 반영한 대기 문서를 만든다.
+    /// 문서는 이 함수가 돌아온 뒤에 `docs`에 들어가므로, 열리지 않았으면 요청 표시를 여기서 내린다.
+    fn deferred_doc_after_show(
+        &mut self,
+        surface_id: u32,
+        path: String,
+        size: u64,
+        shown: Result<u64, PluginError>,
+    ) -> MdDoc {
+        let shown = self.record_confirm(surface_id, &path, size, shown);
+        let mut doc = MdDoc::new_deferred(Some(path));
+        if !shown {
+            doc.confirm_refused();
+        }
+        doc
+    }
+
+    /// reload에서 연 확인 팝업의 `show_popup` 결과를 `docs`에 있는 문서에 반영한다.
+    /// 열리지 않았으면 요청 표시를 내린다.
+    fn apply_reload_confirm(
+        &mut self,
+        surface_id: u32,
+        path: &str,
+        size: u64,
+        shown: Result<u64, PluginError>,
+    ) {
+        if !self.record_confirm(surface_id, path, size, shown)
+            && let Some(doc) = self.docs.get_mut(&surface_id)
+        {
+            doc.confirm_refused();
+        }
     }
 
     /// `show_popup` 결과를 반영한다. 이 surface의 확인 팝업이면 인스턴스를 기록하고 true를 돌려준다.
