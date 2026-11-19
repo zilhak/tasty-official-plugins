@@ -1063,6 +1063,47 @@ mod tests {
         );
     }
 
+    /// 실제 prune 배선도 색인 읽기 오류를 보호 목록 실패로 받는다. 다른 thread의 색인 자리에 폴더 대신
+    /// 일반 파일을 두면 그 thread의 read_dir가 NotFound가 아닌 오류를 낸다(Unix는 ENOTDIR, Windows는
+    /// ERROR_DIRECTORY os error 267). 그 prune은 이벤트를 지우지 않고, 파일을 치우면 끝난 것만 지운다.
+    #[test]
+    fn prune_keeps_every_event_while_a_thread_index_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let r = receiver(root, THREAD);
+        let (open, _) = capture(root, &r, completion("k:1", None)).unwrap();
+        let (done, _) = capture(root, &r, completion("k:2", None)).unwrap();
+        remove_pending(root, &done).unwrap();
+        let broken = root
+            .join("pending")
+            .join("01a12f74-dab9-7a00-8000-0000000000ee");
+        std::fs::write(&broken, "").unwrap();
+        let err = markers(root, "01a12f74-dab9-7a00-8000-0000000000ee").unwrap_err();
+        assert_ne!(err.kind(), std::io::ErrorKind::NotFound, "{err}");
+        let later = std::time::SystemTime::now() + RETENTION + std::time::Duration::from_secs(60);
+
+        prune(root, later);
+        assert!(
+            read_event(root, &open.event_id).unwrap().is_some(),
+            "미송신은 남는다"
+        );
+        assert!(
+            read_event(root, &done.event_id).unwrap().is_some(),
+            "색인을 다 읽지 못한 prune은 이벤트를 지우지 않는다"
+        );
+
+        std::fs::remove_file(&broken).unwrap();
+        prune(root, later);
+        assert!(
+            read_event(root, &open.event_id).unwrap().is_some(),
+            "미송신은 남는다"
+        );
+        assert!(
+            read_event(root, &done.event_id).unwrap().is_none(),
+            "끝난 것은 지운다"
+        );
+    }
+
     #[test]
     fn only_old_finished_events_are_pruned() {
         let dir = tempfile::tempdir().unwrap();
