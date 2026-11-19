@@ -3,7 +3,7 @@
 //! Pane is written 페인 in Korean, not 패인, and Window is written ウィンドウ in Japanese,
 //! not ウインドウ. In Korean, 창 stands for Window only when the text means an OS window
 //! owned by a View, and then it is written 윈도우; another meaning of 창, such as a popup
-//! the plugin declares in its manifest, is registered phrase by phrase with its evidence.
+//! the plugin declares with `declare_popup`, is registered phrase by phrase with its evidence.
 //! This follows the Window and Popup distinction of the tasty terms.
 //!
 //! A ban on a spelling alone lets an empty scan pass, so the number of canonical spellings
@@ -61,22 +61,22 @@ const NOT_A_WINDOW: &[NotAWindow] = &[
         path: "crates/tasty-plugin-clipboard-viewer/lang/ko.toml",
         phrase: "스냅샷 창은",
         count: 1,
-        evidence: "The manifest `crates/tasty-plugin-clipboard-viewer/tasty-plugin.toml` \
-                   declares it with `[[contributes.popup]]`",
+        evidence: "`crates/tasty-plugin-clipboard-viewer/src/main.rs` declares it as a popup \
+                   with `declare_popup` in `on_start`",
     },
     NotAWindow {
         path: "crates/tasty-plugin-clipboard-viewer/lang/ko.toml",
         phrase: "기존 창을 앞으로",
         count: 1,
         evidence: "Names the same popup a second time in one sentence; the evidence is the same \
-                   manifest as above",
+                   popup declaration as above",
     },
     NotAWindow {
         path: "crates/tasty-plugin-git-viewer/lang/ko.toml",
         phrase: "기존 창을 앞으로",
         count: 1,
-        evidence: "The manifest `crates/tasty-plugin-git-viewer/tasty-plugin.toml` declares it \
-                   with `[[contributes.popup]]`",
+        evidence: "`crates/tasty-plugin-git-viewer/src/main.rs` declares it as a popup with \
+                   `declare_popup` in `on_start`",
     },
 ];
 
@@ -274,7 +274,7 @@ fn every_remaining_window_word_is_registered_as_not_a_window() {
         left.is_empty(),
         "some `창` is not registered:\n{}\nIf it means an OS window, write 윈도우. If it \
          means something else, register it in NOT_A_WINDOW with the evidence checked, such as \
-         the popup declaration of the manifest.",
+         the popup declaration (`declare_popup`).",
         left.iter()
             .map(|u| format!(
                 "  {} — `창` {} times, the list covers {}",
