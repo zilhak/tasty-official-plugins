@@ -10,7 +10,7 @@ use tasty_plugin_sdk::EguiMeshPopup;
 
 use crate::{MarkdownPlugin, baked_icons, navigate, theme_from_wire};
 
-/// 대용량 확인 팝업 인스턴스의 대상 정보(open_popup context 로 받아 보관). [열기] 시
+/// 대용량 확인 팝업 인스턴스의 대상 정보. 열 때와 open_popup context 로 받아 보관한다. [열기] 시
 /// 이 surface 의 문서 read 를 재개한다.
 #[derive(Clone)]
 pub(crate) struct LargeFileConfirm {
@@ -19,6 +19,16 @@ pub(crate) struct LargeFileConfirm {
     pub(crate) file_name: String,
     /// 크기 칩 라벨 (예: "3.2 MB").
     pub(crate) size_label: String,
+}
+
+impl LargeFileConfirm {
+    pub(crate) fn new(surface_id: u32, path: &str, size: u64) -> Self {
+        Self {
+            surface_id,
+            file_name: basename(path),
+            size_label: format_size(size),
+        }
+    }
 }
 
 /// 파일 열기 팝업의 입력 경로와 변환 대상. 대상 surface가 있으면

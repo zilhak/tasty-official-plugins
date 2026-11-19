@@ -1,5 +1,6 @@
 use super::*;
 use crate::addr_nav::AddrEffect;
+use crate::popup::{basename, format_size};
 
 #[test]
 fn reload_of_an_open_document_returns_ok() {
@@ -1553,4 +1554,98 @@ fn the_popups_keep_their_manifest_behavior() {
         assert_eq!(d.instances, Some(PopupInstances::Single), "{id}");
         assert_eq!(d.anchor, None, "{id}");
     }
+}
+
+fn refused(code: i32) -> tasty_plugin_sdk::PluginError {
+    tasty_plugin_sdk::PluginError::HostCall {
+        method: "popup.show".into(),
+        message: "refused".into(),
+        code: Some(code),
+    }
+}
+
+/// host가 확인 팝업을 열지 않으면 요청 표시를 내려 페이지 [열기] 버튼이 다시 묻게 한다.
+#[test]
+fn a_refused_confirm_lets_the_page_button_ask_again() {
+    let mut doc = MdDoc::new_deferred(Some("/big.md".into()));
+    // 열리지 않은 채 두면 명시 reload(버튼)도 건너뛴다.
+    assert_eq!(
+        reload_step(
+            &doc,
+            ReloadOrigin::Explicit,
+            Some(LARGE_FILE_LIMIT_BYTES + 1),
+            true
+        ),
+        ReloadStep::Skip
+    );
+    doc.confirm_refused();
+    assert!(!doc.confirm_requested);
+    assert!(doc.shows_large_deferred(), "대기 페이지와 버튼은 남는다");
+    assert_eq!(
+        reload_step(
+            &doc,
+            ReloadOrigin::Explicit,
+            Some(LARGE_FILE_LIMIT_BYTES + 1),
+            true
+        ),
+        ReloadStep::Ask(LARGE_FILE_LIMIT_BYTES + 1)
+    );
+}
+
+/// `show_popup` 거절(-32004, -32602)은 열리지 않은 것으로 보고 아무 인스턴스도 기록하지 않는다.
+#[test]
+fn a_refused_show_records_no_confirm() {
+    let mut p = MarkdownPlugin::new(Translator::default());
+    assert!(!p.record_confirm(3, "/a/big.md", 2 << 20, Err(refused(-32004))));
+    assert!(!p.record_confirm(3, "/a/big.md", 2 << 20, Err(refused(-32602))));
+    assert!(p.confirm.is_empty());
+}
+
+/// 열린 확인은 열기 콜백 전에 그 surface의 인스턴스로 기록한다.
+#[test]
+fn a_shown_confirm_is_recorded_before_the_open_callback() {
+    let mut p = MarkdownPlugin::new(Translator::default());
+    assert!(p.record_confirm(3, "/a/big.md", 2 << 20, Ok(41)));
+    let c = &p.confirm[&41];
+    assert_eq!(c.surface_id, 3);
+    assert_eq!(c.file_name, "big.md");
+}
+
+/// 큰 파일 둘을 연달아 열면 host가 두 번째 요청을 첫 인스턴스로 합친다. 두 번째 문서에는
+/// 팝업이 없으므로 열리지 않은 것으로 보고, 첫 문서의 확인은 그대로 둔다.
+#[test]
+fn a_confirm_merged_into_another_surface_counts_as_not_shown() {
+    let mut p = MarkdownPlugin::new(Translator::default());
+    assert!(p.record_confirm(3, "/a/first.md", 2 << 20, Ok(41)));
+    assert!(!p.record_confirm(4, "/a/second.md", 3 << 20, Ok(41)));
+    assert_eq!(p.confirm.len(), 1);
+    assert_eq!(p.confirm[&41].surface_id, 3);
+    assert_eq!(p.confirm[&41].file_name, "first.md");
+    // 같은 surface에 같은 인스턴스가 돌아오면 그 surface의 팝업이 떠 있는 것이다.
+    assert!(p.record_confirm(3, "/a/first.md", 2 << 20, Ok(41)));
+}
+
+/// 첫 확인이 닫히면 두 번째 문서의 버튼이 다시 묻는다(합쳐진 문서가 갇히지 않는다).
+#[test]
+fn after_a_merged_confirm_the_second_page_button_asks_again() {
+    let mut p = MarkdownPlugin::new(Translator::default());
+    p.docs
+        .insert(3, MdDoc::new_deferred(Some("/a/first.md".into())));
+    let mut second = MdDoc::new_deferred(Some("/a/second.md".into()));
+    assert!(p.record_confirm(3, "/a/first.md", 2 << 20, Ok(41)));
+    if !p.record_confirm(4, "/a/second.md", 3 << 20, Ok(41)) {
+        second.confirm_refused();
+    }
+    p.docs.insert(4, second);
+    assert!(p.docs[&3].confirm_requested);
+    assert!(!p.docs[&4].confirm_requested);
+    assert_eq!(
+        reload_step(
+            &p.docs[&4],
+            ReloadOrigin::Explicit,
+            Some(LARGE_FILE_LIMIT_BYTES + 1),
+            true
+        ),
+        ReloadStep::Ask(LARGE_FILE_LIMIT_BYTES + 1)
+    );
 }

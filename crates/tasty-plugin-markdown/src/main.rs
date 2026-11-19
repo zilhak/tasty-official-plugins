@@ -29,9 +29,9 @@ use tasty_plugin_protocol::ThemeWire;
 use tasty_plugin_sdk::file_watch::{self, ContentDigest, WatchCmd};
 use tasty_plugin_sdk::{
     BusHandle, EventDispatchCtx, HostHandle, IpcMethodCtx, IpcMethodError, LogicalPx, Plugin,
-    PluginEnv, PopupClosedCtx, PopupDeclSpec, PopupInstances, PopupKeyboard, PopupOpenCtx,
-    PopupOpenResult, PopupOutsideClick, PopupScopeKind, PopupSetContextCtx, PopupShowTarget,
-    PopupSize, SurfaceCreateCtx, SurfaceRestoreCtx, SurfaceResult, Translator,
+    PluginEnv, PluginError, PopupClosedCtx, PopupDeclSpec, PopupInstances, PopupKeyboard,
+    PopupOpenCtx, PopupOpenResult, PopupOutsideClick, PopupScopeKind, PopupSetContextCtx,
+    PopupShowTarget, PopupSize, SurfaceCreateCtx, SurfaceRestoreCtx, SurfaceResult, Translator,
     WebviewNavigationAttemptCtx,
 };
 use tasty_type_appearance::theme::Theme;
@@ -42,7 +42,6 @@ use addr_nav::{ADDR_RESULT_METHOD, AddrOutcome, NavAction, nav_action, spawn_add
 use browse::PickerOwner;
 use popup::{
     FILE_PICKER_RESULT_EVENT, FileOpenState, FilePickerResultWire, LargeFileConfirm, PickerStart,
-    basename, format_size,
 };
 #[cfg(test)]
 use refresh::{RefreshAction, RefreshTarget, refresh_action};
@@ -412,6 +411,12 @@ impl MdDoc {
         }
     }
 
+    /// 확인 팝업이 이 문서에 열리지 않았다. 요청 표시를 내려 페이지의 [열기] 버튼과 명시적
+    /// reload가 다시 묻게 한다. 내리지 않으면 닫힘 알림이 오지 않아 버튼이 아무것도 하지 않는다.
+    fn confirm_refused(&mut self) {
+        self.confirm_requested = false;
+    }
+
     /// 대용량 확인 [열기] 후 실제 read 를 재개한다.
     fn resume_load(&mut self) {
         self.pending_large = false;
@@ -627,11 +632,7 @@ impl Plugin for MarkdownPlugin {
                 ) {
                     self.confirm.insert(
                         ctx.instance_id,
-                        LargeFileConfirm {
-                            surface_id: surface_id as u32,
-                            file_name: basename(path),
-                            size_label: format_size(size),
-                        },
+                        LargeFileConfirm::new(surface_id as u32, path, size),
                     );
                 }
             }
@@ -866,7 +867,11 @@ impl MarkdownPlugin {
                     doc.pending_large = true;
                     doc.confirm_requested = true;
                 }
-                self.show_large_confirm(surface_id, &path, size);
+                if !self.show_large_confirm(surface_id, &path, size)
+                    && let Some(doc) = self.docs.get_mut(&surface_id)
+                {
+                    doc.confirm_refused();
+                }
             }
             _ => {
                 if let Some(doc) = self.docs.get_mut(&surface_id) {
@@ -934,13 +939,19 @@ impl MarkdownPlugin {
         self.reload_webview(surface_id);
     }
 
-    fn make_doc(&self, file: Option<String>, surface_id: u32) -> MdDoc {
+    /// 문서를 만든다. 크기가 기준을 넘으면 확인 팝업을 열고 읽지 않은 대기 문서를 돌려준다.
+    /// 문서는 이 함수가 돌아온 뒤에 `docs`에 들어가므로 열기 결과를 여기서 반영한다.
+    fn make_doc(&mut self, file: Option<String>, surface_id: u32) -> MdDoc {
         if let Some(path) = file.as_deref()
             && let Some(size) = file_exceeds_limit(path)
         {
             if self.host.is_some() {
-                self.show_large_confirm(surface_id, path, size);
-                return MdDoc::new_deferred(file);
+                let shown = self.show_large_confirm(surface_id, path, size);
+                let mut doc = MdDoc::new_deferred(file);
+                if !shown {
+                    doc.confirm_refused();
+                }
+                return doc;
             }
             tracing::warn!("markdown large-file gate: host handle unavailable — loading anyway");
         }
@@ -960,25 +971,60 @@ impl MarkdownPlugin {
         }
     }
 
-    /// 대용량 확인 팝업을 그 문서의 surface 범위에 연다.
-    fn show_large_confirm(&self, surface_id: u32, path: &str, size: u64) {
-        let Some(host) = self.host.as_ref() else {
-            return;
+    /// 대용량 확인 팝업을 그 문서의 surface 범위에 연다. 팝업이 이 surface에 떠 있으면 true다.
+    fn show_large_confirm(&mut self, surface_id: u32, path: &str, size: u64) -> bool {
+        let Some(host) = self.host.clone() else {
+            return false;
         };
         let context = json!({
             "surface_id": surface_id,
             "path": path,
             "size": size,
         });
-        if let Err(e) = host.show_popup(
+        let shown = host.show_popup(
             LARGE_FILE_POPUP_ID,
             PopupShowTarget::Surface { id: surface_id },
             context,
-        ) {
+        );
+        self.record_confirm(surface_id, path, size, shown)
+    }
+
+    /// `show_popup` 결과를 반영한다. 이 surface의 확인 팝업이면 인스턴스를 기록하고 true를 돌려준다.
+    ///
+    /// host가 거절하면(-32004: surface가 창에 없거나 사라짐, -32602: 선언 없음 등) false다.
+    /// host는 같은 팝업이 이미 열려 있으면 새로 열지 않고 그 인스턴스 id를 돌려준다. 그 인스턴스가
+    /// 다른 surface의 확인이면 이 surface에는 팝업이 없으므로 역시 false다. 열기 콜백보다 먼저
+    /// 기록해야 연달아 연 두 번째 요청이 첫 인스턴스를 알아본다. 다시 열기를 시도하지 않는다.
+    fn record_confirm(
+        &mut self,
+        surface_id: u32,
+        path: &str,
+        size: u64,
+        shown: Result<u64, PluginError>,
+    ) -> bool {
+        let instance_id = match shown {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    "markdown surface {surface_id}: popup '{LARGE_FILE_POPUP_ID}' did not open: {e}"
+                );
+                return false;
+            }
+        };
+        if let Some(other) = self
+            .confirm
+            .get(&instance_id)
+            .filter(|c| c.surface_id != surface_id)
+        {
             tracing::warn!(
-                "markdown surface {surface_id}: popup '{LARGE_FILE_POPUP_ID}' did not open: {e}"
+                "markdown surface {surface_id}: popup '{LARGE_FILE_POPUP_ID}' is already open for surface {} (instance {instance_id}) — not shown here",
+                other.surface_id
             );
+            return false;
         }
+        self.confirm
+            .insert(instance_id, LargeFileConfirm::new(surface_id, path, size));
+        true
     }
 
     /// 파일 감시 대상을 등록하거나 갱신한다. 워커 생성에 실패했다면 자동 갱신은
