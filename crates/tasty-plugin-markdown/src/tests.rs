@@ -1,6 +1,6 @@
 use super::*;
 use crate::addr_nav::AddrEffect;
-use crate::popup::{basename, format_size};
+use crate::popup::format_size;
 
 #[test]
 fn reload_of_an_open_document_returns_ok() {
@@ -188,7 +188,7 @@ fn format_size_and_basename_examples() {
     assert_eq!(format_size(2 * 1024 * 1024 + 200 * 1024), "2.2 MB");
     assert_eq!(format_size(12 * 1024 * 1024), "12 MB");
     #[cfg(not(windows))]
-    assert_eq!(basename("/docs/big-notes.md"), "big-notes.md");
+    assert_eq!(crate::popup::basename("/docs/big-notes.md"), "big-notes.md");
 }
 
 #[test]
