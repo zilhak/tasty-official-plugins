@@ -23,7 +23,7 @@ Text/Files/Image/HTML 어디에도 속하지 않는 나머지 raw 포맷은 **"O
 - popup open 시 `arboard::Clipboard` 로 클립보드를 1 회 읽어 사용 가능한 타입 목록을 만든다. 현재 Text/Files/Image/HTML/Other 타입이 채워진다(Files 는 `arboard::Get::file_list()`, Image 는 `arboard::Clipboard::get_image()` 로 치수(width/height)와 바이트 수만 보존하고 픽셀 데이터 자체는 들고 있지 않는다, 렌더링을 안 하므로 필요 없다, HTML 은 `arboard::Clipboard::get().html()`, Other 는 arboard 를 거치지 않고 `raw_formats` 모듈이 플랫폼 raw API 로 직접 열거). 타입 선택 → body 미리보기 갱신.
 - **HTML 타입**: 렌더링하지 않고 원본 소스를 text 타입과 동일한 mono 텍스트로 보여준다(기본 상태). type-bar 우측 슬롯에 "Pretty print" 체크박스가 뜨며, 체크하면 `html_format::prettify()`(새 의존성 없는 태그 깊이 인덴터, `<script>`/`<style>`/`<pre>` 는 원본 그대로 보존)를 거친 결과로 바뀐다. 체크 상태는 popup 인스턴스 생존 동안만 유지(닫으면 리셋, 설정에 영속화하지 않음). 밀려난 메타(문자수·줄수)는 푸터에서 `{mime} · {meta}` 로 결합 표시.
 - **Other 타입**: text/files/image/html 어디에도 안 걸린 raw 포맷 전부를 하나의 타입으로 묶는다. body 는 발견된 포맷마다 이름(mono, 굵게)+크기(mono, muted)를 같은 줄에, 그 아래 raw 바이트를 텍스트화한 미리보기(`from_utf8_lossy` + 크기 상한 + 바이너리 판단 시 hex 요약 fallback)를 보여주는 블록을 세로로 나열하고, 블록 사이는 1px separator 로 구분한다 — 목록 자체(포맷 개수)는 접지 않는다. 미리보기가 길면 `+N more lines` 로 절삭한다. 포맷별 조회 실패는 개별 격리(하나 실패해도 나머지는 정상 표시)되고, raw 바이트 내용은 로그에 남기지 않는다. 순수 Wayland(XWayland 미실행) 세션에서 X11 연결 자체가 실패하면 빈 목록 + debug 로그로 구분한다(조용히 빈 목록만 나오면 "기타 없음"과 "조회 못 함"이 혼동된다). footer 는 mime 자리에 "{n} unrecognized formats" 문구가 대신 들어간다(여러 이종 포맷을 묶은 버킷이라 단일 mime 이 없음).
-- **단일 인스턴스**: 이미 열려 있으면 재호출은 무시(`already_open`).
+- **단일 인스턴스**: 이미 열려 있으면 열린 뷰어를 그대로 쓴다(새로 열지 않는다).
 
 ## 인터페이스
 

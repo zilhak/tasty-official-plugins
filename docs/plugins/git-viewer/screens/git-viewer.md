@@ -11,7 +11,7 @@
 ## 트리거
 
 [도구 메뉴](https://github.com/zilhak/tasty/blob/develop/docs/features/tools-menu/index.md#화면) git viewer 항목 또는 명령 `open_viewer`. 단일
-인스턴스 — 두 번째 open 은 "이미 열림" 안내를 보인다.
+인스턴스 — 이미 열려 있으면 열린 뷰어를 그대로 쓴다(새로 열지 않는다).
 
 ## 레이아웃
 
