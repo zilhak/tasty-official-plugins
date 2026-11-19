@@ -10,13 +10,7 @@ lang_dir = "lang"
 type = "process"
 command = "tasty-plugin-clipboard-viewer"
 
-[[contributes.popup]]
-id = "viewer"
-trigger = { kind = "ipc" }
-rendering = "egui-mesh"
-size_hint = { width = 480, height = 360 }
-anchor = "screen-center"
-dismiss_on_outside_click = true
+# 팝업 `viewer`는 플러그인이 시작할 때 실행 중 선언(popup.declare)한다.
 
 [[contributes.tool]]
 id = "open-viewer"

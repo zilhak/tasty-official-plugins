@@ -14,8 +14,9 @@ mod raw_formats;
 mod view;
 
 use tasty_plugin_sdk::{
-    Plugin, PluginEnv, PopupClosedCtx, PopupOpenCtx, PopupOpenResult, PopupSetContextCtx,
-    SurfaceCreateCtx, SurfaceResult, Translator,
+    BusHandle, HostHandle, LogicalPx, Plugin, PluginEnv, PopupClosedCtx, PopupDeclSpec,
+    PopupInstances, PopupKeyboard, PopupOpenCtx, PopupOpenResult, PopupOutsideClick,
+    PopupScopeKind, PopupSetContextCtx, PopupSize, SurfaceCreateCtx, SurfaceResult, Translator,
 };
 
 use crate::clipboard::{ClipboardType, ContentRepr};
@@ -32,6 +33,24 @@ use tasty_type_appearance::theme::Theme;
 
 const PLUGIN_ID: &str = "com.tasty.clipboard-viewer";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// 뷰어 팝업의 로컬 id. 도구·명령의 `open_popup` 참조가 이 id로 실행 중 선언을 찾는다.
+const VIEWER_POPUP_ID: &str = "viewer";
+
+/// 뷰어 팝업 선언. 창 범위 가운데에 열리고 바깥을 누르면 닫힌다. 인스턴스는 하나이고 키를 받는다.
+fn viewer_popup_decl() -> PopupDeclSpec {
+    PopupDeclSpec {
+        instances: Some(PopupInstances::Single),
+        keyboard: Some(PopupKeyboard::Text),
+        outside_click: Some(PopupOutsideClick::Close),
+        ..PopupDeclSpec::new(
+            PopupScopeKind::Window,
+            PopupSize {
+                width: LogicalPx(480.0),
+                height: LogicalPx(360.0),
+            },
+        )
+    }
+}
 
 /// 팝업을 열 때 읽은 클립보드 내용과 선택 상태.
 pub(crate) struct ViewerState {
@@ -103,6 +122,13 @@ impl Plugin for ClipboardViewerPlugin {
 
     fn version(&self) -> &str {
         PLUGIN_VERSION
+    }
+
+    fn on_start(&mut self, host: HostHandle, _bus: BusHandle) {
+        // 선언은 프로세스가 끝나면 지워지므로 시작할 때마다 한다. 실패하면 뷰어가 열리지 않는다.
+        if let Err(e) = host.declare_popup(VIEWER_POPUP_ID, viewer_popup_decl()) {
+            tracing::warn!("clipboard-viewer: popup '{VIEWER_POPUP_ID}' declaration failed: {e}");
+        }
     }
 
     fn create_surface(&mut self, _ctx: SurfaceCreateCtx) -> SurfaceResult {
@@ -230,4 +256,22 @@ fn main() -> anyhow::Result<()> {
     let env = PluginEnv::load()?;
     let plugin = ClipboardViewerPlugin::new(&env);
     tasty_plugin_sdk::run(plugin)
+}
+
+#[cfg(test)]
+mod popup_decl_tests {
+    use super::*;
+
+    /// 매니페스트 선언에서 옮긴 값이 그대로다: 창 범위 480×360, 바깥 클릭으로 닫힘.
+    #[test]
+    fn the_viewer_keeps_its_manifest_behavior() {
+        let d = viewer_popup_decl();
+        assert_eq!(d.scope_kind, PopupScopeKind::Window);
+        assert_eq!(d.size.width, LogicalPx(480.0));
+        assert_eq!(d.size.height, LogicalPx(360.0));
+        assert_eq!(d.outside_click, Some(PopupOutsideClick::Close));
+        assert_eq!(d.keyboard, Some(PopupKeyboard::Text));
+        assert_eq!(d.instances, Some(PopupInstances::Single));
+        assert_eq!(d.anchor, None);
+    }
 }
