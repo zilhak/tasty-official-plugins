@@ -336,14 +336,26 @@ pub(crate) fn pending_threads(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// 색인 폴더의 항목 이름. 폴더가 없으면 빈 목록이다. 폴더나 항목을 읽다 난 오류는 그대로 둔다.
+fn pending_thread_entries(root: &Path) -> std::io::Result<Vec<std::io::Result<String>>> {
+    match std::fs::read_dir(root.join("pending")) {
+        Ok(entries) => Ok(entries
+            .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
 /// thread의 색인된 이벤트 ID를 기록 순서대로 돌려준다. 본문은 읽지 않는다. 옛 형식 표지는 새 형식
-/// 표지보다 앞에 기록 시각 순서로 둔다.
+/// 표지보다 앞에 기록 시각 순서로 둔다. 색인을 읽지 못하면 빈 목록이다.
 pub(crate) fn pending_ids(root: &Path, thread: &str) -> Vec<String> {
-    markers(root, thread)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|m| m.id)
-        .collect()
+    checked_pending_ids(root, thread).unwrap_or_default()
+}
+
+/// [`pending_ids`]와 같지만 색인을 읽다 난 오류를 돌려준다.
+fn checked_pending_ids(root: &Path, thread: &str) -> std::io::Result<Vec<String>> {
+    Ok(markers(root, thread)?.into_iter().map(|m| m.id).collect())
 }
 
 /// claim 파일이 가리키는 상태.
@@ -473,24 +485,39 @@ fn claim_points_at_an_event(root: &Path, claim: &Path) -> bool {
 }
 
 pub(crate) fn prune(root: &Path, now: std::time::SystemTime) {
-    let keep = protected_ids(pending_threads(root), |thread| pending_ids(root, thread));
-    prune_with(root, &keep, now);
+    let keep = pending_thread_entries(root)
+        .and_then(|threads| protected_ids(threads, |thread| checked_pending_ids(root, thread)));
+    prune_with(root, keep, now);
 }
 
-/// 색인에 남은 이벤트 ID. 보존 기간이 지나도 지우지 않는다.
+/// 색인에 남은 이벤트 ID. 보존 기간이 지나도 지우지 않는다. 색인을 다 읽지 못하면 일부만 담은
+/// 목록 대신 오류를 돌려준다. 일부만 보면 읽지 못한 미송신 이벤트를 지울 수 있다.
 fn protected_ids(
-    threads: Vec<String>,
-    mut ids_of: impl FnMut(&str) -> Vec<String>,
-) -> std::collections::HashSet<String> {
+    threads: impl IntoIterator<Item = std::io::Result<String>>,
+    mut ids_of: impl FnMut(&str) -> std::io::Result<Vec<String>>,
+) -> std::io::Result<std::collections::HashSet<String>> {
     let mut keep = std::collections::HashSet::new();
     for thread in threads {
-        keep.extend(ids_of(&thread));
+        let thread = thread?;
+        if crate::ids::is_uuid(&thread) {
+            keep.extend(ids_of(&thread)?);
+        }
     }
-    keep
+    Ok(keep)
 }
 
-fn prune_with(root: &Path, keep: &std::collections::HashSet<String>, now: std::time::SystemTime) {
-    prune_events(root, keep, now);
+/// 보호 목록을 만들지 못했으면 이번에는 이벤트를 지우지 않고 다음 시작 때 다시 본다. 보호 목록은
+/// thread를 가리지 않는 하나이고 이벤트 삭제는 본문을 읽지 않아 thread를 모르므로 이벤트 삭제
+/// 전체를 미룬다. 나머지 정리는 보호 목록과 관계없다.
+fn prune_with(
+    root: &Path,
+    keep: std::io::Result<std::collections::HashSet<String>>,
+    now: std::time::SystemTime,
+) {
+    match keep {
+        Ok(keep) => prune_events(root, &keep, now),
+        Err(e) => tracing::warn!("codex ledger: prune events deferred: pending index: {e}"),
+    }
     prune_claims(root, now);
     prune_ended_children(root);
     prune_attach_routes(root, now);
@@ -984,6 +1011,55 @@ mod tests {
                 .map(|m| (m.key, m.id.as_str()))
                 .collect::<Vec<_>>(),
             vec![(1, id.as_str())]
+        );
+    }
+
+    /// 색인 순회 중 항목 하나를 읽지 못해도 읽을 수 있는 미송신 이벤트의 보호가 빠지지 않는다. 그
+    /// prune에서는 이벤트를 지우지 않고, 색인을 다시 읽을 수 있으면 끝난 이벤트만 지운다.
+    #[test]
+    fn an_unreadable_pending_index_defers_pruning_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let r = receiver(root, THREAD);
+        let (open, _) = capture(root, &r, completion("k:1", None)).unwrap();
+        let (done, _) = capture(root, &r, completion("k:2", None)).unwrap();
+        remove_pending(root, &done).unwrap();
+        let later = std::time::SystemTime::now() + RETENTION + std::time::Duration::from_secs(60);
+        let failed = || std::io::Error::other("getdents failed");
+        let kept = |what: &str| {
+            for e in [&open, &done] {
+                assert!(read_event(root, &e.event_id).unwrap().is_some(), "{what}");
+            }
+        };
+
+        // 이 thread의 색인을 읽다 항목 하나에서 오류가 난다.
+        let marker_error = |thread: &str| -> std::io::Result<Vec<String>> {
+            let names = std::fs::read_dir(pending_dir(root, thread))?
+                .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
+                .chain(std::iter::once(Err(failed())));
+            Ok(sorted_markers(names)?.into_iter().map(|m| m.id).collect())
+        };
+        let keep = protected_ids(pending_thread_entries(root).unwrap(), marker_error);
+        assert_eq!(keep.as_ref().unwrap_err().to_string(), "getdents failed");
+        prune_with(root, keep, later);
+        kept("표지 순회 오류");
+
+        // thread 목록을 읽다 오류가 난다.
+        let mut threads = pending_thread_entries(root).unwrap();
+        threads.push(Err(failed()));
+        let keep = protected_ids(threads, |t| checked_pending_ids(root, t));
+        assert!(keep.is_err());
+        prune_with(root, keep, later);
+        kept("thread 목록 순회 오류");
+
+        prune(root, later);
+        assert!(
+            read_event(root, &open.event_id).unwrap().is_some(),
+            "미송신은 남는다"
+        );
+        assert!(
+            read_event(root, &done.event_id).unwrap().is_none(),
+            "끝난 것은 지운다"
         );
     }
 
