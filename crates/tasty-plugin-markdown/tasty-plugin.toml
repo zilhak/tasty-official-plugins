@@ -4,8 +4,6 @@ name = "Markdown Viewer"
 version = "0.2.4"
 description = "Markdown viewer surface (webview)"
 api_version = "1"
-# 플러그인이 로컬 파일의 크기를 확인한 뒤 확인 팝업 이벤트를 보낸다.
-event_publish = ["com.tasty.markdown.large_file_confirm"]
 # WebView에는 set_context가 오지 않으므로 테마·단축키 변경 이벤트로 문서를 다시 만든다.
 # 공통 새로고침 신호로 자기 문서의 파일이나 원격 원문을 다시 읽는다.
 event_subscribe = ["theme.changed", "command.host_shortcut_changed", "surface.refresh_requested"]
@@ -63,28 +61,9 @@ unfocused_fg = "#a6adc8"
 prefix = "markdown"
 description_i18n_key = "markdown.namespace.desc"
 
-# 크기 확인 이벤트로 여는 팝업. 콘텐츠는 플러그인, 외곽과 닫기는 호스트가 처리한다.
-# 이벤트가 가리키는 이 플러그인의 surface 영역 가운데에 뜬다.
-[[contributes.popup]]
-id = "large-file-confirm"
-trigger = { kind = "event", event_key = "com.tasty.markdown.large_file_confirm" }
-rendering = "egui-mesh"
-size_hint = { width = 360, height = 150 }
-anchor = "screen-center"
-scope = "surface"
-dismiss_on_outside_click = true
-
-# 파일 열기 팝업. 대상 surface가 있으면 그 자리에서 변환하고 없으면 새 탭을 연다.
-# 파일 선택은 호스트 피커에 요청한다. surface 범위로 열면 해당 영역에 배치하며
-# 대상을 알 수 없는 이벤트 경로에서는 창 범위로 연다.
-[[contributes.popup]]
-id = "file-open"
-trigger = { kind = "event", event_key = "com.tasty.markdown.file_open" }
-rendering = "egui-mesh"
-size_hint = { width = 420, height = 170 }
-anchor = "screen-center"
-scope = "surface"
-dismiss_on_outside_click = true
+# 팝업 `large-file-confirm`과 `file-open`은 플러그인이 시작할 때 실행 중 선언(popup.declare)한다.
+# 콘텐츠는 플러그인, 외곽과 닫기는 호스트가 처리한다. 대용량 확인은 플러그인이 그 문서의
+# surface에 열고, 파일 열기는 호스트가 변환 대상 surface에 연다.
 
 [[contributes.detector]]
 id = "markdown"

@@ -28,9 +28,11 @@ use std::sync::mpsc;
 use tasty_plugin_protocol::ThemeWire;
 use tasty_plugin_sdk::file_watch::{self, ContentDigest, WatchCmd};
 use tasty_plugin_sdk::{
-    BusHandle, EventDispatchCtx, EventScope, HostHandle, IpcMethodCtx, IpcMethodError, Plugin,
-    PluginEnv, PopupClosedCtx, PopupOpenCtx, PopupOpenResult, PopupSetContextCtx, SurfaceCreateCtx,
-    SurfaceRestoreCtx, SurfaceResult, Translator, WebviewNavigationAttemptCtx,
+    BusHandle, EventDispatchCtx, HostHandle, IpcMethodCtx, IpcMethodError, LogicalPx, Plugin,
+    PluginEnv, PopupClosedCtx, PopupDeclSpec, PopupInstances, PopupKeyboard, PopupOpenCtx,
+    PopupOpenResult, PopupOutsideClick, PopupScopeKind, PopupSetContextCtx, PopupShowTarget,
+    PopupSize, SurfaceCreateCtx, SurfaceRestoreCtx, SurfaceResult, Translator,
+    WebviewNavigationAttemptCtx,
 };
 use tasty_type_appearance::theme::Theme;
 
@@ -54,9 +56,32 @@ const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 전체 읽기 크기를 제한하는 상수는 아니다.
 const LARGE_FILE_LIMIT_BYTES: u64 = 1024 * 1024;
 
-/// 대용량 감지 시 plugin 이 발행하는 이벤트 key. 매니페스트 `event_publish` 패턴 +
-/// `[[contributes.popup]]` event trigger 가 이 key 로 매칭돼 확인 팝업을 연다.
-const LARGE_FILE_EVENT_KEY: &str = "com.tasty.markdown.large_file_confirm";
+/// 대용량 확인 팝업의 로컬 id. 플러그인이 그 문서의 surface를 대상으로 연다.
+const LARGE_FILE_POPUP_ID: &str = "large-file-confirm";
+/// 파일 열기 팝업의 로컬 id. 매니페스트 `convert_input_popup`이 이 id로 실행 중 선언을 찾고,
+/// host가 변환 대상 surface에 연다.
+const FILE_OPEN_POPUP_ID: &str = "file-open";
+
+/// `on_start`에서 선언하는 팝업. 둘 다 surface 범위 가운데에 열리고 바깥을 누르면 닫힌다.
+/// 인스턴스는 하나이고 키를 받는다.
+fn popup_decls() -> [(&'static str, PopupDeclSpec); 2] {
+    let decl = |width: f32, height: f32| PopupDeclSpec {
+        instances: Some(PopupInstances::Single),
+        keyboard: Some(PopupKeyboard::Text),
+        outside_click: Some(PopupOutsideClick::Close),
+        ..PopupDeclSpec::new(
+            PopupScopeKind::Surface,
+            PopupSize {
+                width: LogicalPx(width),
+                height: LogicalPx(height),
+            },
+        )
+    };
+    [
+        (LARGE_FILE_POPUP_ID, decl(360.0, 150.0)),
+        (FILE_OPEN_POPUP_ID, decl(420.0, 170.0)),
+    ]
+}
 
 /// host 가 발행하는 전역 테마 변경 이벤트 key(`event_subscribe`). webview-kind surface 는
 /// `surface.set_context` 를 받지 않아 Theme 변경이 자동으로 밀리지 않으므로, 이 이벤트를
@@ -172,8 +197,8 @@ struct MdDoc {
     pending_large: bool,
     /// 사용자가 이 문서의 대용량 확인에서 [열기]를 골랐다. 이후 파일이 커져도 다시 묻지 않는다.
     large_confirmed: bool,
-    /// 확인 팝업을 여는 이벤트를 보냈고 그 팝업이 아직 닫히지 않았다. 이벤트 발행 전에
-    /// 세워, 팝업이 열리기 전에 온 reload가 같은 확인을 겹쳐 띄우지 않게 한다.
+    /// 확인 팝업을 열었고 그 팝업이 아직 닫히지 않았다. 열기 전에 세워, 팝업이 열리기
+    /// 전에 온 reload가 같은 확인을 겹쳐 띄우지 않게 한다.
     confirm_requested: bool,
     /// 원격 문서 상태. file_path는 표시용 원격 경로이며 로컬에서 읽지 않는다.
     remote: Option<RemoteDoc>,
@@ -434,8 +459,6 @@ impl MdDoc {
 struct MarkdownPlugin {
     /// surface_id → markdown document state.
     docs: HashMap<u32, MdDoc>,
-    /// large-file 이벤트 발행용 Event Bus 핸들(`on_start` 에서 저장).
-    bus: Option<BusHandle>,
     /// HostHandle을 받지 않는 surface·이벤트 콜백에서 사용할 핸들.
     host: Option<HostHandle>,
     /// popup instance_id → 대용량 확인 대상.
@@ -462,7 +485,6 @@ impl MarkdownPlugin {
     fn new(tr: Translator) -> Self {
         Self {
             docs: HashMap::new(),
-            bus: None,
             host: None,
             confirm: HashMap::new(),
             file_open: HashMap::new(),
@@ -504,9 +526,14 @@ impl Plugin for MarkdownPlugin {
     }
 
     fn on_start(&mut self, host: HostHandle, bus: BusHandle) {
-        // large-file 확인 이벤트 발행 + `theme.changed` 구독에 Event Bus 핸들이 필요하다.
+        // `theme.changed` 등 문서를 다시 만드는 이벤트를 구독한다.
         subscribe_events(&bus);
-        self.bus = Some(bus);
+        // 선언은 프로세스가 끝나면 지워지므로 시작할 때마다 한다. 실패하면 그 팝업이 열리지 않는다.
+        for (popup_id, decl) in popup_decls() {
+            if let Err(e) = host.declare_popup(popup_id, decl) {
+                tracing::warn!("markdown: popup '{popup_id}' declaration failed: {e}");
+            }
+        }
         // HostHandle이 없는 콜백에서도 사용할 수 있도록 보관한다.
         self.host = Some(host.clone());
 
@@ -591,8 +618,8 @@ impl Plugin for MarkdownPlugin {
         // egui-mesh popup 이라 tree 를 반환하지 않는다(mesh 채널 paint_popup 로 그린다).
         // popup_id 로 두 팝업을 구분한다.
         match ctx.popup_id.as_str() {
-            // large-file 확인 — event payload({surface_id, path, size})가 context 로 온다.
-            "large-file-confirm" => {
+            // large-file 확인 — 플러그인이 `show_popup`에 넣은 {surface_id, path, size}가 context 로 온다.
+            LARGE_FILE_POPUP_ID => {
                 if let (Some(surface_id), Some(path), Some(size)) = (
                     ctx.context.get("surface_id").and_then(|v| v.as_u64()),
                     ctx.context.get("path").and_then(|v| v.as_str()),
@@ -610,7 +637,7 @@ impl Plugin for MarkdownPlugin {
             }
             // 파일열기 폼 — 경로 입력 버퍼는 빈 상태로 시작. context 에 `surface_id` 가
             // 있으면 그 surface 를 제자리 변환할 대상으로 기억한다(없으면 새 탭 열기).
-            "file-open" => {
+            FILE_OPEN_POPUP_ID => {
                 let convert_surface_id = ctx
                     .context
                     .get("surface_id")
@@ -830,7 +857,7 @@ impl MarkdownPlugin {
         };
         let path = doc.file_path.clone();
         let over_limit = path.as_deref().and_then(file_exceeds_limit);
-        let step = reload_step(doc, origin, over_limit, self.bus.is_some());
+        let step = reload_step(doc, origin, over_limit, self.host.is_some());
         match (step, path) {
             (ReloadStep::Skip, _) => return,
             (ReloadStep::Ask(size), Some(path)) => {
@@ -839,7 +866,7 @@ impl MarkdownPlugin {
                     doc.pending_large = true;
                     doc.confirm_requested = true;
                 }
-                self.publish_large_confirm(surface_id, &path, size);
+                self.show_large_confirm(surface_id, &path, size);
             }
             _ => {
                 if let Some(doc) = self.docs.get_mut(&surface_id) {
@@ -852,8 +879,8 @@ impl MarkdownPlugin {
     }
 
     /// 로컬 파일을 열고 경로를 snapshot에 저장한다. 생성과 복원에서 함께 사용한다.
-    /// 크기가 기준을 초과하면 읽기를 보류하고 확인 이벤트를 보낸다.
-    /// 이벤트 버스가 없으면 확인 없이 읽는다. 파일 경로가 없으면 snapshot도 반환하지 않는다.
+    /// 크기가 기준을 초과하면 읽기를 보류하고 그 surface에 확인 팝업을 연다.
+    /// host handle이 없으면 확인 없이 읽는다. 파일 경로가 없으면 snapshot도 반환하지 않는다.
     fn open_file_surface(&mut self, surface_id: u32, file: Option<String>) -> SurfaceResult {
         let doc = self.make_doc(file.clone(), surface_id);
         self.docs.insert(surface_id, doc);
@@ -911,11 +938,11 @@ impl MarkdownPlugin {
         if let Some(path) = file.as_deref()
             && let Some(size) = file_exceeds_limit(path)
         {
-            if self.bus.is_some() {
-                self.publish_large_confirm(surface_id, path, size);
+            if self.host.is_some() {
+                self.show_large_confirm(surface_id, path, size);
                 return MdDoc::new_deferred(file);
             }
-            tracing::warn!("markdown large-file gate: event bus unavailable — loading anyway");
+            tracing::warn!("markdown large-file gate: host handle unavailable — loading anyway");
         }
         MdDoc::new(file)
     }
@@ -933,18 +960,24 @@ impl MarkdownPlugin {
         }
     }
 
-    /// 대용량 확인 팝업을 여는 surface 이벤트를 발행한다.
-    fn publish_large_confirm(&self, surface_id: u32, path: &str, size: u64) {
-        let Some(bus) = self.bus.as_ref() else {
+    /// 대용량 확인 팝업을 그 문서의 surface 범위에 연다.
+    fn show_large_confirm(&self, surface_id: u32, path: &str, size: u64) {
+        let Some(host) = self.host.as_ref() else {
             return;
         };
-        let payload = json!({
+        let context = json!({
             "surface_id": surface_id,
             "path": path,
             "size": size,
         });
-        if let Err(e) = bus.publish_fresh(LARGE_FILE_EVENT_KEY, payload, EventScope::Surface) {
-            tracing::warn!("markdown large-file event publish failed: {e}");
+        if let Err(e) = host.show_popup(
+            LARGE_FILE_POPUP_ID,
+            PopupShowTarget::Surface { id: surface_id },
+            context,
+        ) {
+            tracing::warn!(
+                "markdown surface {surface_id}: popup '{LARGE_FILE_POPUP_ID}' did not open: {e}"
+            );
         }
     }
 

@@ -1527,3 +1527,30 @@ fn a_refresh_signal_on_a_large_local_file_waits_for_the_same_confirm() {
         ReloadStep::Skip
     );
 }
+
+/// 매니페스트 선언에서 옮긴 값이 그대로다: surface 범위, 바깥 클릭으로 닫힘, 크기.
+#[test]
+fn the_popups_keep_their_manifest_behavior() {
+    use tasty_plugin_sdk::{
+        LogicalPx, PopupInstances, PopupKeyboard, PopupOutsideClick, PopupScopeKind,
+    };
+    let decls = popup_decls();
+    let sizes: Vec<_> = decls
+        .iter()
+        .map(|(id, d)| (*id, d.size.width, d.size.height))
+        .collect();
+    assert_eq!(
+        sizes,
+        [
+            ("large-file-confirm", LogicalPx(360.0), LogicalPx(150.0)),
+            ("file-open", LogicalPx(420.0), LogicalPx(170.0)),
+        ]
+    );
+    for (id, d) in decls {
+        assert_eq!(d.scope_kind, PopupScopeKind::Surface, "{id}");
+        assert_eq!(d.outside_click, Some(PopupOutsideClick::Close), "{id}");
+        assert_eq!(d.keyboard, Some(PopupKeyboard::Text), "{id}");
+        assert_eq!(d.instances, Some(PopupInstances::Single), "{id}");
+        assert_eq!(d.anchor, None, "{id}");
+    }
+}
