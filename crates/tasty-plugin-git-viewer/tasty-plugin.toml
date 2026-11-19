@@ -10,14 +10,8 @@ lang_dir = "lang"
 type = "process"
 command = "tasty-plugin-git-viewer"
 
-[[contributes.popup]]
-id = "viewer"
-trigger = { kind = "ipc" }
+# 팝업 `viewer`는 플러그인이 시작할 때 실행 중 선언(popup.declare)한다.
 # 내용은 플러그인이 mesh로 보내고 팝업 외곽은 호스트가 그린다.
-rendering = "egui-mesh"
-size_hint = { width = 960, height = 640 }
-anchor = "screen-center"
-dismiss_on_outside_click = true
 
 [[contributes.tool]]
 id = "open-viewer"

@@ -14,14 +14,33 @@ use serde_json::Value;
 use tasty_git_core as git;
 use tasty_plugin_protocol::ThemeWire;
 use tasty_plugin_sdk::{
-    BusHandle, EventDispatchCtx, HostHandle, Plugin, PluginEnv, PopupClosedCtx, PopupOpenCtx,
-    PopupOpenResult, PopupSetContextCtx, SurfaceCreateCtx, SurfaceResult, Translator,
+    BusHandle, EventDispatchCtx, HostHandle, LogicalPx, Plugin, PluginEnv, PopupClosedCtx,
+    PopupDeclSpec, PopupInstances, PopupKeyboard, PopupOpenCtx, PopupOpenResult, PopupOutsideClick,
+    PopupScopeKind, PopupSetContextCtx, PopupSize, SurfaceCreateCtx, SurfaceResult, Translator,
 };
 use tasty_type_appearance::theme::Theme;
 
 use tasty_plugin_sdk::EguiMeshPopup;
 
 const PLUGIN_ID: &str = "com.tasty.git-viewer";
+/// 뷰어 팝업의 로컬 id. 도구·명령의 `open_popup` 참조가 이 id로 실행 중 선언을 찾는다.
+const VIEWER_POPUP_ID: &str = "viewer";
+
+/// 뷰어 팝업 선언. 창 범위 가운데에 열리고 바깥을 누르면 닫힌다. 인스턴스는 하나이고 키를 받는다.
+fn viewer_popup_decl() -> PopupDeclSpec {
+    PopupDeclSpec {
+        instances: Some(PopupInstances::Single),
+        keyboard: Some(PopupKeyboard::Text),
+        outside_click: Some(PopupOutsideClick::Close),
+        ..PopupDeclSpec::new(
+            PopupScopeKind::Window,
+            PopupSize {
+                width: LogicalPx(960.0),
+                height: LogicalPx(640.0),
+            },
+        )
+    }
+}
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LOG_LIMIT: usize = 200;
 /// 호스트가 조회 결과를 전달할 이벤트 이름. 양쪽 정의를 함께 갱신해야 한다.
@@ -570,6 +589,10 @@ impl Plugin for GitViewerPlugin {
     }
 
     fn on_start(&mut self, host: HostHandle, _bus: BusHandle) {
+        // 선언은 프로세스가 끝나면 지워지므로 시작할 때마다 한다. 실패하면 뷰어가 열리지 않는다.
+        if let Err(e) = host.declare_popup(VIEWER_POPUP_ID, viewer_popup_decl()) {
+            tracing::warn!("git-viewer: popup '{VIEWER_POPUP_ID}' declaration failed: {e}");
+        }
         self.host = Some(host);
     }
 }
@@ -666,5 +689,23 @@ mod remote_reply_tests {
         assert!(should_apply_remote_reply(Some(7), 7));
         assert!(!should_apply_remote_reply(Some(7), 8));
         assert!(!should_apply_remote_reply(None, 7));
+    }
+}
+
+#[cfg(test)]
+mod popup_decl_tests {
+    use super::*;
+
+    /// 매니페스트 선언에서 옮긴 값이 그대로다: 창 범위 960×640, 바깥 클릭으로 닫힘.
+    #[test]
+    fn the_viewer_keeps_its_manifest_behavior() {
+        let d = viewer_popup_decl();
+        assert_eq!(d.scope_kind, PopupScopeKind::Window);
+        assert_eq!(d.size.width, LogicalPx(960.0));
+        assert_eq!(d.size.height, LogicalPx(640.0));
+        assert_eq!(d.outside_click, Some(PopupOutsideClick::Close));
+        assert_eq!(d.keyboard, Some(PopupKeyboard::Text));
+        assert_eq!(d.instances, Some(PopupInstances::Single));
+        assert_eq!(d.anchor, None);
     }
 }
