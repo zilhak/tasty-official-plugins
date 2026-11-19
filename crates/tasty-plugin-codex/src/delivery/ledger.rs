@@ -270,9 +270,17 @@ fn markers(root: &Path, thread: &str) -> std::io::Result<Vec<Marker>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
-    let mut markers: Vec<Marker> = entries
+    sorted_markers(entries.map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned())))
+}
+
+/// 폴더 항목 이름들을 송신 순서대로 정렬한 표지 목록으로 만든다. 이름을 해석할 수 없는 항목은
+/// 건너뛴다.
+fn sorted_markers(
+    names: impl Iterator<Item = std::io::Result<String>>,
+) -> std::io::Result<Vec<Marker>> {
+    let mut markers: Vec<Marker> = names
         .filter_map(Result::ok)
-        .filter_map(|e| parse_marker(&e.file_name().to_string_lossy()))
+        .filter_map(|n| parse_marker(&n))
         .collect();
     markers.sort();
     Ok(markers)
