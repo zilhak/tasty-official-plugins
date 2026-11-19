@@ -228,19 +228,89 @@ fn pending_dir(root: &Path, thread: &str) -> PathBuf {
     root.join("pending").join(thread.to_ascii_lowercase())
 }
 
-fn pending_name(event: &Event) -> String {
-    format!("{:016}-{}", event.captured_at_ms, event.event_id)
+/// 색인 이름 `<순번 20자리>-<이벤트 ID>`의 순번 자리 수. thread 안에서 기록 순서대로 늘어나는 순번이
+/// 송신 순서를 정한다. 기록 시각(`captured_at_ms`)은 ms 단위라 같은 ms의 기록을 가르지 못한다.
+const SEQ_DIGITS: usize = 20;
+/// 옛 색인 이름 `<기록 시각 ms 16자리>-<이벤트 ID>`의 시각 자리 수. 옮기지 않고 새 색인보다 앞에 둔다.
+const LEGACY_MS_DIGITS: usize = 16;
+
+/// 색인 표지 하나의 정렬 키와 이벤트 ID.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Marker {
+    /// 옛 형식이면 `false`라 새 형식보다 앞에 온다.
+    sequenced: bool,
+    /// 새 형식은 순번, 옛 형식은 기록 시각.
+    key: u64,
+    id: String,
+    name: String,
 }
 
-/// 할 일이 남은 이벤트로 색인한다.
+fn parse_marker(name: &str) -> Option<Marker> {
+    let (prefix, id) = name.split_once('-')?;
+    if !crate::ids::is_id(id) || !prefix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let sequenced = match prefix.len() {
+        SEQ_DIGITS => true,
+        LEGACY_MS_DIGITS => false,
+        _ => return None,
+    };
+    Some(Marker {
+        sequenced,
+        key: prefix.parse().ok()?,
+        id: id.to_string(),
+        name: name.to_string(),
+    })
+}
+
+/// thread의 색인 표지를 송신 순서대로 읽는다. 폴더가 없으면 빈 목록이다.
+fn markers(root: &Path, thread: &str) -> std::io::Result<Vec<Marker>> {
+    let entries = match std::fs::read_dir(pending_dir(root, thread)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut markers: Vec<Marker> = entries
+        .filter_map(Result::ok)
+        .filter_map(|e| parse_marker(&e.file_name().to_string_lossy()))
+        .collect();
+    markers.sort();
+    Ok(markers)
+}
+
+/// 할 일이 남은 이벤트로 색인한다. 순번은 이 thread의 남은 색인에서 가장 큰 순번 다음이라 재시작
+/// 뒤에도 이어진다. 색인이 비었으면 앞설 이벤트가 없으니 1부터 다시 센다. 기록은 플러그인 worker
+/// 스레드 하나에서 차례로 일어나므로 순번을 읽고 표지를 만드는 사이에 다른 기록이 끼지 않는다.
 fn add_pending(root: &Path, event: &Event) -> std::io::Result<()> {
-    let path = pending_dir(root, &event.thread).join(pending_name(event));
-    store::create_claim(&path, "").map(|_| ())
+    let last = markers(root, &event.thread)?
+        .into_iter()
+        .filter(|m| m.sequenced)
+        .map(|m| m.key)
+        .max()
+        .unwrap_or(0);
+    let name = format!(
+        "{:0width$}-{}",
+        last + 1,
+        event.event_id,
+        width = SEQ_DIGITS
+    );
+    store::create_claim(&pending_dir(root, &event.thread).join(name), "").map(|_| ())
 }
 
 /// 할 일이 끝난 이벤트를 색인에서 뺀다.
 pub(crate) fn remove_pending(root: &Path, event: &Event) -> std::io::Result<()> {
-    store::remove_file(&pending_dir(root, &event.thread).join(pending_name(event)))
+    remove_pending_id(root, &event.thread, &event.event_id)
+}
+
+/// 이벤트 ID로 색인 표지를 지운다. 옛 형식 표지도 지운다. 없으면 성공으로 본다.
+pub(crate) fn remove_pending_id(root: &Path, thread: &str, id: &str) -> std::io::Result<()> {
+    let dir = pending_dir(root, thread);
+    for marker in markers(root, thread)? {
+        if marker.id == id {
+            store::remove_file(&dir.join(marker.name))?;
+        }
+    }
+    Ok(())
 }
 
 /// 색인에 남은 thread 목록.
@@ -255,23 +325,13 @@ pub(crate) fn pending_threads(root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// thread의 색인된 이벤트 ID를 기록 순서대로 돌려준다. 본문은 읽지 않는다.
+/// thread의 색인된 이벤트 ID를 기록 순서대로 돌려준다. 본문은 읽지 않는다. 옛 형식 표지는 새 형식
+/// 표지보다 앞에 기록 시각 순서로 둔다.
 pub(crate) fn pending_ids(root: &Path, thread: &str) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(pending_dir(root, thread)) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| !n.starts_with('.'))
-        .collect();
-    names.sort();
-    names
+    markers(root, thread)
+        .unwrap_or_default()
         .into_iter()
-        .filter_map(|n| {
-            let id = n.split_once('-')?.1;
-            crate::ids::is_id(id).then(|| id.to_string())
-        })
+        .map(|m| m.id)
         .collect()
 }
 
@@ -779,24 +839,102 @@ mod tests {
         assert_eq!(again.event_id, unclaimed.event_id);
     }
 
+    /// `n`건을 차례로 기록하고 색인 순서가 기록 순서와 같은지 본다. 기록한 ID를 돌려준다.
+    fn capture_in_order(root: &Path, r: &Receiver, n: usize) -> Vec<String> {
+        let mut ids = Vec::new();
+        for i in 0..n {
+            let (e, _) = capture(root, r, completion(&format!("k:{i}"), Some("x"))).unwrap();
+            ids.push(e.event_id);
+        }
+        assert_eq!(pending_ids(root, THREAD), ids, "색인 순서는 기록 순서다");
+        ids
+    }
+
     #[test]
     fn the_pending_index_lists_ids_in_capture_order_without_reading_bodies() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let r = receiver(root, THREAD);
-        let mut ids = Vec::new();
-        for i in 0..3 {
-            let (e, _) = capture(root, &r, completion(&format!("k:{i}"), Some("x"))).unwrap();
-            ids.push(e.event_id);
-        }
+        let ids = capture_in_order(root, &r, 3);
         assert_eq!(pending_threads(root), vec![THREAD.to_string()]);
-        let listed = pending_ids(root, THREAD);
-        let mut sorted = listed.clone();
-        sorted.sort_by_key(|id| ids.iter().position(|x| x == id));
-        assert_eq!(listed.len(), 3);
         let first = read_event(root, &ids[0]).unwrap().unwrap();
         remove_pending(root, &first).unwrap();
-        assert_eq!(pending_ids(root, THREAD).len(), 2);
+        assert_eq!(pending_ids(root, THREAD), ids[1..]);
+    }
+
+    /// 같은 ms에 기록한 이벤트도 기록 순서대로 나온다. 기록 시각은 그대로 둔다.
+    #[test]
+    fn events_captured_in_the_same_millisecond_keep_their_capture_order() {
+        let _clock = crate::store::test_clock::freeze();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let r = receiver(root, THREAD);
+        let ids = capture_in_order(root, &r, 20);
+        let at = crate::store::now_ms();
+        for id in &ids {
+            assert_eq!(read_event(root, id).unwrap().unwrap().captured_at_ms, at);
+        }
+    }
+
+    /// 이벤트의 색인 표지를 옛 형식 `<기록 시각 ms 16자리>-<ID>`로 바꾼다.
+    fn make_legacy(root: &Path, event: &Event, at_ms: u64) -> PathBuf {
+        let dir = pending_dir(root, THREAD);
+        let marker = markers(root, THREAD)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == event.event_id)
+            .unwrap();
+        let legacy = dir.join(format!("{at_ms:016}-{}", event.event_id));
+        std::fs::rename(dir.join(marker.name), &legacy).unwrap();
+        legacy
+    }
+
+    /// 옛 형식 색인은 옮기지 않는다. 새 형식보다 앞에 기록 시각 순서로 나오고, ID로 지울 수 있고,
+    /// 새 순번에 섞이지 않는다. 형식이 틀린 이름은 건너뛴다.
+    #[test]
+    fn legacy_pending_markers_come_first_and_can_be_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let r = receiver(root, THREAD);
+        let ids = capture_in_order(root, &r, 3);
+        let older = read_event(root, &ids[2]).unwrap().unwrap();
+        let newer = read_event(root, &ids[1]).unwrap().unwrap();
+        make_legacy(root, &older, 5);
+        let newer_path = make_legacy(root, &newer, 9);
+        let orphan = crate::ids::new_id().unwrap();
+        let pending = pending_dir(root, THREAD);
+        std::fs::write(pending.join(format!("{:016}-{orphan}", 7)), "").unwrap();
+        for junk in ["12-ab", "x-0123", ".tmp-1", "0000000000000000000000x-zz"] {
+            std::fs::write(pending.join(junk), "").unwrap();
+        }
+        assert_eq!(
+            pending_ids(root, THREAD),
+            vec![
+                ids[2].clone(),
+                orphan.clone(),
+                ids[1].clone(),
+                ids[0].clone()
+            ]
+        );
+
+        remove_pending_id(root, THREAD, &orphan).unwrap();
+        remove_pending(root, &newer).unwrap();
+        assert!(!newer_path.exists());
+        assert_eq!(
+            pending_ids(root, THREAD),
+            vec![ids[2].clone(), ids[0].clone()]
+        );
+        // 없는 ID와 없는 thread도 성공으로 본다.
+        remove_pending_id(root, THREAD, &orphan).unwrap();
+        remove_pending_id(root, "01a12f74-dab9-7a00-8000-0000000000ff", &orphan).unwrap();
+
+        // 옛 형식의 큰 시각 값이 새 순번을 끌어올리지 않는다. 새 기록은 맨 뒤에 붙는다.
+        let (next, _) = capture(root, &r, completion("k:next", None)).unwrap();
+        let last = markers(root, THREAD).unwrap().pop().unwrap();
+        assert_eq!(
+            (last.id.as_str(), last.sequenced, last.key),
+            (next.event_id.as_str(), true, 2)
+        );
     }
 
     #[test]

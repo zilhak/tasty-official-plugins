@@ -416,6 +416,17 @@ fn two_parents_receive_only_their_own_children() {
 
 #[test]
 fn a_restart_verifies_sending_once_and_resends_captured() {
+    restart_verifies_sending_once_and_resends_captured();
+}
+
+/// 두 기록이 같은 ms에 끝나도 재시작 뒤 먼저 기록한 sending을 먼저 확인한다.
+#[test]
+fn a_restart_verifies_sending_first_when_both_were_captured_in_one_millisecond() {
+    let _clock = crate::store::test_clock::freeze();
+    restart_verifies_sending_once_and_resends_captured();
+}
+
+fn restart_verifies_sending_once_and_resends_captured() {
     let mut fx = Fixture::new();
     fx.loaded = Ok(true);
     let rid = rid_of(&fx, PARENT);
@@ -460,6 +471,61 @@ fn a_restart_verifies_sending_once_and_resends_captured() {
     assert!(
         fx.take_jobs().iter().all(|j| j.event_id != sending),
         "확인한 unknown은 다시 확인하지도 보내지도 않는다"
+    );
+}
+
+/// 옛 형식 색인 표지(`<기록 시각 ms 16자리>-<ID>`)가 남은 원장도 패닉 없이 복구한다. 이벤트가 없는
+/// 옛 표지는 지우고, 옛 표지의 이벤트는 새 형식 이벤트보다 먼저 보낸다.
+#[test]
+fn a_restart_handles_legacy_pending_markers() {
+    let mut fx = Fixture::new();
+    fx.loaded = Ok(true);
+    let rid = rid_of(&fx, PARENT);
+    let first = deliver_id(&fx, &rid, "k:1");
+    let second = deliver_id(&fx, &rid, "k:2");
+    assert_eq!(fx.take_jobs().len(), 1);
+    let dir = fx.root().join("pending").join(PARENT);
+    let names = || -> Vec<String> {
+        let mut n: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        n.sort();
+        n
+    };
+    // 두 번째 이벤트의 표지를 옛 형식으로 바꾸고, 이벤트 없는 옛 표지를 하나 둔다.
+    let current = names().into_iter().find(|n| n.ends_with(&second)).unwrap();
+    let legacy = format!("{:016}-{second}", 1);
+    std::fs::rename(dir.join(current), dir.join(&legacy)).unwrap();
+    let orphan = format!("{:016}-{}", 2, crate::ids::new_id().unwrap());
+    std::fs::write(dir.join(&orphan), "").unwrap();
+
+    let fx = fx.restarted();
+    fx.with(recover);
+    assert!(!names().contains(&orphan), "이벤트 없는 옛 표지는 지운다");
+    assert_eq!(event(&fx, &first).delivery.state, DeliveryState::Unknown);
+    let jobs = fx.take_jobs();
+    assert_eq!(
+        jobs.iter()
+            .map(|j| (j.event_id.as_str(), j.kind))
+            .collect::<Vec<_>>(),
+        vec![(second.as_str(), JobKind::Send)],
+        "옛 표지는 새 표지보다 앞이다"
+    );
+    let accepted = Outcome::Accepted {
+        submission_id: None,
+        confirmed_by: "queue_add".into(),
+    };
+    let out = outcome(&fx, &second, "send", accepted);
+    assert_eq!(out["delivery_state"], "accepted");
+    assert!(!names().contains(&legacy), "끝난 옛 표지는 지운다");
+    let jobs = fx.take_jobs();
+    assert_eq!(
+        jobs.iter()
+            .map(|j| (j.event_id.as_str(), j.kind))
+            .collect::<Vec<_>>(),
+        vec![(first.as_str(), JobKind::Verify)],
+        "다음으로 수락 여부를 모르는 이벤트를 확인한다"
     );
 }
 

@@ -516,7 +516,7 @@ fn pump(ctx: &Ctx<'_>, thread: &str, resume: bool) {
             Ok(Some(e)) => e,
             Ok(None) => {
                 // 이벤트가 없는 표지는 기록 중 중단된 흔적이다.
-                if let Err(e) = remove_marker_by_id(ctx.root, thread, &id) {
+                if let Err(e) = ledger::remove_pending_id(ctx.root, thread, &id) {
                     tracing::warn!("codex delivery {id}: pending index: {e}");
                 }
                 continue;
@@ -562,16 +562,6 @@ fn advance(ctx: &Ctx<'_>, event: Event, resume: bool) -> bool {
             true
         }
     }
-}
-
-fn remove_marker_by_id(root: &Path, thread: &str, id: &str) -> std::io::Result<()> {
-    let dir = root.join("pending").join(thread.to_ascii_lowercase());
-    for entry in std::fs::read_dir(&dir)?.filter_map(Result::ok) {
-        if entry.file_name().to_string_lossy().ends_with(id) {
-            store::remove_file(&entry.path())?;
-        }
-    }
-    Ok(())
 }
 
 /// 색인에 남은 모든 thread를 진행한다. 상한에 닿아 보류한 이벤트는 건드리지 않는다.
@@ -813,7 +803,7 @@ fn read_indexed(ctx: &Ctx<'_>, thread: &str, id: &str) -> Option<Event> {
     match ledger::read_event(ctx.root, id) {
         Ok(Some(e)) => Some(e),
         Ok(None) => {
-            if let Err(e) = remove_marker_by_id(ctx.root, thread, id) {
+            if let Err(e) = ledger::remove_pending_id(ctx.root, thread, id) {
                 tracing::warn!("codex delivery {id}: pending index: {e}");
             }
             None
