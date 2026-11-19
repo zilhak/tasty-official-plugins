@@ -1,7 +1,7 @@
 # Git Viewer (`com.tasty.git-viewer`)
 
 - **Status**: Implemented (bundled plugin)
-- **주체**: 로컬 사용자 (도구 메뉴 → popup) · AI Agent (IPC trigger)
+- **주체**: 로컬 사용자 (도구 메뉴 / 명령 → popup)
 - **배포/통합**: bundled · 도구 메뉴 항목 + popup — [plugins 개념](https://github.com/zilhak/tasty/blob/develop/docs/concepts/plugins.md)
 - **코드**: `crates/tasty-plugin-git-viewer/` · 조회 로직은 host core 와 공유하는
   `crates/tasty-git-core/`
@@ -19,7 +19,7 @@ git **status / log / diff 를 읽기 전용**으로 보여주는 popup 을 제�
 
 - **tool** `open-viewer` — [도구 메뉴](https://github.com/zilhak/tasty/blob/develop/docs/features/tools-menu/index.md)에 항목 추가, action `open_popup{com.tasty.git-viewer/viewer}`.
 - **command** `open_viewer` — 단축키로도 뷰어를 연다(`scope = "global"`, `default_keybinding` 미지정 — 설정 > 단축키 > 플러그인에서 사용자가 직접 지정). action 은 tool 항목과 동일한 `open_popup{com.tasty.git-viewer/viewer}`.
-- **popup** `viewer` — trigger `ipc`(IPC 로도 열림), `rendering = egui-mesh`. status/log/diff 를 읽어 표시. **읽기 전용**(커밋/스테이징 등 변경 없음).
+- **popup** `viewer` — `on_start` 에서 실행 중 선언(`popup.declare`)하는 창 범위 popup(960×640, 바깥 클릭으로 닫힘). 도구 메뉴·명령(`open_popup`)으로 열고 egui-mesh 로 그린다. status/log/diff 를 읽어 표시. **읽기 전용**(커밋/스테이징 등 변경 없음).
 - **렌더링** — 팝업 콘텐츠를 **egui-mesh** 로 그린다(docs/dev-guide/egui-mesh-channel.md): plugin 이 자기 egui Context 에서
   디자인(`overlays/git_viewer.jsx`)을 직접 페인트하고 host 는 셸(scrim/border/Esc/outside-click)만
   소유한다. Theme 은 `popup.set_context` 의 `ThemeWire` 로 매 frame 받아 재구성한다.
@@ -50,7 +50,7 @@ git **status / log / diff 를 읽기 전용**으로 보여주는 popup 을 제�
 ## 인터페이스
 
 - **사용자**: 도구 메뉴 `Git viewer` → popup.
-- **AI Agent**: popup trigger 가 ipc — IPC 로 열 수 있다.
+- **AI Agent**: 이 popup 을 여는 공개 IPC 는 없다. debug 빌드의 `debug.tool.invoke`·`debug.popup.open`(로컬 전용)만 연다.
 
 ## 비-목표
 

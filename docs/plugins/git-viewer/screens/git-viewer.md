@@ -3,14 +3,14 @@
 - **부모 기획**: [../index.md](../index.md)
 - **시각 소스**: 디자인 `ui_kits/terminal/overlays/git_viewer.jsx`.
 
-도구 메뉴/IPC 로 뜨는 git status/log/diff 읽기 전용 popup. **egui-mesh** 로 그린다 — plugin 이
+도구 메뉴/명령으로 뜨는 git status/log/diff 읽기 전용 popup. **egui-mesh** 로 그린다 — plugin 이
 자기 프로세스 egui Context 에서 콘텐츠를 직접 페인트하고, host 는 셸(scrim/border/Esc/outside-click)만
 소유한다(docs/dev-guide/egui-mesh-channel.md). Theme 은 `popup.set_context` 의 `ThemeWire` 로 매 frame 전달돼 host 와
 동일 `Theme` 으로 재구성된다.
 
 ## 트리거
 
-[도구 메뉴](https://github.com/zilhak/tasty/blob/develop/docs/features/tools-menu/index.md#화면) git viewer 항목 또는 IPC. 단일
+[도구 메뉴](https://github.com/zilhak/tasty/blob/develop/docs/features/tools-menu/index.md#화면) git viewer 항목 또는 명령 `open_viewer`. 단일
 인스턴스 — 두 번째 open 은 "이미 열림" 안내를 보인다.
 
 ## 레이아웃
