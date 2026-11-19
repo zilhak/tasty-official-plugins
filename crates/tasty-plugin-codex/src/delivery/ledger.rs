@@ -473,11 +473,24 @@ fn claim_points_at_an_event(root: &Path, claim: &Path) -> bool {
 }
 
 pub(crate) fn prune(root: &Path, now: std::time::SystemTime) {
+    let keep = protected_ids(pending_threads(root), |thread| pending_ids(root, thread));
+    prune_with(root, &keep, now);
+}
+
+/// 색인에 남은 이벤트 ID. 보존 기간이 지나도 지우지 않는다.
+fn protected_ids(
+    threads: Vec<String>,
+    mut ids_of: impl FnMut(&str) -> Vec<String>,
+) -> std::collections::HashSet<String> {
     let mut keep = std::collections::HashSet::new();
-    for thread in pending_threads(root) {
-        keep.extend(pending_ids(root, &thread));
+    for thread in threads {
+        keep.extend(ids_of(&thread));
     }
-    prune_events(root, &keep, now);
+    keep
+}
+
+fn prune_with(root: &Path, keep: &std::collections::HashSet<String>, now: std::time::SystemTime) {
+    prune_events(root, keep, now);
     prune_claims(root, now);
     prune_ended_children(root);
     prune_attach_routes(root, now);
