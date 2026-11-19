@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.markdown"
 name = "Markdown Viewer"
-version = "0.2.3"
+version = "0.2.4"
 description = "Markdown viewer surface (webview)"
 api_version = "1"
 # 플러그인이 로컬 파일의 크기를 확인한 뒤 확인 팝업 이벤트를 보낸다.
