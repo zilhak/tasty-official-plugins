@@ -274,13 +274,16 @@ fn markers(root: &Path, thread: &str) -> std::io::Result<Vec<Marker>> {
 }
 
 /// 폴더 항목 이름들을 송신 순서대로 정렬한 표지 목록으로 만든다. 이름을 해석할 수 없는 항목은
-/// 건너뛴다.
+/// 건너뛴다. 항목을 읽다 난 오류는 돌려준다. 일부만 본 목록으로 순번을 정하면 남은 최대 순번을
+/// 놓쳐 같은 순번을 다시 붙일 수 있다.
 fn sorted_markers(
     names: impl Iterator<Item = std::io::Result<String>>,
 ) -> std::io::Result<Vec<Marker>> {
+    let names = names.collect::<std::io::Result<Vec<_>>>()?;
     let mut markers: Vec<Marker> = names
-        .filter_map(Result::ok)
-        .filter_map(|n| parse_marker(&n))
+        .iter()
+        .map(String::as_str)
+        .filter_map(parse_marker)
         .collect();
     markers.sort();
     Ok(markers)
@@ -942,6 +945,32 @@ mod tests {
         assert_eq!(
             (last.id.as_str(), last.sequenced, last.key),
             (next.event_id.as_str(), true, 2)
+        );
+    }
+
+    /// 폴더 항목을 읽다 오류가 나면 일부만 본 목록 대신 오류를 돌려준다. 일부만 보면 남은 최대
+    /// 순번을 놓쳐 같은 순번을 다시 붙일 수 있다. 해석할 수 없는 이름은 계속 건너뛴다.
+    #[test]
+    fn an_entry_read_error_is_returned_instead_of_a_partial_marker_list() {
+        let id = crate::ids::new_id().unwrap();
+        let first = format!("{:020}-{id}", 1);
+        let names = || {
+            vec![
+                Ok(first.clone()),
+                Err(std::io::Error::other("getdents failed")),
+                Ok("junk".to_string()),
+            ]
+            .into_iter()
+        };
+        let err = sorted_markers(names()).unwrap_err();
+        assert_eq!(err.to_string(), "getdents failed");
+        let listed = sorted_markers(names().filter(Result::is_ok)).unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|m| (m.key, m.id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, id.as_str())]
         );
     }
 
