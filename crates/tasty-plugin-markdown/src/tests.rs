@@ -1625,27 +1625,84 @@ fn a_confirm_merged_into_another_surface_counts_as_not_shown() {
     assert!(p.record_confirm(3, "/a/first.md", 2 << 20, Ok(41)));
 }
 
-/// 첫 확인이 닫히면 두 번째 문서의 버튼이 다시 묻는다(합쳐진 문서가 갇히지 않는다).
+const BIG: u64 = LARGE_FILE_LIMIT_BYTES + 1;
+
+/// 페이지 [열기] 버튼(명시 reload)이 다시 확인을 묻는가.
+fn button_asks_again(doc: &MdDoc) -> bool {
+    reload_step(doc, ReloadOrigin::Explicit, Some(BIG), true) == ReloadStep::Ask(BIG)
+}
+
+/// 생성·복원에서 확인이 거절되면 돌려받은 대기 문서는 `docs`에 들어가기 전에 이미 요청 표시가
+/// 내려가 있고, 버튼이 다시 묻는다.
 #[test]
-fn after_a_merged_confirm_the_second_page_button_asks_again() {
+fn a_refused_confirm_on_creation_returns_a_doc_that_asks_again() {
+    for code in [-32004, -32602] {
+        let mut p = MarkdownPlugin::new(Translator::default());
+        let doc = p.deferred_doc_after_show(7, "/a/big.md".into(), BIG, Err(refused(code)));
+        assert!(!p.docs.contains_key(&7), "{code}");
+        assert!(doc.pending_large, "{code}");
+        assert!(!doc.confirm_requested, "{code}");
+        assert!(button_asks_again(&doc), "{code}");
+        assert!(p.confirm.is_empty(), "{code}");
+    }
+}
+
+/// 생성·복원에서 다른 surface의 열린 확인으로 합쳐지면 이 문서에는 팝업이 없으므로 다시 묻는다.
+/// 첫 문서의 확인은 그대로다.
+#[test]
+fn a_confirm_merged_on_creation_returns_a_doc_that_asks_again() {
+    let mut p = MarkdownPlugin::new(Translator::default());
+    let first = p.deferred_doc_after_show(3, "/a/first.md".into(), BIG, Ok(41));
+    p.docs.insert(3, first);
+    let second = p.deferred_doc_after_show(4, "/a/second.md".into(), BIG, Ok(41));
+    assert!(!second.confirm_requested);
+    assert!(button_asks_again(&second));
+    assert!(p.docs[&3].confirm_requested);
+    assert!(
+        !button_asks_again(&p.docs[&3]),
+        "열린 확인을 겹쳐 묻지 않는다"
+    );
+    assert_eq!(p.confirm[&41].surface_id, 3);
+}
+
+/// 생성·복원에서 이 surface에 확인이 열리면 요청 표시가 유지되고 버튼은 겹쳐 묻지 않는다.
+#[test]
+fn a_confirm_shown_on_creation_keeps_the_request_mark() {
+    let mut p = MarkdownPlugin::new(Translator::default());
+    let doc = p.deferred_doc_after_show(3, "/a/big.md".into(), BIG, Ok(41));
+    assert!(doc.confirm_requested);
+    assert!(!button_asks_again(&doc));
+    assert_eq!(p.confirm[&41].surface_id, 3);
+}
+
+/// reload가 연 확인이 거절되면 `docs`의 문서 요청 표시를 내려 버튼이 다시 묻는다.
+#[test]
+fn a_refused_confirm_on_reload_lets_the_button_ask_again() {
+    for code in [-32004, -32602] {
+        let mut p = MarkdownPlugin::new(Translator::default());
+        // reload_local은 열기 전에 대기·요청 표시를 세운다.
+        p.docs
+            .insert(7, MdDoc::new_deferred(Some("/a/big.md".into())));
+        p.apply_reload_confirm(7, "/a/big.md", BIG, Err(refused(code)));
+        assert!(!p.docs[&7].confirm_requested, "{code}");
+        assert!(button_asks_again(&p.docs[&7]), "{code}");
+        assert!(p.confirm.is_empty(), "{code}");
+    }
+}
+
+/// reload가 연 확인이 다른 surface의 열린 확인으로 합쳐지면 다시 묻고, 같은 surface면 표시를 유지한다.
+#[test]
+fn a_confirm_merged_on_reload_asks_again_and_a_shown_one_keeps_the_mark() {
     let mut p = MarkdownPlugin::new(Translator::default());
     p.docs
         .insert(3, MdDoc::new_deferred(Some("/a/first.md".into())));
-    let mut second = MdDoc::new_deferred(Some("/a/second.md".into()));
-    assert!(p.record_confirm(3, "/a/first.md", 2 << 20, Ok(41)));
-    if !p.record_confirm(4, "/a/second.md", 3 << 20, Ok(41)) {
-        second.confirm_refused();
-    }
-    p.docs.insert(4, second);
+    p.docs
+        .insert(4, MdDoc::new_deferred(Some("/a/second.md".into())));
+    p.apply_reload_confirm(3, "/a/first.md", BIG, Ok(41));
+    p.apply_reload_confirm(4, "/a/second.md", BIG, Ok(41));
     assert!(p.docs[&3].confirm_requested);
+    assert!(!button_asks_again(&p.docs[&3]));
     assert!(!p.docs[&4].confirm_requested);
-    assert_eq!(
-        reload_step(
-            &p.docs[&4],
-            ReloadOrigin::Explicit,
-            Some(LARGE_FILE_LIMIT_BYTES + 1),
-            true
-        ),
-        ReloadStep::Ask(LARGE_FILE_LIMIT_BYTES + 1)
-    );
+    assert!(button_asks_again(&p.docs[&4]));
+    assert_eq!(p.confirm[&41].surface_id, 3);
 }
