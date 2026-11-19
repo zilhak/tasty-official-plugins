@@ -265,17 +265,60 @@ pub(crate) mod fake {
         pub queued: Vec<String>,
     }
 
+    /// accept 오류로 남기는 줄의 상한. 넘으면 "accept errors truncated" 한 줄만 더한다.
+    pub(crate) const ACCEPT_ERROR_LINES: usize = 16;
+
     /// 서버가 겪은 사건. 연결 순번은 accept된 순서로 1부터 센다.
     #[derive(Default)]
     pub(crate) struct Events {
         lines: Vec<String>,
         accepted: usize,
         ended: usize,
+        /// 직전 accept 오류의 내용, 그 줄의 위치, 이어진 횟수.
+        last_accept_error: Option<(String, usize, usize)>,
+        accept_error_lines: usize,
+        accept_errors_truncated: bool,
     }
 
     impl Events {
         fn push(&mut self, line: String) {
             self.lines.push(line);
+        }
+
+        pub(crate) fn lines(&self) -> &[String] {
+            &self.lines
+        }
+
+        /// 연결을 받았다. 이어지던 accept 오류의 반복 세기를 끊는다.
+        pub(crate) fn note_accepted(&mut self) -> usize {
+            self.last_accept_error = None;
+            self.accepted += 1;
+            let conn = self.accepted;
+            self.push(format!("conn {conn}: accepted"));
+            conn
+        }
+
+        /// accept 오류를 남긴다. 직전과 같은 오류가 이어지면 그 줄의 횟수만 올리고,
+        /// 오류 줄이 상한을 넘으면 더 쌓지 않는다. 오류가 계속돼도 기록은 자라지 않는다.
+        pub(crate) fn note_accept_error(&mut self, error: String) {
+            if let Some((last, at, count)) = &mut self.last_accept_error
+                && *last == error
+            {
+                *count += 1;
+                self.lines[*at] = format!("accept error: {error} (x{count})");
+                return;
+            }
+            if self.accept_error_lines >= ACCEPT_ERROR_LINES {
+                if !self.accept_errors_truncated {
+                    self.accept_errors_truncated = true;
+                    self.push("accept errors truncated".into());
+                }
+                self.last_accept_error = None;
+                return;
+            }
+            self.accept_error_lines += 1;
+            self.push(format!("accept error: {error}"));
+            self.last_accept_error = Some((error, self.lines.len() - 1, 1));
         }
     }
 
@@ -304,20 +347,24 @@ pub(crate) mod fake {
                     self.eof = true;
                     Ok(0)
                 }
-                Err(e) => {
+                // read_exact는 Interrupted를 그 자리에서 다시 읽으므로 종료 사유가 아니다.
+                Err(e) if e.kind() != io::ErrorKind::Interrupted => {
                     self.err = Some(describe(&e));
                     Err(e)
                 }
-                ok => ok,
+                other => other,
             }
         }
     }
 
     impl Write for Tap<'_> {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.s
-                .write(buf)
-                .inspect_err(|e| self.err = Some(describe(e)))
+            self.s.write(buf).inspect_err(|e| {
+                // write_all도 Interrupted는 다시 쓴다.
+                if e.kind() != io::ErrorKind::Interrupted {
+                    self.err = Some(describe(e));
+                }
+            })
         }
         fn flush(&mut self) -> io::Result<()> {
             self.s.flush()
@@ -431,20 +478,12 @@ pub(crate) mod fake {
                     Ok(s) => s,
                     Err(e) => {
                         // 오류 하나로 리스너를 끝내지 않는다. 기록하고 다음 연결을 받는다.
-                        ev.lock()
-                            .unwrap()
-                            .push(format!("accept error: {}", describe(&e)));
+                        ev.lock().unwrap().note_accept_error(describe(&e));
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
                     }
                 };
-                let conn = {
-                    let mut ev = ev.lock().unwrap();
-                    ev.accepted += 1;
-                    let conn = ev.accepted;
-                    ev.push(format!("conn {conn}: accepted"));
-                    conn
-                };
+                let conn = ev.lock().unwrap().note_accepted();
                 let rules = rules.clone();
                 let log = log.clone();
                 let ev = ev.clone();
@@ -606,6 +645,42 @@ mod tests {
             },
             "{}",
             server.report()
+        );
+    }
+
+    #[test]
+    fn repeated_accept_errors_keep_the_fake_server_log_bounded() {
+        use super::fake::{ACCEPT_ERROR_LINES, Events};
+        let mut ev = Events::default();
+        for _ in 0..37 {
+            ev.note_accept_error("kind=Other os=Some(24) too many open files".into());
+        }
+        assert_eq!(
+            ev.lines(),
+            ["accept error: kind=Other os=Some(24) too many open files (x37)"]
+        );
+
+        let mut ev = Events::default();
+        for i in 0..ACCEPT_ERROR_LINES + 5 {
+            ev.note_accept_error(format!("kind=Other os=Some({i}) distinct"));
+            ev.note_accept_error(format!("kind=Other os=Some({i}) distinct"));
+        }
+        let lines = ev.lines();
+        assert_eq!(lines.len(), ACCEPT_ERROR_LINES + 1, "{lines:#?}");
+        assert_eq!(
+            lines[0],
+            "accept error: kind=Other os=Some(0) distinct (x2)"
+        );
+        assert_eq!(lines[ACCEPT_ERROR_LINES], "accept errors truncated");
+
+        // 받은 연결이 끼면 같은 오류라도 새 줄이다.
+        let mut ev = Events::default();
+        ev.note_accept_error("e".into());
+        assert_eq!(ev.note_accepted(), 1);
+        ev.note_accept_error("e".into());
+        assert_eq!(
+            ev.lines(),
+            ["accept error: e", "conn 1: accepted", "accept error: e"]
         );
     }
 
