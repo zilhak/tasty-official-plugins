@@ -247,7 +247,8 @@ this crate and of `plugin-pin-check` only, so it never enters a plugin build.
 - `bundled_namespace_dispatch`: every host method in the `METHOD_TABLE` of the pinned tasty
   commit whose prefix a plugin declares as its `ipc_namespace` has a string arm in that
   plugin's `handle_ipc_method`, and the compared method set matches the record for the
-  pin. No file under the `src/` of any plugin defines that function more than once.
+  pin. No Rust file (extension `rs`) under the `src/` of any plugin defines that function
+  more than once.
 - `manifest_cli_catalog_keys`: each non-empty CLI description and argument help in a
   plugin manifest has its translation key, the English catalog value equals the manifest
   text, and the catalog of every built-in language loads a non-blank value.
