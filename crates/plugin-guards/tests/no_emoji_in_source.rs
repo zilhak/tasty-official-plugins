@@ -7,16 +7,18 @@
 //! not checked. This file names code points instead of glyphs so that it does not report
 //! itself.
 //!
-//! The Rust files come from the shared reader of tasty-doc-guards, which walks `crates/`
-//! and skips only `target` folders. The manifests are found by name from the repository
-//! root, wherever they sit, and that walk also skips dist, node_modules, git and worktree
-//! folders, the local agent folders, and folders marked as build caches. No folder with
-//! one of those names sits under `crates/` today.
+//! One walk from the repository root collects both, as tasty's check did: every file
+//! whose path ends in `.rs` under `crates/` (build scripts and a file named just `.rs`
+//! included), and every file named `tasty-plugin.toml` wherever it sits. The walk follows
+//! links to folders. It skips target, dist, node_modules, git and worktree folders, the
+//! local agent folders, and folders marked as build caches. Like tasty's walk it does not
+//! guard against a link cycle; such a walk ends when the path grows too long to open.
+//! The shared Rust reader of tasty-doc-guards is not used: it does not follow folder links
+//! and reads a file only by its extension, so it skips a file named `.rs`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use plugin_guards::{MANIFEST_NAME, repo_root};
-use tasty_doc_guards::source_text::rust_sources;
 
 const PRUNE_DIRS: &[&str] = &["target", "dist", ".worktree", ".git", "node_modules"];
 
@@ -25,7 +27,7 @@ const LOCAL_HEAD: &str = "claude";
 const LOCAL_TAIL: &str = "-workspace";
 
 /// Rust files under crates/: 181 measured on 2026-11-21 at fd948f3 (178 under src/ and
-/// tests/, 3 build scripts). Per crate: codex 49, claude 42, markdown 21, agent-stream
+/// tests/, 3 build scripts), 185 with the checks added since. Per crate: codex 49, claude 42, markdown 21, agent-stream
 /// 13, the others 11 or fewer. Losing all of codex, claude, or markdown fails; losing one
 /// of the smaller crates does not.
 const MIN_RUST_FILES: usize = 165;
@@ -53,40 +55,70 @@ fn rel_of(file: &Path, root: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// Every file named `tasty-plugin.toml` under `dir`, outside the pruned folders.
-fn gather_manifests(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            // A CARGO_TARGET_DIR under another name is pruned by its cache marker.
-            if is_pruned(name) || tasty_doc_guards::is_build_cache_dir(&path) {
-                continue;
-            }
-            gather_manifests(&path, out);
-        } else if path.file_name().is_some_and(|n| n == MANIFEST_NAME) {
-            out.push(path);
-        }
+/// A file the walk reads: a Rust file under `crates/`, or a plugin manifest anywhere.
+#[derive(PartialEq)]
+enum Kind {
+    Rust,
+    Manifest,
+}
+
+fn kind_of(rel: &str) -> Option<Kind> {
+    if rel.rsplit('/').next() == Some(MANIFEST_NAME) {
+        Some(Kind::Manifest)
+    } else if rel.starts_with("crates/") && rel.ends_with(".rs") {
+        Some(Kind::Rust)
+    } else {
+        None
     }
 }
 
-/// The manifests of the tree at `root`, as (relative path, LF text), sorted by path.
-fn manifests(root: &Path) -> Vec<(String, String)> {
-    let mut paths = Vec::new();
-    gather_manifests(root, &mut paths);
-    let mut out: Vec<(String, String)> = paths
-        .iter()
-        .map(|path| {
-            let text = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-            (rel_of(path, root), text.replace("\r\n", "\n"))
-        })
-        .collect();
-    out.sort();
-    out
+fn gather(path: &Path, root: &Path, out: &mut Vec<(String, Kind)>) {
+    // Path::is_dir follows links, so a linked folder is walked like any other.
+    if !path.is_dir() {
+        let rel = rel_of(path, root);
+        if let Some(kind) = kind_of(&rel) {
+            out.push((rel, kind));
+        }
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // A CARGO_TARGET_DIR under another name is pruned by its cache marker.
+            if is_pruned(name) || tasty_doc_guards::is_build_cache_dir(&p) {
+                continue;
+            }
+        }
+        gather(&p, root, out);
+    }
+}
+
+/// The Rust files and the manifests of the tree at `root`, each as (relative path, LF
+/// text) sorted by path.
+type Files = Vec<(String, String)>;
+
+fn scan_files(root: &Path) -> (Files, Files) {
+    let mut found = Vec::new();
+    gather(root, root, &mut found);
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut rust = Vec::new();
+    let mut manifests = Vec::new();
+    for (rel, kind) in found {
+        let path = root.join(&rel);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+            .replace("\r\n", "\n");
+        if kind == Kind::Rust {
+            rust.push((rel, text));
+        } else {
+            manifests.push((rel, text));
+        }
+    }
+    (rust, manifests)
 }
 
 /// `path:line U+XXXX` for each forbidden code point in `text`.
@@ -117,9 +149,7 @@ fn the_scan_refuses_to_report_zero_from_an_empty_walk() {
 
 #[test]
 fn no_emoji_in_source() {
-    let root = repo_root();
-    let rust = rust_sources(&root, &["crates"]);
-    let manifests = manifests(&root);
+    let (rust, manifests) = scan_files(&repo_root());
     assert!(
         scan_is_credible(rust.len(), manifests.len()),
         "collected {} Rust files (floor {MIN_RUST_FILES}) and {} manifests (floor \
@@ -131,7 +161,7 @@ fn no_emoji_in_source() {
 
     let mut found = Vec::new();
     for (rel, text) in &rust {
-        found.extend(violations(&rel.to_string_lossy(), text));
+        found.extend(violations(rel, text));
     }
     for (rel, text) in &manifests {
         found.extend(violations(rel, text));
@@ -164,7 +194,7 @@ fn manifests_are_found_by_name_outside_the_plugin_crates() {
     write("target/x/tasty-plugin.toml", "id = \"x\"\n");
     write("node_modules/x/tasty-plugin.toml", "id = \"x\"\n");
 
-    let found = manifests(root);
+    let (_, found) = scan_files(root);
     let rels: Vec<&str> = found.iter().map(|(rel, _)| rel.as_str()).collect();
     assert_eq!(
         rels,
@@ -178,5 +208,61 @@ fn manifests_are_found_by_name_outside_the_plugin_crates() {
     assert_eq!(
         violations(rel, text),
         ["  examples/demo/tasty-plugin.toml:1 U+1F600"]
+    );
+}
+
+/// Creates a link to the folder `target` at `link`. Unix only: creating a folder link on
+/// Windows needs a privilege or developer mode that the CI runner does not promise, so
+/// the case that needs it is skipped there and the other cases still run.
+#[cfg(unix)]
+fn link_dir(target: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(target, link).is_ok()
+}
+
+#[cfg(not(unix))]
+fn link_dir(_target: &Path, _link: &Path) -> bool {
+    false
+}
+
+/// Rust files are chosen by the end of their path and found through folder links.
+#[test]
+fn rust_files_are_found_by_name_and_through_folder_links() {
+    let dir = tasty_doc_guards::temp_scratch::Scratch::new("no-emoji-rust");
+    let root = dir.path();
+    let write = |rel: &str, text: &str| {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
+    };
+    write("crates/tasty-plugin-x/src/.rs", "// \u{1F600}\n");
+    write("crates/tasty-plugin-x/build.rs", "fn main() {}\n");
+    write("examples/gen/helper.rs", "fn f() {}\n// \u{1F600}\n");
+    write(
+        "crates/tasty-plugin-x/target/debug/out.rs",
+        "// \u{1F600}\n",
+    );
+    let linked = link_dir(
+        &root.join("examples/gen"),
+        &root.join("crates/tasty-plugin-x/src/generated"),
+    );
+
+    let (rust, _) = scan_files(root);
+    let mut found = Vec::new();
+    for (rel, text) in &rust {
+        found.extend(violations(rel, text));
+    }
+    let mut want = vec!["  crates/tasty-plugin-x/src/.rs:1 U+1F600"];
+    if linked {
+        want.push("  crates/tasty-plugin-x/src/generated/helper.rs:2 U+1F600");
+    }
+    assert_eq!(
+        found,
+        want,
+        "files: {:?}",
+        rust.iter().map(|f| &f.0).collect::<Vec<_>>()
+    );
+    assert!(
+        rust.iter()
+            .any(|(rel, _)| rel == "crates/tasty-plugin-x/build.rs")
     );
 }
