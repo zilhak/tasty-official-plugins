@@ -70,9 +70,8 @@ fn read(path: &Path) -> String {
         .replace("\r\n", "\n")
 }
 
-fn rel_of(path: &Path) -> String {
-    let root = repo_root();
-    path.strip_prefix(&root)
+fn rel_of(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
@@ -162,6 +161,70 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// What one plugin crate shows: its declared prefixes, the host methods compared, the
+/// missing arms, the files that define the dispatch more than once, and whether a plugin
+/// that shares a prefix with the host has no dispatch body.
+#[derive(Default)]
+struct PluginScan {
+    declared: Vec<String>,
+    joined: BTreeMap<String, BTreeSet<String>>,
+    missing: Vec<String>,
+    doubled: Vec<String>,
+    no_body: bool,
+}
+
+/// Scans the plugin crate `name` at `dir`. Every file under `src/` is counted for its
+/// dispatch definitions, whether or not the plugin shares a prefix with the host.
+fn scan_plugin(
+    name: &str,
+    dir: &Path,
+    root: &Path,
+    by_prefix: &BTreeMap<String, BTreeSet<String>>,
+) -> PluginScan {
+    let mut scan = PluginScan::default();
+    let prefixes = declared_prefixes(dir);
+    scan.declared = prefixes.iter().map(|p| format!("{name}::{p}")).collect();
+
+    let mut bodies: Vec<(String, Range<usize>)> = Vec::new();
+    for file in rust_files(&dir.join("src")) {
+        let text = read(&file);
+        match dispatch_body(&Source::new(&text)) {
+            Ok(None) => {}
+            Ok(Some(body)) => bodies.push((text, body)),
+            Err(count) => scan.doubled.push(format!(
+                "  {}: {count} definitions of {DISPATCH_FN}",
+                rel_of(&file, root)
+            )),
+        }
+    }
+
+    let overlapping: Vec<(&String, &BTreeSet<String>)> = prefixes
+        .iter()
+        .filter_map(|p| by_prefix.get(p).map(|host| (p, host)))
+        .collect();
+    if overlapping.is_empty() {
+        return scan;
+    }
+    if bodies.is_empty() {
+        scan.no_body = true;
+        return scan;
+    }
+    for (prefix, host) in overlapping {
+        scan.joined.insert(prefix.clone(), host.clone());
+        let mut handled = BTreeSet::new();
+        for (text, body) in &bodies {
+            handled.extend(handled_methods(&Source::new(text), body.clone(), prefix));
+        }
+        for method in host.difference(&handled) {
+            scan.missing.push(format!(
+                "  {method}: the host implements it, but the inbound dispatch of {name} has \
+                 no arm for it"
+            ));
+        }
+    }
+    scan
+}
+
 #[test]
 fn every_host_method_under_a_plugin_namespace_is_handled_by_that_plugin() {
     let (host_count, by_prefix) = host_methods_by_prefix();
@@ -171,63 +234,28 @@ fn every_host_method_under_a_plugin_namespace_is_handled_by_that_plugin() {
          Check the METHOD_TABLE reader."
     );
 
+    let root = repo_root();
     let mut declared: Vec<String> = Vec::new();
     let mut joined: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut missing: Vec<String> = Vec::new();
     let mut doubled: Vec<String> = Vec::new();
+    let mut no_body: Vec<String> = Vec::new();
     for (name, dir) in plugin_crates() {
-        let prefixes = declared_prefixes(&dir);
-        declared.extend(prefixes.iter().map(|p| format!("{name}::{p}")));
-        let overlapping: Vec<(&String, &BTreeSet<String>)> = prefixes
-            .iter()
-            .filter_map(|p| by_prefix.get(p).map(|host| (p, host)))
-            .collect();
-        if overlapping.is_empty() {
-            continue;
-        }
-
-        let mut handled_by_prefix: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-        let mut found_body = false;
-        for file in rust_files(&dir.join("src")) {
-            let text = read(&file);
-            let source = Source::new(&text);
-            match dispatch_body(&source) {
-                Ok(None) => {}
-                Ok(Some(body)) => {
-                    found_body = true;
-                    for (prefix, _) in &overlapping {
-                        handled_by_prefix
-                            .entry(prefix.as_str())
-                            .or_default()
-                            .extend(handled_methods(&source, body.clone(), prefix));
-                    }
-                }
-                Err(count) => doubled.push(format!(
-                    "  {}: {count} definitions of {DISPATCH_FN}",
-                    rel_of(&file)
-                )),
-            }
-        }
-        assert!(
-            found_body,
-            "found no {DISPATCH_FN} body in {name}/src although it declares a namespace the \
-             host uses. Check the SDK method name and the reader."
-        );
-        for (prefix, host) in overlapping {
-            joined.insert(prefix.clone(), host.clone());
-            let handled = handled_by_prefix
-                .get(prefix.as_str())
-                .cloned()
-                .unwrap_or_default();
-            for method in host.difference(&handled) {
-                missing.push(format!(
-                    "  {method}: the host implements it, but the inbound dispatch of {name} has \
-                     no arm for it"
-                ));
-            }
+        let scan = scan_plugin(&name, &dir, &root, &by_prefix);
+        declared.extend(scan.declared);
+        joined.extend(scan.joined);
+        missing.extend(scan.missing);
+        doubled.extend(scan.doubled);
+        if scan.no_body {
+            no_body.push(name);
         }
     }
 
+    assert!(
+        no_body.is_empty(),
+        "found no {DISPATCH_FN} body in {no_body:?} although they declare a namespace the \
+         host uses. Check the SDK method name and the reader."
+    );
     assert!(
         declared.len() >= MIN_DECLARED_NAMESPACES,
         "read {} ipc_namespace entries (floor {MIN_DECLARED_NAMESPACES}): {declared:?}. Compare \
@@ -360,4 +388,64 @@ fn handle_ipc_method(&mut self, ctx: IpcMethodCtx) -> R {
 }
 ";
     assert_eq!(dispatch_body(&Source::new(src)), Err(2));
+}
+
+const TWO_DISPATCHES: &str = "\
+fn handle_ipc_method(&mut self, ctx: IpcMethodCtx) -> R {
+    match ctx.method.as_str() {
+        \"ns.a\" => ok(),
+        other => not_found(other),
+    }
+}
+#[cfg(any())]
+fn handle_ipc_method(&mut self, ctx: IpcMethodCtx) -> R {
+    match ctx.method.as_str() {
+        other => not_found(other),
+    }
+}
+";
+
+/// A synthetic plugin crate `tasty-plugin-x` under `root` that declares `prefix`, with
+/// these files under `src/`.
+fn write_plugin(root: &Path, prefix: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = root.join("tasty-plugin-x");
+    std::fs::create_dir_all(dir.join("src")).expect("mkdir src");
+    std::fs::write(
+        dir.join(MANIFEST_NAME),
+        format!(
+            "manifest_version = 1\nid = \"com.example.x\"\nname = \"X\"\nversion = \"0.0.0\"\n\
+             api_version = \"1\"\n\n[entry]\ntype = \"process\"\ncommand = \"x\"\n\n\
+             [[contributes.ipc_namespace]]\nprefix = \"{prefix}\"\n"
+        ),
+    )
+    .expect("write manifest");
+    for (rel, text) in files {
+        std::fs::write(dir.join("src").join(rel), text).expect("write source");
+    }
+    dir
+}
+
+fn host_of(names: &[&str]) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for name in names {
+        let (prefix, _) = name.split_once('.').expect("dotted name");
+        out.entry(prefix.to_string())
+            .or_default()
+            .insert(name.to_string());
+    }
+    out
+}
+
+/// A plugin whose namespace the host does not use is still read for its definitions.
+#[test]
+fn a_second_definition_is_refused_in_a_plugin_the_host_does_not_share() {
+    let scratch = tasty_doc_guards::temp_scratch::Scratch::new("namespace-dispatch-plugin");
+    let root = scratch.path();
+    let dir = write_plugin(root, "other", &[("main.rs", TWO_DISPATCHES)]);
+    let scan = scan_plugin("tasty-plugin-x", &dir, root, &host_of(&["ns.a"]));
+    assert_eq!(
+        scan.doubled,
+        ["  tasty-plugin-x/src/main.rs: 2 definitions of handle_ipc_method"]
+    );
+    assert!(scan.joined.is_empty() && !scan.no_body);
 }
