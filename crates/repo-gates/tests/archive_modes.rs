@@ -295,6 +295,96 @@ fn a_failed_verbose_listing_fails_with_its_exit_code() {
     assert!(err.contains("x.tar.gz: tar -tvzf failed (exit 7)"), "{err}");
 }
 
+/// A folder entry without a trailing slash can stand at the path of the entry command.
+/// Both tars list it as `drwxr-xr-x … <id>/<command>`, so the name alone does not tell.
+#[test]
+fn a_folder_at_the_entry_command_path_is_not_the_entry_command() {
+    let exe = format!("{ID}/{EXE}");
+    let entries: Vec<(String, String)> = owned(good(EXE))
+        .into_iter()
+        .map(|(n, m)| {
+            if n == exe {
+                (n, "drwxr-xr-x".to_owned())
+            } else {
+                (n, m)
+            }
+        })
+        .collect();
+    for line in [gnu as Line, bsd] {
+        let (ok, err) = verify(&entries, line, EXE);
+        assert!(!ok, "a folder at {exe} passed");
+        assert!(
+            err.contains(&format!("{exe} is a folder, not the entry command")),
+            "{err}"
+        );
+        assert!(
+            err.contains("(the entry command) is not in the archive"),
+            "{err}"
+        );
+    }
+}
+
+/// One USTAR header block for a folder entry named <name>, mode 755, with no trailing
+/// slash added.
+fn ustar_folder(name: &str) -> [u8; 512] {
+    let mut h = [0u8; 512];
+    let put = |h: &mut [u8; 512], at: usize, s: &[u8]| h[at..at + s.len()].copy_from_slice(s);
+    assert!(name.len() < 100, "name too long for a plain USTAR header");
+    put(&mut h, 0, name.as_bytes());
+    put(&mut h, 100, b"0000755\0");
+    put(&mut h, 108, b"0000000\0");
+    put(&mut h, 116, b"0000000\0");
+    put(&mut h, 124, b"00000000000\0");
+    put(&mut h, 136, b"00000000000\0");
+    put(&mut h, 148, b"        ");
+    h[156] = b'5';
+    put(&mut h, 257, b"ustar\0");
+    put(&mut h, 263, b"00");
+    let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+    put(&mut h, 148, format!("{sum:06o}\0 ").as_bytes());
+    h
+}
+
+/// The same with a real archive and the real tar: <id>/ and a folder <id>/<command>.
+#[test]
+fn a_real_archive_with_a_folder_at_the_entry_command_path_fails() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let tar_path = tmp.path().join("x.tar");
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&ustar_folder(&format!("{ID}/")));
+    bytes.extend_from_slice(&ustar_folder(&format!("{ID}/{EXE}")));
+    bytes.extend_from_slice(&[0u8; 1024]);
+    fs::write(&tar_path, bytes).expect("write tar");
+    let gz = Command::new("gzip")
+        .args(["-n", "-f"])
+        .arg(&tar_path)
+        .status()
+        .expect("run gzip");
+    assert!(gz.success());
+    let archive = tmp.path().join("x.tar.gz");
+    let out = Command::new("bash")
+        .current_dir(support::repo_root())
+        .args([
+            "-c",
+            ". \"$1\"; names=$(LC_ALL=C tar -tzf \"$2\") || exit 3; \
+             if verify_archive_modes \"$2\" \"$names\" \"$3\" \"$4\" x.tar.gz; then echo PASS; else echo FAIL; fi",
+            "_",
+            LIB,
+            &archive.to_string_lossy(),
+            ID,
+            EXE,
+        ])
+        .output()
+        .expect("run bash");
+    let verdict = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    assert_eq!(verdict, "FAIL", "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&format!("{ID}/{EXE} is a folder, not the entry command")),
+        "{}",
+        stderr(&out)
+    );
+}
+
 // ── T2: pack on hand-made stages with the real tar ───────────────────────────
 
 /// A stage for one plugin under <out>/<platform>/stage/<id>/ with the given manifest and

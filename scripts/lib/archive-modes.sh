@@ -46,8 +46,9 @@ normalize_stage_modes() {
 # names line by line, as tasty's official-plugins check does: a line must start with - or
 # d, end with " " and its name, and carry no link mark after the name (bsdtar shows a hard
 # link whose header holds a file type as -rw-r--r-- ... <name> link to <target>). Then its
-# first ten characters must be the mode the rule gives. Every problem is printed as an
-# error line with <label>; returns 1 if there is one.
+# first ten characters must be the mode the rule gives. The entry command counts as
+# present only as a regular file with mode 755 at <id>/<exe>; a folder there is an error.
+# Every problem is printed as an error line with <label>; returns 1 if there is one.
 verify_archive_modes() {
   local archive="$1" names="$2" id="$3" exe="$4" label="$5" long rc
   if long=$(LC_ALL=C tar -tvzf "$archive"); then :; else
@@ -72,7 +73,6 @@ verify_archive_modes() {
       for (i = 1; i <= n; i++) {
         N = name[i]
         L = line[i]
-        if (N == exe) seen = 1
         kind = substr(L, 1, 1)
         if (kind != "-" && kind != "d") {
           printf "error: %s: %s is not a regular file or folder (%s)\n", label, N, L > "/dev/stderr"
@@ -86,6 +86,13 @@ verify_archive_modes() {
           bad = 1
           continue
         }
+        # A folder whose name has no trailing slash can stand at the path of the entry
+        # command; only a regular file with mode 755 there counts as the entry command.
+        if (N == exe && kind == "d") {
+          printf "error: %s: %s is a folder, not the entry command (%s)\n", label, N, L > "/dev/stderr"
+          bad = 1
+          continue
+        }
         if (kind == "d") want = "drwxr-xr-x"
         else if (N == exe) want = "-rwxr-xr-x"
         else want = "-rw-r--r--"
@@ -93,6 +100,8 @@ verify_archive_modes() {
         if (got != want) {
           printf "error: %s: %s has mode %s; expected %s\n", label, N, got, want > "/dev/stderr"
           bad = 1
+        } else if (N == exe) {
+          seen = 1
         }
       }
       if (!seen) {
