@@ -1293,6 +1293,11 @@ fn a_downstream_eof_classified_first_does_not_hide_an_upstream_error() {
     );
 }
 
+// Linux에서만 돈다. relay가 front에 shutdown(Both)를 건 뒤 TUI가 읽지 않은 데이터를 남긴 채
+// 닫으면, 그 뒤 front 읽기가 reset을 받는 것은 Linux에서만 매번 관측됐다. Windows에서는 자기
+// shutdown 뒤 읽기가 3/3 EOF였고, macOS에서는 reset이 3회 중 1회만 왔다. reset이 오지 않으면
+// 두 방향 모두 EOF라 이 시험이 지키려는 순서가 드러나지 않는다.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_reset_that_follows_a_backend_eof_does_not_replace_it() {
     let (sockets, gate) = gated_sockets(&[Point::BeforeRead(Direction::Up)]);
@@ -1326,6 +1331,14 @@ fn a_reset_that_follows_a_backend_eof_does_not_replace_it() {
     let up_raw = failed_raw(&seen, Site::Read(Direction::Up));
     let reported = reports(&seen);
     eprintln!("RELAY_EOF_FIRST_UP raw={up_raw:?} {reported:?}");
+    // 전제: upstream은 front 읽기에서 실제 reset을 받았다.
+    assert_eq!(
+        up_raw
+            .flatten()
+            .map(|code| io::Error::from_raw_os_error(code).kind()),
+        Some(io::ErrorKind::ConnectionReset),
+        "RELAY_PROBE_SETUP the TUI never reset the front socket {seen:?}"
+    );
     let error = result.expect_err("a closed backend must end the connection");
     eprintln!("RELAY_EOF_FIRST_RESULT kind={:?} {error}", error.kind());
     // 먼저 받은 쪽은 downstream의 EOF다. 연결 결과도 그 EOF다.
