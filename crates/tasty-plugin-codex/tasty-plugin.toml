@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.codex"
 name = "Codex"
-version = "0.3.14"
+version = "0.3.15"
 description = "Codex CLI integration for Tasty"
 api_version = "1"
 lang_dir = "lang"

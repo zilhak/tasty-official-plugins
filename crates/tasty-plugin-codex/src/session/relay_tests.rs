@@ -859,6 +859,7 @@ fn reports(points: &[Point]) -> Vec<(&'static str, bool, bool)> {
                 direction,
                 closing,
                 warn,
+                ..
             } => Some((*direction, *closing, *warn)),
             _ => None,
         })
@@ -1127,5 +1128,69 @@ fn a_peer_that_ends_normally_leaves_no_transfer_warning() {
         error.kind(),
         io::ErrorKind::UnexpectedEof,
         "{error} {seen:?}"
+    );
+}
+
+#[test]
+fn a_reset_classified_after_the_other_direction_closed_keeps_its_error() {
+    let (sockets, gate) = gated_sockets(&[Point::Classify(Site::Read(Direction::Down))]);
+    let sockets = Arc::new(sockets);
+    let (running, tui, mut ws, backend) = upgraded(&sockets);
+    // 백엔드가 읽지 않은 데이터를 쥔 채 닫히면 relay 쪽 소켓에 reset이 온다.
+    ws.send_text(r#"{"id":1,"method":"noop"}"#).unwrap();
+    let mut seen = gate.wait_for(&Point::BeforeWrite(Direction::Up));
+    seen.extend(gate.wait_for(&Point::BeforeRead(Direction::Up)));
+    backend
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut byte = [0u8; 1];
+    assert_eq!(
+        backend.peek(&mut byte).ok(),
+        Some(1),
+        "RELAY_PROBE_SETUP the forwarded frame never reached the backend"
+    );
+    drop(backend);
+    // reset을 받은 downstream은 분류 직전에 선다. relay는 닫히는 중이 아니다.
+    seen.extend(gate.wait_for(&Point::Classify(Site::Read(Direction::Down))));
+    // 그 사이 TUI가 정상으로 끝나고 upstream이 끝을 보고한 뒤 스스로 닫았다는 표지를 세운다.
+    let _ = tui.shutdown(std::net::Shutdown::Both);
+    drop(ws);
+    drop(tui);
+    seen.extend(gate.wait_for(&Point::Reported {
+        direction: "TUI to server",
+        closing: false,
+        closed: false,
+        warn: false,
+    }));
+    std::thread::sleep(Duration::from_millis(100));
+    gate.release();
+    let result = running.finish(Vec::new(), Vec::new());
+    seen.extend(gate.rest());
+    assert!(!sockets.state.lock().unwrap().closing, "{seen:?}");
+    let error = result.expect_err("a reset backend must end the connection");
+    eprintln!(
+        "RELAY_RESET_RESULT kind={:?} raw={:?} {error}",
+        error.kind(),
+        error.raw_os_error()
+    );
+    assert!(
+        failures(&seen).contains(&(Site::Read(Direction::Down), Source::SocketIo)),
+        "{seen:?}"
+    );
+    // reset은 자기 닫기의 흔적이 아니다. 원 오류로 분류되고 원래 등급(debug)으로 보고된다.
+    assert!(
+        seen.contains(&Point::Reported {
+            direction: "server to TUI",
+            closing: false,
+            closed: false,
+            warn: false,
+        }),
+        "RELAY_RESET_DOWNGRADED {seen:?}"
+    );
+    // 두 방향 모두 원 오류면 downstream이 이긴다. 연결 결과는 reset이다.
+    assert_eq!(
+        error.kind(),
+        io::ErrorKind::ConnectionReset,
+        "RELAY_RESET_LOST {error} {seen:?}"
     );
 }

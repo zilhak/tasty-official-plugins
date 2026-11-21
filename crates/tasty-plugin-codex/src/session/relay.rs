@@ -268,8 +268,8 @@ fn transfer<T>(result: io::Result<T>, site: Site, fault: &AtomicBool) -> Result<
 enum Ended {
     /// relay 종료와 겹친 기한 설정·소켓 I/O 실패. 원 오류는 debug 로그에만 남긴다.
     Closing(Failure),
-    /// 같은 연결의 다른 방향이 먼저 끝나 이 연결이 스스로 소켓을 닫은 뒤의 소켓 I/O 실패.
-    /// Windows에서는 그 닫기가 막힌 읽기를 취소 오류로 돌려보낸다. 실패로 보고하지 않는다.
+    /// 같은 연결의 다른 방향이 먼저 끝나 이 연결이 스스로 소켓을 닫은 뒤, 그 닫기로 생길 수 있는
+    /// 종류의 소켓 오류(`is_self_close_trace`). 실패로 보고하지 않는다.
     Closed(Failure),
     /// 그 밖의 실패. 원 오류 그대로 보고한다.
     Failed(io::Error),
@@ -292,7 +292,25 @@ impl Ended {
     }
 }
 
+/// 이 연결이 스스로 소켓을 닫아서 생길 수 있는 오류인지. 판정은 OS 코드와 종류로만 한다.
+/// Windows 코드는 다른 OS의 errno 범위 밖이라 cfg 없이 같은 목록을 쓴다.
+///
+/// - 수신 종료 뒤의 읽기: OS 코드 없는 EOF(`UnexpectedEof`). 상대의 정상 FIN과 구별되지 않는다.
+/// - 다른 스레드가 건 shutdown과 `CancelIoEx`로 취소된 읽기: Windows 10004(`WSAEINTR`, 관측값)와
+///   995(`ERROR_OPERATION_ABORTED`, `CancelIoEx`가 정한 취소 완료 코드).
+/// - 송신 종료 뒤의 쓰기: Windows 10058(`WSAESHUTDOWN`). 이 소켓에 건 shutdown 뒤에만 나온다.
+///
+/// Linux·macOS의 쓰기 쪽 `EPIPE`는 상대의 reset 뒤에도 나오므로 넣지 않는다. 상대가 보낸
+/// reset(`ConnectionReset` 등)도 넣지 않는다.
+fn is_self_close_trace(error: &io::Error) -> bool {
+    match error.raw_os_error() {
+        None => error.kind() == io::ErrorKind::UnexpectedEof,
+        Some(code) => matches!(code, 10_004 | 995 | 10_058),
+    }
+}
+
 /// 실패 직후 relay 종료 표지와 연결이 스스로 닫았다는 표지(`closed`)를 보고 연결의 끝을 정한다.
+/// `closed`가 섰어도 자기 닫기의 흔적이 아닌 소켓 오류는 원 오류 그대로다.
 fn classify(failure: Failure, sockets: &Sockets, closed: &AtomicBool) -> Ended {
     #[cfg(test)]
     sockets.mark(Point::Failed {
@@ -300,6 +318,8 @@ fn classify(failure: Failure, sockets: &Sockets, closed: &AtomicBool) -> Ended {
         source: failure.source,
         raw_os_error: failure.error.raw_os_error(),
     });
+    #[cfg(test)]
+    sockets.mark(Point::Classify(failure.site));
     // close_streams와 같은 복구 규칙으로 값만 복사하고 가드를 곧바로 놓는다.
     let closing = tasty_utils::poison::recover_mutex(
         sockets.state.lock(),
@@ -309,7 +329,9 @@ fn classify(failure: Failure, sockets: &Sockets, closed: &AtomicBool) -> Ended {
     .closing;
     match failure.source {
         Source::Timeout | Source::SocketIo if closing => Ended::Closing(failure),
-        Source::Timeout | Source::SocketIo if closed.load(Ordering::Acquire) => {
+        Source::Timeout | Source::SocketIo
+            if closed.load(Ordering::Acquire) && is_self_close_trace(&failure.error) =>
+        {
             Ended::Closed(failure)
         }
         _ => Ended::Failed(failure.error),
@@ -516,8 +538,12 @@ enum Point {
     Reported {
         direction: &'static str,
         closing: bool,
+        /// 스스로 닫은 뒤의 끝(`Ended::Closed`)으로 분류했는지.
+        closed: bool,
         warn: bool,
     },
+    /// `classify`가 종료 표지를 읽기 직전. 시험이 여기서 분류를 미룬다.
+    Classify(Site),
     /// 분류 직전의 실패 자리와 원 오류.
     Failed {
         site: Site,
@@ -867,6 +893,7 @@ fn report_transfer_error(direction: &'static str, ended: &Ended, sockets: &Socke
     sockets.mark(Point::Reported {
         direction,
         closing: matches!(ended, Ended::Closing(_)),
+        closed: matches!(ended, Ended::Closed(_)),
         warn,
     });
     #[cfg(not(test))]
