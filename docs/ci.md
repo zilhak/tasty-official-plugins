@@ -234,9 +234,41 @@ this crate and of `plugin-pin-check` only, so it never enters a plugin build.
 - `notice_set`: `LICENSES/` holds at least one license text, and `THIRD_PARTY_LICENSES.md`
   links every file in `LICENSES/` and no file that is missing there. `LICENSES/` holds
   files only; a subfolder or link there fails this check and `stage`.
+- `no_emoji_in_source`: no Rust file under `crates/` and no `tasty-plugin.toml` anywhere
+  in the repository holds a code point in U+1F000..=U+1FAFF. Icons come from the design
+  SVGs.
+- `no_clipboard_write`: the masked Rust code under `crates/` holds none of the clipboard
+  write call shapes listed in the test (arboard, Wayland, X11, macOS pasteboard, Windows,
+  egui, and the copy paths tasty used). The one exception is the `set_text` of the claude
+  screen test double in `error_scan.rs`, allowed only for its receivers inside the listed
+  tests, each of which must still use it.
+- `bundled_namespace_dispatch`: every host method in the `METHOD_TABLE` of the pinned tasty
+  commit whose prefix a plugin declares as its `ipc_namespace` has a string arm in that
+  plugin's `handle_ipc_method`, each file defines that function at most once, and the
+  compared method set matches the record for the pin.
+- `manifest_cli_catalog_keys`: each non-empty CLI description and argument help in a
+  plugin manifest has its translation key, the English catalog value equals the manifest
+  text, and the catalog of every built-in language loads a non-blank value.
 
 The checks that walk the sources fail when they find fewer files or plugins than a floor
 measured in this repository, so an empty walk does not pass.
+
+### Checks tasty ran on the copies and this repository does not run
+
+- Gate threshold copies: tasty compared copies of its gate thresholds with the files that
+  define them. None of those files exist here, and the one numeric gate value here, the
+  license `confidence-threshold` in `deny.toml`, is already fixed by the `repo-gates`
+  deny policy test.
+- Markdown assets: the list of vendored minified files and the reading of `NOTICE.md`
+  under the markdown plugin's `assets/` belong to the local document citation scan. They
+  would come with a port of the local-document citation scan.
+- File size limits: tasty's exceptions and frozen budgets for the markdown renderer are
+  members of its file size gate. This repository has no file size gate to move them into.
+- Hook commands on the recording path: the check depends on tasty's CLI code to tell
+  which methods are hooks. tasty still checks the plugin manifests when it takes a new
+  release, and no hook subcommand here declares the fields that would leave the path.
+- CLI entry points of host methods: that check judges tasty's own documentation and method
+  table. The plugin manifests are only its input, so there is nothing to judge here.
 
 ## Advisory check
 
