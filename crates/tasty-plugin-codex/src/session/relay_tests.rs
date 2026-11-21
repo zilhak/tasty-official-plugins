@@ -1292,3 +1292,87 @@ fn a_downstream_eof_classified_first_does_not_hide_an_upstream_error() {
         "RELAY_EOF_HID_UPSTREAM_ERROR {error} {seen:?}"
     );
 }
+
+#[test]
+fn a_reset_that_follows_a_backend_eof_does_not_replace_it() {
+    let (sockets, gate) = gated_sockets(&[Point::BeforeRead(Direction::Up)]);
+    let sockets = Arc::new(sockets);
+    let (running, tui, ws, mut backend) = upgraded(&sockets);
+    // upstream은 첫 읽기 직전에 선다. 백엔드의 메시지를 TUI까지 보내 두되 TUI는 읽지 않는다.
+    let mut seen = gate.wait_for(&Point::BeforeRead(Direction::Up));
+    let text = br#"{"method":"noop"}"#;
+    let mut frame = vec![0x81, text.len() as u8];
+    frame.extend_from_slice(text);
+    backend.write_all(&frame).unwrap();
+    seen.extend(gate.wait_for(&Point::BeforeWrite(Direction::Down)));
+    seen.extend(gate.wait_for(&Point::BeforeRead(Direction::Down)));
+    let mut byte = [0u8; 1];
+    assert_eq!(
+        tui.peek(&mut byte).ok(),
+        Some(1),
+        "RELAY_PROBE_SETUP the forwarded frame never reached the TUI"
+    );
+    // 백엔드가 정상으로 끝난다. downstream이 그 EOF로 먼저 끝나 보고하고 front·backend를 닫는다.
+    let _ = backend.shutdown(std::net::Shutdown::Both);
+    drop(backend);
+    seen.extend(gate.wait_for(&Point::AfterSelfClose(Direction::Down)));
+    // relay의 FIN을 본 TUI가 읽지 않은 데이터를 남긴 채 닫는다. relay 쪽 front에 reset이 온다.
+    drop(ws);
+    drop(tui);
+    gate.release();
+    let result = running.finish(Vec::new(), Vec::new());
+    seen.extend(gate.rest());
+    assert!(!sockets.state.lock().unwrap().closing, "{seen:?}");
+    let up_raw = failed_raw(&seen, Site::Read(Direction::Up));
+    let reported = reports(&seen);
+    eprintln!("RELAY_EOF_FIRST_UP raw={up_raw:?} {reported:?}");
+    let error = result.expect_err("a closed backend must end the connection");
+    eprintln!("RELAY_EOF_FIRST_RESULT kind={:?} {error}", error.kind());
+    // 먼저 받은 쪽은 downstream의 EOF다. 연결 결과도 그 EOF다.
+    assert_eq!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof,
+        "RELAY_LATER_RESET_WON {error} {seen:?}"
+    );
+}
+
+#[test]
+fn a_pong_cut_after_a_tui_eof_does_not_replace_it() {
+    let pong = Point::BeforeSocketWrite {
+        side: Side::Backend,
+        direction: Direction::Down,
+    };
+    let (sockets, gate) = gated_sockets(&[Point::BeforeSocketWrite {
+        side: Side::Backend,
+        direction: Direction::Down,
+    }]);
+    let sockets = Arc::new(sockets);
+    let (running, tui, ws, mut backend) = upgraded(&sockets);
+    // 백엔드가 ping을 보낸다. downstream은 ping을 다 읽고 pong을 쓰기 직전에 선다.
+    backend.write_all(&[0x89, 0x00]).unwrap();
+    let mut seen = gate.wait_for(&pong);
+    // TUI가 정상으로 끝난다. upstream이 그 EOF로 먼저 끝나 보고하고 백엔드 소켓을 닫는다.
+    let _ = tui.shutdown(std::net::Shutdown::Both);
+    drop(ws);
+    drop(tui);
+    seen.extend(gate.wait_for(&Point::AfterSelfClose(Direction::Up)));
+    gate.release();
+    let result = running.finish(vec![backend], Vec::new());
+    seen.extend(gate.rest());
+    assert!(!sockets.state.lock().unwrap().closing, "{seen:?}");
+    let pong_raw = failed_raw(&seen, Site::Read(Direction::Down));
+    let reported = reports(&seen);
+    eprintln!("RELAY_TUI_EOF_PONG raw={pong_raw:?} {reported:?}");
+    assert!(
+        failures(&seen).contains(&(Site::Read(Direction::Down), Source::SocketIo)),
+        "{seen:?}"
+    );
+    let error = result.expect_err("a closed TUI must end the connection");
+    eprintln!("RELAY_TUI_EOF_RESULT kind={:?} {error}", error.kind());
+    // 먼저 받은 쪽은 upstream의 EOF다. 끊긴 pong은 그 뒤에 왔다.
+    assert_eq!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof,
+        "RELAY_LATER_PONG_WON {error} {seen:?}"
+    );
+}

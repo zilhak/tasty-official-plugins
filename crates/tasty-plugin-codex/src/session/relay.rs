@@ -19,7 +19,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
     Arc, Mutex, Weak,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -285,7 +285,7 @@ fn transfer<T>(result: io::Result<T>, site: Site, fault: &AtomicBool) -> Result<
     })
 }
 
-/// 분류한 연결의 끝.
+/// 분류한 연결의 끝. 두 방향을 합칠 때는 그 방향이 실패를 받은 순번을 함께 쓴다(`join`).
 enum Ended {
     /// relay 종료와 겹친 기한 설정·소켓 I/O 실패. 원 오류는 debug 로그에만 남긴다.
     Closing(Failure),
@@ -311,27 +311,14 @@ impl Ended {
             Self::Closed(_) => 0,
         }
     }
-    /// 다른 방향이 끝난 뒤 따라 나올 수 있는 원 오류인지. 끊긴 쓰기(`BrokenPipe`)와 OS 코드
-    /// 없는 EOF다. 분류 등급은 바꾸지 않고, 두 방향이 모두 `Failed`일 때 합치는 순서에만 쓴다.
-    fn follows_other_end(&self) -> bool {
-        match self {
-            Self::Failed(error) => {
-                error.kind() == io::ErrorKind::BrokenPipe
-                    || (error.kind() == io::ErrorKind::UnexpectedEof
-                        && error.raw_os_error().is_none())
-            }
-            Self::Closing(_) | Self::Closed(_) => false,
-        }
-    }
-    /// 두 방향의 끝을 합친다. 큰 순서는 `rank`다. 둘 다 `Failed`이면 따라 나올 수 있는 결과가
-    /// 그 밖의 원 오류에 양보한다. 그래도 같으면 downstream이 앞선다.
-    fn join(upstream: Self, downstream: Self) -> Self {
+    /// 두 방향의 끝을 합친다. 각 끝은 그 방향이 실패를 받은 순번과 함께 온다. 큰 순서는
+    /// `rank`다. `rank`가 같으면 순번이 작은 쪽, 곧 실패를 먼저 받은 쪽이 원 오류다. 두 방향은
+    /// 연결 하나의 카운터에서 순번을 받으므로 같은 순번은 없다.
+    fn join((upstream, up_order): (Self, u64), (downstream, down_order): (Self, u64)) -> Self {
         let up_first = match upstream.rank().cmp(&downstream.rank()) {
             std::cmp::Ordering::Greater => true,
             std::cmp::Ordering::Less => false,
-            std::cmp::Ordering::Equal => {
-                downstream.follows_other_end() && !upstream.follows_other_end()
-            }
+            std::cmp::Ordering::Equal => up_order < down_order,
         };
         if up_first { upstream } else { downstream }
     }
@@ -755,6 +742,8 @@ fn connection(
     let mut guards = Vec::new();
     // 한 방향이 끝나 이 연결이 상대 방향의 소켓을 닫기 직전에 선다.
     let closed = Arc::new(AtomicBool::new(false));
+    // 두 전송 방향이 실패를 받은 순번. 분류보다 먼저 받아, 분류가 늦어도 받은 순서가 남는다.
+    let order = Arc::new(AtomicU64::new(0));
     let upgraded = (|| -> Result<Stream, Failure> {
         #[cfg(test)]
         sockets.mark(Point::BeforeTrack(Side::Front));
@@ -851,6 +840,7 @@ fn connection(
             .at(Site::CloseHandle, Source::Other)?;
         let registry = sockets.clone();
         let shut = closed.clone();
+        let up_order = order.clone();
         let upstream = std::thread::spawn(move || {
             let result = (|| -> Result<Infallible, Failure> {
                 loop {
@@ -869,13 +859,14 @@ fn connection(
                 }
             })();
             let Err(failure) = result;
+            let received = up_order.fetch_add(1, Ordering::AcqRel);
             let ended = classify(failure, &registry, &shut);
             report_transfer_error("TUI to server", &ended, &registry);
             shut.store(true, Ordering::Release);
             close.close();
             #[cfg(test)]
             registry.mark(Point::AfterSelfClose(Direction::Up));
-            ended
+            (ended, received)
         });
         let result = (|| -> Result<Infallible, Failure> {
             loop {
@@ -894,6 +885,7 @@ fn connection(
             }
         })();
         let Err(failure) = result;
+        let received = order.fetch_add(1, Ordering::AcqRel);
         let downstream = classify(failure, sockets, &closed);
         report_transfer_error("server to TUI", &downstream, sockets);
         closed.store(true, Ordering::Release);
@@ -908,7 +900,7 @@ fn connection(
             source: Source::Other,
             error: io::Error::other("codex relay upstream panicked"),
         })?;
-        Ok(Ended::join(upstream, downstream))
+        Ok(Ended::join(upstream, (downstream, received)))
     })();
     let ended = match ended {
         Ok(ended) => ended,
