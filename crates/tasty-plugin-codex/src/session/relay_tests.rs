@@ -1096,3 +1096,36 @@ fn a_parse_error_while_closing_is_still_reported_as_itself() {
         "{seen:?}"
     );
 }
+
+#[test]
+fn a_peer_that_ends_normally_leaves_no_transfer_warning() {
+    let (sockets, gate) = gated_sockets(&[]);
+    let sockets = Arc::new(sockets);
+    let (running, tui, ws, backend) = upgraded(&sockets);
+    drop(ws);
+    let mut seen = gate.wait_all(&[
+        Point::BeforeRead(Direction::Up),
+        Point::BeforeRead(Direction::Down),
+    ]);
+    std::thread::sleep(Duration::from_millis(50));
+    // TUI가 스스로 끝난다. relay는 닫히는 중이 아니다.
+    let _ = tui.shutdown(std::net::Shutdown::Both);
+    drop(tui);
+    let result = running.finish(vec![backend], Vec::new());
+    seen.extend(gate.rest());
+    assert!(!sockets.state.lock().unwrap().closing, "{seen:?}");
+    let reported = reports(&seen);
+    eprintln!("RELAY_REPORTED {reported:?}");
+    assert_eq!(reported.len(), 2, "{seen:?}");
+    assert!(
+        !reported.iter().any(|(_, _, warn)| *warn),
+        "RELAY_WARN_ON_NORMAL_CLOSE {seen:?}"
+    );
+    // 연결 결과는 먼저 끝난 TUI 쪽의 원 오류(EOF)다.
+    let error = result.expect_err("a closed TUI must end the connection");
+    assert_eq!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof,
+        "{error} {seen:?}"
+    );
+}

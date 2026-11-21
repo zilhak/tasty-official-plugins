@@ -268,6 +268,9 @@ fn transfer<T>(result: io::Result<T>, site: Site, fault: &AtomicBool) -> Result<
 enum Ended {
     /// relay 종료와 겹친 기한 설정·소켓 I/O 실패. 원 오류는 debug 로그에만 남긴다.
     Closing(Failure),
+    /// 같은 연결의 다른 방향이 먼저 끝나 이 연결이 스스로 소켓을 닫은 뒤의 소켓 I/O 실패.
+    /// Windows에서는 그 닫기가 막힌 읽기를 취소 오류로 돌려보낸다. 실패로 보고하지 않는다.
+    Closed(Failure),
     /// 그 밖의 실패. 원 오류 그대로 보고한다.
     Failed(io::Error),
 }
@@ -275,13 +278,22 @@ impl Ended {
     fn into_error(self) -> io::Error {
         match self {
             Self::Closing(_) => io::Error::other("relay closing"),
+            Self::Closed(failure) => failure.error,
             Self::Failed(error) => error,
+        }
+    }
+    /// 두 방향을 합칠 때 앞세우는 순서. 원 오류, relay closing, 스스로 닫은 뒤의 끝 순이다.
+    fn rank(&self) -> u8 {
+        match self {
+            Self::Failed(_) => 2,
+            Self::Closing(_) => 1,
+            Self::Closed(_) => 0,
         }
     }
 }
 
-/// 실패 직후 relay 종료 표지를 보고 연결의 끝을 정한다.
-fn classify(failure: Failure, sockets: &Sockets) -> Ended {
+/// 실패 직후 relay 종료 표지와 연결이 스스로 닫았다는 표지(`closed`)를 보고 연결의 끝을 정한다.
+fn classify(failure: Failure, sockets: &Sockets, closed: &AtomicBool) -> Ended {
     #[cfg(test)]
     sockets.mark(Point::Failed {
         site: failure.site,
@@ -297,6 +309,9 @@ fn classify(failure: Failure, sockets: &Sockets) -> Ended {
     .closing;
     match failure.source {
         Source::Timeout | Source::SocketIo if closing => Ended::Closing(failure),
+        Source::Timeout | Source::SocketIo if closed.load(Ordering::Acquire) => {
+            Ended::Closed(failure)
+        }
         _ => Ended::Failed(failure.error),
     }
 }
@@ -659,6 +674,8 @@ fn connection(
 ) -> io::Result<()> {
     // 등록한 소켓은 연결이 끝날 때 닫는다.
     let mut guards = Vec::new();
+    // 한 방향이 끝나 이 연결이 상대 방향의 소켓을 닫기 직전에 선다.
+    let closed = Arc::new(AtomicBool::new(false));
     let upgraded = (|| -> Result<Stream, Failure> {
         #[cfg(test)]
         sockets.mark(Point::BeforeTrack(Side::Front));
@@ -730,7 +747,7 @@ fn connection(
     let backend = match upgraded {
         Ok(backend) => backend,
         Err(failure) => {
-            let ended = classify(failure, sockets);
+            let ended = classify(failure, sockets, &closed);
             if let Ended::Closing(failure) = &ended {
                 tracing::debug!(site = ?failure.site, error = %failure.error, "codex relay closing");
             }
@@ -753,6 +770,7 @@ fn connection(
             .clone_stream()
             .at(Site::CloseHandle, Source::Other)?;
         let registry = sockets.clone();
+        let shut = closed.clone();
         let upstream = std::thread::spawn(move || {
             let result = (|| -> Result<Infallible, Failure> {
                 loop {
@@ -771,8 +789,9 @@ fn connection(
                 }
             })();
             let Err(failure) = result;
-            let ended = classify(failure, &registry);
+            let ended = classify(failure, &registry, &shut);
             report_transfer_error("TUI to server", &ended, &registry);
+            shut.store(true, Ordering::Release);
             close.close();
             ended
         });
@@ -793,8 +812,9 @@ fn connection(
             }
         })();
         let Err(failure) = result;
-        let downstream = classify(failure, sockets);
+        let downstream = classify(failure, sockets, &closed);
         report_transfer_error("server to TUI", &downstream, sockets);
+        closed.store(true, Ordering::Release);
         front.close();
         backend.close();
         // Both directions report their original error before closing the peer reader. Do not lose
@@ -804,15 +824,17 @@ fn connection(
             source: Source::Other,
             error: io::Error::other("codex relay upstream panicked"),
         })?;
-        // relay closing으로 분류한 쪽보다 원 오류를 앞세운다. 그 밖은 downstream 먼저.
-        Ok(match (downstream, upstream) {
-            (Ended::Closing(_), upstream @ Ended::Failed(_)) => upstream,
-            (downstream, _) => downstream,
+        // 원 오류를 relay closing보다, relay closing을 스스로 닫은 뒤의 끝보다 앞세운다.
+        // 같은 순서면 downstream 먼저.
+        Ok(if upstream.rank() > downstream.rank() {
+            upstream
+        } else {
+            downstream
         })
     })();
     let ended = match ended {
         Ok(ended) => ended,
-        Err(failure) => classify(failure, sockets),
+        Err(failure) => classify(failure, sockets, &closed),
     };
     Err(ended.into_error())
 }
@@ -821,6 +843,10 @@ fn report_transfer_error(direction: &'static str, ended: &Ended, sockets: &Socke
     let warn = match ended {
         Ended::Closing(failure) => {
             tracing::debug!(direction, site = ?failure.site, error = %failure.error, "codex relay closing");
+            false
+        }
+        Ended::Closed(failure) => {
+            tracing::debug!(direction, site = ?failure.site, error = %failure.error, "codex relay closed after the other direction ended");
             false
         }
         Ended::Failed(error) => match error.kind() {
