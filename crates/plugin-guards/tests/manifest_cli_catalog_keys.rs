@@ -198,18 +198,27 @@ command = \"x\"
 
 /// One CLI command with each field once, keys as given.
 fn cli(top: &str, sub: &str, pos: &str, flag: &str) -> String {
+    // An inline table takes no trailing comma, so a key that is left out takes its comma along.
+    let item = |key: &str| {
+        if key.is_empty() {
+            String::new()
+        } else {
+            format!(", {key}")
+        }
+    };
+    let (sub, pos, flag) = (item(sub), item(pos), item(flag));
     format!(
         "[[contributes.cli]]
 name = \"x\"
 description = \"Top\"
 {top}
 subcommands = [
-    {{ name = \"a\", ipc_method = \"x.a\", args = \"g\", description = \"Sub\", {sub} }},
+    {{ name = \"a\", ipc_method = \"x.a\", args = \"g\", description = \"Sub\"{sub} }},
 ]
 
 [contributes.cli.arg_groups.g]
-positional = [{{ name = \"p\", type = \"string\", help = \"Pos\", {pos} }}]
-flags = [{{ name = \"f\", type = \"bool\", flag = \"--f\", help = \"Flag\", {flag} }}]
+positional = [{{ name = \"p\", type = \"string\", help = \"Pos\"{pos} }}]
+flags = [{{ name = \"f\", type = \"bool\", flag = \"--f\", help = \"Flag\"{flag} }}]
 "
     )
 }
