@@ -383,20 +383,24 @@ fn ephemeral_helper_threads_keep_their_policy_and_are_not_registered() {
     assert_eq!(bound, vec!["\"t\"".to_string()]);
 }
 
-type SocketRegistry = Arc<Mutex<Vec<Weak<Stream>>>>;
-
-fn poisoned_socket_registry() -> (Arc<Stream>, TcpStream, SocketRegistry) {
+fn poisoned_socket_registry() -> (Arc<Stream>, TcpStream, Arc<Sockets>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
     peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
     let socket = Arc::new(Stream::Tcp(listener.accept().unwrap().0));
-    let sockets = Arc::new(Mutex::new(vec![Arc::downgrade(&socket)]));
-    let poisoned = std::panic::catch_unwind(|| {
-        let _held = sockets.lock().unwrap();
+    let sockets = Arc::new(Sockets::new());
+    sockets
+        .state
+        .lock()
+        .unwrap()
+        .live
+        .push(Arc::downgrade(&socket));
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = sockets.state.lock().unwrap();
         panic!("poison socket registry");
-    });
+    }));
     assert!(poisoned.is_err());
-    assert!(sockets.is_poisoned());
+    assert!(sockets.state.is_poisoned());
     (socket, peer, sockets)
 }
 
@@ -516,4 +520,146 @@ fn upstream_model_and_effort_rejection_is_never_rewritten_as_success() {
     let raw = r#"{"id":1,"error":{"code":400,"message":"unsupported model or effort"}}"#;
     assert!(message::reply(raw, &pending, &bind).unwrap().is_none());
     assert!(pending.lock().unwrap().is_empty());
+}
+
+/// 받아들인 쪽 소켓과 그 상대. 상대는 relay 바깥의 TUI나 백엔드 역할이다.
+fn socket_pair() -> (TcpStream, TcpStream) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    (listener.accept().unwrap().0, peer)
+}
+
+/// 상대가 닫힘을 봤는지 본다. 읽기 기한 만료는 닫히지 않은 것이다.
+fn assert_peer_closed(peer: &mut TcpStream, what: &str) {
+    peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    match peer.read(&mut [0u8; 1]) {
+        Ok(0) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::BrokenPipe
+            ) => {}
+        other => panic!("{what}: the peer did not see the socket close: {other:?}"),
+    }
+}
+
+/// 시험 표지를 채널로 넘기는 probe. `hold`에 든 지점에서는 해제 신호를 기다린다.
+struct Gate {
+    points: std::sync::mpsc::Receiver<Point>,
+    release: std::sync::mpsc::Sender<()>,
+}
+fn gated_sockets(hold: &'static [Point]) -> (Sockets, Gate) {
+    let (point_tx, points) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel::<()>();
+    let point_tx = Mutex::new(point_tx);
+    let release_rx = Mutex::new(release_rx);
+    let probe: Probe = Arc::new(move |point: Point| {
+        let held = hold.contains(&point);
+        let _ = point_tx.lock().unwrap().send(point);
+        if held {
+            let released = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+            assert!(
+                released.is_ok(),
+                "RELAY_PROBE_SETUP the test never released the probe"
+            );
+        }
+    });
+    (Sockets::with_probe(probe), Gate { points, release })
+}
+impl Gate {
+    /// 지정한 지점이 올 때까지 표지를 받는다. 받은 표지를 모두 돌려준다.
+    fn wait_for(&self, point: &Point) -> Vec<Point> {
+        let mut seen = Vec::new();
+        loop {
+            match self.points.recv_timeout(Duration::from_secs(5)) {
+                Ok(next) => {
+                    let found = &next == point;
+                    seen.push(next);
+                    if found {
+                        return seen;
+                    }
+                }
+                Err(error) => panic!("RELAY_PROBE_SETUP {point:?} never came ({error}): {seen:?}"),
+            }
+        }
+    }
+    fn release(&self) {
+        let _ = self.release.send(());
+    }
+    fn rest(&self) -> Vec<Point> {
+        self.points.try_iter().collect()
+    }
+}
+
+#[test]
+fn a_socket_tracked_after_closing_is_closed_and_not_registered() {
+    let (stream, mut peer) = socket_pair();
+    let stream = Stream::Tcp(stream);
+    let sockets = Sockets::new();
+    sockets.state.lock().unwrap().closing = true;
+    let refused = track(&stream, &sockets);
+    assert_eq!(
+        refused.err().map(|e| e.to_string()).as_deref(),
+        Some("relay closing")
+    );
+    assert!(sockets.state.lock().unwrap().live.is_empty());
+    // 원래 stream이 아직 살아 있으므로 상대의 닫힘은 track 안의 닫기에서만 온다.
+    assert_peer_closed(&mut peer, "refused track");
+    drop(stream);
+}
+
+#[test]
+fn a_connection_that_reaches_track_after_drop_started_is_closed_at_once() {
+    // 백엔드는 쓰이지 않는다. 연결은 front를 등록하기 전에 끝나야 한다.
+    let unused = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let (sockets, gate) = gated_sockets(&[Point::BeforeTrack(Side::Front)]);
+    let relay = Relay::start_with(
+        Endpoint::Ws {
+            port: unused.local_addr().unwrap().port(),
+            token: "unused".into(),
+        },
+        ResumeSettings::default(),
+        Arc::new(|_| panic!("must not bind")),
+        sockets,
+    )
+    .unwrap();
+    let port: u16 = relay.url.rsplit(':').next().unwrap().parse().unwrap();
+    let mut tui = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    gate.wait_for(&Point::BeforeTrack(Side::Front));
+    let registry = relay.streams.clone();
+    let (done_tx, done) = std::sync::mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        drop(relay);
+        let _ = done_tx.send(());
+    });
+    let waited = std::time::Instant::now();
+    while !registry.state.lock().unwrap().closing {
+        assert!(
+            waited.elapsed() < Duration::from_secs(2),
+            "RELAY_PROBE_SETUP drop never set the closing mark"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    gate.release();
+    if done.recv_timeout(Duration::from_secs(2)).is_err() {
+        let _ = tui.shutdown(std::net::Shutdown::Both);
+        drop(tui);
+        match done.recv_timeout(Duration::from_secs(10)) {
+            Ok(()) => {
+                dropper.join().unwrap();
+                panic!("drop did not return within 2s after a late track");
+            }
+            Err(error) => panic!("RELAY_PROBE_SETUP drop never returned ({error})"),
+        }
+    }
+    dropper.join().unwrap();
+    assert_peer_closed(&mut tui, "late track");
+    let rest = gate.rest();
+    assert!(rest.contains(&Point::TrackRefused), "{rest:?}");
+    assert!(!rest.contains(&Point::AfterTrack(Side::Front)), "{rest:?}");
 }

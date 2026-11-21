@@ -166,7 +166,7 @@ pub(crate) struct Relay {
     pub url: String,
     pub token: String,
     stop: Arc<AtomicBool>,
-    streams: Arc<Mutex<Vec<Weak<Stream>>>>,
+    streams: Arc<Sockets>,
     task: Option<JoinHandle<()>>,
 }
 impl Relay {
@@ -175,12 +175,21 @@ impl Relay {
         settings: ResumeSettings,
         bind: Bind,
     ) -> io::Result<Self> {
+        Self::start_with(endpoint, settings, bind, Sockets::new())
+    }
+
+    fn start_with(
+        endpoint: Endpoint,
+        settings: ResumeSettings,
+        bind: Bind,
+        sockets: Sockets,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
         let url = format!("ws://127.0.0.1:{}", listener.local_addr()?.port());
         let token = crate::ids::random_hex(32)?;
         let stop = Arc::new(AtomicBool::new(false));
-        let streams = Arc::new(Mutex::new(Vec::new()));
+        let streams = Arc::new(sockets);
         let (done, sockets, secret) = (stop.clone(), streams.clone(), token.clone());
         let chosen: Chosen = Arc::new(AtomicBool::new(false));
         let task = std::thread::Builder::new()
@@ -248,7 +257,7 @@ fn spawn_connection(
     chosen: &Chosen,
     bind: &Bind,
     secret: &str,
-    sockets: &Arc<Mutex<Vec<Weak<Stream>>>>,
+    sockets: &Arc<Sockets>,
 ) -> JoinHandle<()> {
     let (endpoint, settings, chosen, bind, secret, sockets) = (
         endpoint.clone(),
@@ -283,16 +292,72 @@ fn join_all(connections: Vec<JoinHandle<()>>) {
 
 static SOCKETS_POISON_REPORTED: AtomicBool = AtomicBool::new(false);
 
-/// 열린 연결을 모두 닫는다.
-fn close_streams(sockets: &Mutex<Vec<Weak<Stream>>>) {
+/// 연결이 쓰는 소켓 목록과 relay 종료 표지. 표지와 등록은 같은 락 아래에서만 바뀐다.
+struct Sockets {
+    state: Mutex<SocketState>,
+    #[cfg(test)]
+    probe: Option<Probe>,
+}
+struct SocketState {
+    /// relay 종료가 시작됐다. 한 번 서면 내려가지 않는다.
+    closing: bool,
+    live: Vec<Weak<Stream>>,
+}
+impl Sockets {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(SocketState {
+                closing: false,
+                live: Vec::new(),
+            }),
+            #[cfg(test)]
+            probe: None,
+        }
+    }
+    #[cfg(test)]
+    fn with_probe(probe: Probe) -> Self {
+        Self {
+            probe: Some(probe),
+            ..Self::new()
+        }
+    }
+    /// 시험이 연결의 진행 지점을 보고 순서를 정한다. 레지스트리 락을 쥔 채 부르지 않는다.
+    #[cfg(test)]
+    fn mark(&self, point: Point) {
+        if let Some(probe) = &self.probe {
+            probe(point);
+        }
+    }
+}
+
+#[cfg(test)]
+type Probe = Arc<dyn Fn(Point) + Send + Sync>;
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Front,
+    Backend,
+}
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+enum Point {
+    BeforeTrack(Side),
+    AfterTrack(Side),
+    TrackRefused,
+}
+
+/// 종료 표지를 세우고 열린 연결을 모두 닫는다. 두 번 불려도 된다.
+fn close_streams(sockets: &Sockets) {
     // 레지스트리는 Weak 목록만 retain/push한다. 프레임 writer를 복구하는 것이 아니라
     // 남아 있는 소켓의 shutdown 의무를 이행하므로 poison 뒤에도 목록을 읽을 수 있다.
-    let sockets = tasty_utils::poison::recover_mutex(
-        sockets.lock(),
+    let mut state = tasty_utils::poison::recover_mutex(
+        sockets.state.lock(),
         "codex relay socket registry",
         &SOCKETS_POISON_REPORTED,
     );
-    for socket in sockets.iter() {
+    // 표지를 같은 락 안에서 세우므로, 이 순회 뒤에 등록하려는 소켓은 track이 거절한다.
+    state.closing = true;
+    for socket in state.live.iter() {
         if let Some(socket) = socket.upgrade() {
             socket.close();
         }
@@ -400,13 +465,22 @@ impl Drop for CloseOnDrop {
     }
 }
 
-fn track(socket: &Stream, sockets: &Mutex<Vec<Weak<Stream>>>) -> io::Result<CloseOnDrop> {
+/// 소켓을 relay 종료 때 닫을 목록에 넣는다. 종료가 이미 시작됐으면 넣지 않고 바로 닫는다.
+fn track(socket: &Stream, sockets: &Sockets) -> io::Result<CloseOnDrop> {
     let socket = Arc::new(socket.clone_stream()?);
-    let mut live = sockets
+    let mut state = sockets
+        .state
         .lock()
         .map_err(|_| io::Error::other("relay socket list poisoned"))?;
-    live.retain(|socket| socket.strong_count() > 0);
-    live.push(Arc::downgrade(&socket));
+    if state.closing {
+        drop(state);
+        socket.close();
+        #[cfg(test)]
+        sockets.mark(Point::TrackRefused);
+        return Err(io::Error::other("relay closing"));
+    }
+    state.live.retain(|socket| socket.strong_count() > 0);
+    state.live.push(Arc::downgrade(&socket));
     Ok(CloseOnDrop(socket))
 }
 
@@ -416,9 +490,13 @@ fn connection(
     token: &str,
     (settings, chosen): (&ResumeSettings, Chosen),
     bind: Bind,
-    sockets: &Mutex<Vec<Weak<Stream>>>,
+    sockets: &Sockets,
 ) -> io::Result<()> {
+    #[cfg(test)]
+    sockets.mark(Point::BeforeTrack(Side::Front));
     let _front_guard = track(&front, sockets)?;
+    #[cfg(test)]
+    sockets.mark(Point::AfterTrack(Side::Front));
     front.timeout(Some(Duration::from_secs(10)))?;
     let request = header(&mut front)?;
     let auth = format!("Bearer {token}");
@@ -431,7 +509,11 @@ fn connection(
         return Err(io::Error::other("relay authentication failed"));
     }
     let mut backend = Stream::connect(endpoint)?;
+    #[cfg(test)]
+    sockets.mark(Point::BeforeTrack(Side::Backend));
     let _backend_guard = track(&backend, sockets)?;
+    #[cfg(test)]
+    sockets.mark(Point::AfterTrack(Side::Backend));
     let mut forwarded = request
         .lines()
         .filter(|l| {
