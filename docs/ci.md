@@ -554,8 +554,11 @@ order:
    crate with an `assets/NOTICE.md` also gets it as `NOTICE.md`; now that is the markdown
    plugin. Windows targets also get the PDB that the MSVC linker writes next to the
    executable, under the name the executable records. `<id>` is the manifest `id`, for
-   example `com.tasty.claude`. Then the staged folder gets mode 755 for its folders and
-   executable and 644 for every other file, whatever the source modes and the umask are.
+   example `com.tasty.claude`. Then, on Linux and macOS, the staged folder gets mode 755
+   for its folders and executable and 644 for every other file, whatever the source modes
+   and the umask are. On Windows, `chmod` cannot change the modes that Git Bash reports, so
+   this holds only on Unix; there `pack` writes the archives under umask 022 and checks the
+   modes, as described below.
 2. `pack`: one `<id>-<version>-<platform>.tar.gz` per plugin. `<version>` is the
    manifest `version`.
 3. `pack` then writes `SHA256SUMS-<platform>.txt` (the `sha256sum` format) and

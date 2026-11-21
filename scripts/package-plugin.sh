@@ -17,8 +17,8 @@
 #         *-windows-msvc target it also copies the PDB the linker wrote next to the
 #         executable, under the name the executable records, and fails if cargo
 #         lists none. Plugins whose manifest says `bundle = false` are skipped unless
-#         --all is given, as in tasty's own packaging scripts. Each staged folder then
-#         gets mode 755 for its folders and executable and 644 for every other file.
+#         --all is given, as in tasty's own packaging scripts. On Unix each staged
+#         folder then gets 755 for its folders and executable, 644 for other files.
 # pack    Writes DIR/NAME/dist/<id>-<version>-NAME.tar.gz for each staged plugin,
 #         then DIR/NAME/dist/SHA256SUMS-NAME.txt (sha256sum format) and
 #         DIR/NAME/dist/plugins-NAME.tsv (id, version, platform, file, sha256).
