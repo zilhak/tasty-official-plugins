@@ -14,6 +14,7 @@ use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
@@ -45,7 +46,6 @@ impl Stream {
             Endpoint::Unix(path) => Self::Unix(std::os::unix::net::UnixStream::connect(path)?),
             _ => return Err(io::Error::other("relay requires an owned server")),
         };
-        out.timeout(Some(Duration::from_secs(10)))?;
         Ok(out)
     }
     fn clone_stream(&self) -> io::Result<Self> {
@@ -107,36 +107,65 @@ impl Write for Stream {
 struct Duplex {
     read: Stream,
     write: Arc<Mutex<Stream>>,
+    /// 이 `Duplex`를 쓰는 전송 방향의 소켓 실패 표지. 소켓 읽기·쓰기가 실패하면 선다.
+    /// WebSocket 프레임 판정 오류와 소켓 오류를 가르는 데 쓴다.
+    fault: Arc<AtomicBool>,
 }
 impl Read for Duplex {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
-        self.read.read(b)
+        let result = self.read.read(b);
+        // read_exact가 Interrupted를 다시 시도하므로 그것만 뺀다. 빈 버퍼가 아닌데 0이면 EOF다.
+        match &result {
+            Err(error) if error.kind() != io::ErrorKind::Interrupted => {
+                self.fault.store(true, Ordering::Release)
+            }
+            Ok(0) if !b.is_empty() => self.fault.store(true, Ordering::Release),
+            _ => {}
+        }
+        result
     }
 }
 impl Write for Duplex {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-        self.write
+        let result = self
+            .write
             .lock()
             .map_err(|_| io::Error::other("relay writer poisoned"))?
-            .write(b)
+            .write(b);
+        if result.is_err() {
+            self.fault.store(true, Ordering::Release);
+        }
+        result
     }
     fn write_all(&mut self, b: &[u8]) -> io::Result<()> {
-        self.write
+        let result = self
+            .write
             .lock()
             .map_err(|_| io::Error::other("relay writer poisoned"))?
-            .write_all(b)
+            .write_all(b);
+        if result.is_err() {
+            self.fault.store(true, Ordering::Release);
+        }
+        result
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
-fn pair(s: &Stream, server: bool) -> io::Result<(WsConn<Duplex>, WsConn<Duplex>)> {
+/// 한 소켓의 reader 쪽과 writer 쪽 연결. 표지는 각 쪽을 쓰는 전송 방향의 것이다.
+fn pair(
+    s: &Stream,
+    server: bool,
+    reader_fault: Arc<AtomicBool>,
+    writer_fault: Arc<AtomicBool>,
+) -> io::Result<(WsConn<Duplex>, WsConn<Duplex>)> {
     let write = Arc::new(Mutex::new(s.clone_stream()?));
     Ok((
         WsConn::established(
             Duplex {
                 read: s.clone_stream()?,
                 write: write.clone(),
+                fault: reader_fault,
             },
             server,
         ),
@@ -144,23 +173,132 @@ fn pair(s: &Stream, server: bool) -> io::Result<(WsConn<Duplex>, WsConn<Duplex>)
             Duplex {
                 read: s.clone_stream()?,
                 write,
+                fault: writer_fault,
             },
             server,
         ),
     ))
 }
 
-fn header(s: &mut Stream) -> io::Result<String> {
+fn header(s: &mut Stream, site: Site) -> Result<String, Failure> {
     let mut bytes = Vec::new();
     while !bytes.ends_with(b"\r\n\r\n") {
         let mut b = [0];
-        s.read_exact(&mut b)?;
+        s.read_exact(&mut b).at(site, Source::SocketIo)?;
         bytes.push(b[0]);
         if bytes.len() > 16384 {
-            return Err(io::Error::other("relay header too large"));
+            return Err(io::Error::other("relay header too large")).at(site, Source::Other);
         }
     }
-    String::from_utf8(bytes).map_err(io::Error::other)
+    String::from_utf8(bytes)
+        .map_err(io::Error::other)
+        .at(site, Source::Other)
+}
+
+/// 연결이 실패한 호출의 종류. 오류 코드가 아니라 실패한 호출 자리로 정한다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// 소켓 기한 설정.
+    Timeout,
+    /// 소켓 읽기·쓰기.
+    SocketIo,
+    /// 그 밖(프레임·메시지 판정, 인증, 연결, 복제 등).
+    Other,
+}
+
+/// 연결 안에서 실패한 호출 자리.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Site {
+    FrontTrack,
+    FrontTimeout,
+    FrontHeader,
+    FrontReject,
+    Auth,
+    Connect,
+    BackendTimeout,
+    BackendTrack,
+    BackendRequest,
+    BackendHeader,
+    FrontResponse,
+    Refused,
+    FrontUnlimit,
+    BackendUnlimit,
+    Pair,
+    CloseHandle,
+    Read(Direction),
+    Write(Direction),
+    Message(Direction),
+    /// upstream 스레드 회수.
+    Join,
+}
+
+struct Failure {
+    site: Site,
+    source: Source,
+    error: io::Error,
+}
+
+trait At<T> {
+    fn at(self, site: Site, source: Source) -> Result<T, Failure>;
+}
+impl<T> At<T> for io::Result<T> {
+    fn at(self, site: Site, source: Source) -> Result<T, Failure> {
+        self.map_err(|error| Failure {
+            site,
+            source,
+            error,
+        })
+    }
+}
+
+/// 전송 루프의 실패. 그 방향의 소켓 실패 표지가 섰으면 소켓 I/O 실패다.
+fn transfer<T>(result: io::Result<T>, site: Site, fault: &AtomicBool) -> Result<T, Failure> {
+    result.map_err(|error| Failure {
+        site,
+        source: if fault.load(Ordering::Acquire) {
+            Source::SocketIo
+        } else {
+            Source::Other
+        },
+        error,
+    })
+}
+
+/// 분류한 연결의 끝.
+enum Ended {
+    /// relay 종료와 겹친 기한 설정·소켓 I/O 실패. 원 오류는 debug 로그에만 남긴다.
+    Closing(Failure),
+    /// 그 밖의 실패. 원 오류 그대로 보고한다.
+    Failed(io::Error),
+}
+impl Ended {
+    fn into_error(self) -> io::Error {
+        match self {
+            Self::Closing(_) => io::Error::other("relay closing"),
+            Self::Failed(error) => error,
+        }
+    }
+}
+
+/// 실패 직후 relay 종료 표지를 보고 연결의 끝을 정한다.
+fn classify(failure: Failure, sockets: &Sockets) -> Ended {
+    #[cfg(test)]
+    sockets.mark(Point::Failed {
+        site: failure.site,
+        source: failure.source,
+        raw_os_error: failure.error.raw_os_error(),
+    });
+    // close_streams와 같은 복구 규칙으로 값만 복사하고 가드를 곧바로 놓는다.
+    let closing = tasty_utils::poison::recover_mutex(
+        sockets.state.lock(),
+        "codex relay socket registry",
+        &SOCKETS_POISON_REPORTED,
+    )
+    .closing;
+    match failure.source {
+        Source::Timeout | Source::SocketIo if closing => Ended::Closing(failure),
+        _ => Ended::Failed(failure.error),
+    }
 }
 
 pub(crate) struct Relay {
@@ -325,15 +463,9 @@ impl Sockets {
     /// 시험이 연결의 진행 지점을 보고 순서를 정한다. 레지스트리 락을 쥔 채 부르지 않는다.
     #[cfg(test)]
     fn mark(&self, point: Point) {
-        mark(&self.probe, point);
-    }
-}
-
-/// 연결 스레드가 레지스트리 없이 표지를 남길 때 쓴다.
-#[cfg(test)]
-fn mark(probe: &Option<Probe>, point: Point) {
-    if let Some(probe) = probe {
-        probe(point);
+        if let Some(probe) = &self.probe {
+            probe(point);
+        }
     }
 }
 
@@ -345,7 +477,7 @@ enum Side {
     Front,
     Backend,
 }
-#[cfg(test)]
+/// 전송 방향.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
     /// TUI에서 서버로.
@@ -361,6 +493,22 @@ enum Point {
     TrackRefused,
     /// 전송 루프가 `recv_text`에 들어가기 직전.
     BeforeRead(Direction),
+    /// 업그레이드 뒤 소켓 기한을 풀기 직전.
+    BeforeUnlimit(Side),
+    /// 전송 루프가 `send_text`에 들어가기 직전.
+    BeforeWrite(Direction),
+    /// `report_transfer_error`가 고른 분기.
+    Reported {
+        direction: &'static str,
+        closing: bool,
+        warn: bool,
+    },
+    /// 분류 직전의 실패 자리와 원 오류.
+    Failed {
+        site: Site,
+        source: Source,
+        raw_os_error: Option<i32>,
+    },
 }
 
 /// 종료 표지를 세우고 열린 연결을 모두 닫는다. 두 번 불려도 된다.
@@ -507,105 +655,196 @@ fn connection(
     token: &str,
     (settings, chosen): (&ResumeSettings, Chosen),
     bind: Bind,
-    sockets: &Sockets,
+    sockets: &Arc<Sockets>,
 ) -> io::Result<()> {
-    #[cfg(test)]
-    sockets.mark(Point::BeforeTrack(Side::Front));
-    let _front_guard = track(&front, sockets)?;
-    #[cfg(test)]
-    sockets.mark(Point::AfterTrack(Side::Front));
-    front.timeout(Some(Duration::from_secs(10)))?;
-    let request = header(&mut front)?;
-    let auth = format!("Bearer {token}");
-    if !request
-        .lines()
-        .filter_map(|l| l.split_once(':'))
-        .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v.trim() == auth)
-    {
-        front.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")?;
-        return Err(io::Error::other("relay authentication failed"));
-    }
-    let mut backend = Stream::connect(endpoint)?;
-    #[cfg(test)]
-    sockets.mark(Point::BeforeTrack(Side::Backend));
-    let _backend_guard = track(&backend, sockets)?;
-    #[cfg(test)]
-    sockets.mark(Point::AfterTrack(Side::Backend));
-    let mut forwarded = request
-        .lines()
-        .filter(|l| {
-            !l.is_empty()
-                && !l
-                    .split_once(':')
-                    .is_some_and(|(k, _)| k.eq_ignore_ascii_case("authorization"))
-        })
-        .collect::<Vec<_>>()
-        .join("\r\n");
-    if let Endpoint::Ws { token, .. } = endpoint {
-        forwarded.push_str(&format!("\r\nAuthorization: Bearer {token}"));
-    }
-    forwarded.push_str("\r\n\r\n");
-    backend.write_all(forwarded.as_bytes())?;
-    let response = header(&mut backend)?;
-    front.write_all(response.as_bytes())?;
-    if !response.lines().next().is_some_and(|l| l.contains(" 101 ")) {
-        return Err(io::Error::other("backend refused relay connection"));
-    }
-    front.timeout(None)?;
-    backend.timeout(None)?;
-    let (mut from_tui, mut to_tui) = pair(&front, true)?;
-    let (mut from_server, mut to_server) = pair(&backend, false)?;
-    let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-    let (requests, overrides) = (pending.clone(), settings.clone());
-    let close = backend.clone_stream()?;
-    #[cfg(test)]
-    let probe = sockets.probe.clone();
-    let upstream = std::thread::spawn(move || {
-        let result = (|| -> io::Result<()> {
+    // 등록한 소켓은 연결이 끝날 때 닫는다.
+    let mut guards = Vec::new();
+    let upgraded = (|| -> Result<Stream, Failure> {
+        #[cfg(test)]
+        sockets.mark(Point::BeforeTrack(Side::Front));
+        guards.push(track(&front, sockets).at(Site::FrontTrack, Source::Other)?);
+        #[cfg(test)]
+        sockets.mark(Point::AfterTrack(Side::Front));
+        front
+            .timeout(Some(Duration::from_secs(10)))
+            .at(Site::FrontTimeout, Source::Timeout)?;
+        let request = header(&mut front, Site::FrontHeader)?;
+        let auth = format!("Bearer {token}");
+        if !request
+            .lines()
+            .filter_map(|l| l.split_once(':'))
+            .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v.trim() == auth)
+        {
+            front
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                .at(Site::FrontReject, Source::SocketIo)?;
+            return Err(io::Error::other("relay authentication failed"))
+                .at(Site::Auth, Source::Other);
+        }
+        let mut backend = Stream::connect(endpoint).at(Site::Connect, Source::Other)?;
+        backend
+            .timeout(Some(Duration::from_secs(10)))
+            .at(Site::BackendTimeout, Source::Timeout)?;
+        #[cfg(test)]
+        sockets.mark(Point::BeforeTrack(Side::Backend));
+        guards.push(track(&backend, sockets).at(Site::BackendTrack, Source::Other)?);
+        #[cfg(test)]
+        sockets.mark(Point::AfterTrack(Side::Backend));
+        let mut forwarded = request
+            .lines()
+            .filter(|l| {
+                !l.is_empty()
+                    && !l
+                        .split_once(':')
+                        .is_some_and(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+            })
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        if let Endpoint::Ws { token, .. } = endpoint {
+            forwarded.push_str(&format!("\r\nAuthorization: Bearer {token}"));
+        }
+        forwarded.push_str("\r\n\r\n");
+        backend
+            .write_all(forwarded.as_bytes())
+            .at(Site::BackendRequest, Source::SocketIo)?;
+        let response = header(&mut backend, Site::BackendHeader)?;
+        front
+            .write_all(response.as_bytes())
+            .at(Site::FrontResponse, Source::SocketIo)?;
+        if !response.lines().next().is_some_and(|l| l.contains(" 101 ")) {
+            return Err(io::Error::other("backend refused relay connection"))
+                .at(Site::Refused, Source::Other);
+        }
+        #[cfg(test)]
+        sockets.mark(Point::BeforeUnlimit(Side::Front));
+        front
+            .timeout(None)
+            .at(Site::FrontUnlimit, Source::Timeout)?;
+        #[cfg(test)]
+        sockets.mark(Point::BeforeUnlimit(Side::Backend));
+        backend
+            .timeout(None)
+            .at(Site::BackendUnlimit, Source::Timeout)?;
+        Ok(backend)
+    })();
+    let backend = match upgraded {
+        Ok(backend) => backend,
+        Err(failure) => {
+            let ended = classify(failure, sockets);
+            if let Ended::Closing(failure) = &ended {
+                tracing::debug!(site = ?failure.site, error = %failure.error, "codex relay closing");
+            }
+            return Err(ended.into_error());
+        }
+    };
+    let ended = (|| -> Result<Ended, Failure> {
+        // 방향마다 소켓 실패 표지 하나. upstream은 TUI 읽기와 서버 쓰기, downstream은 그 반대다.
+        let (up, down) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (mut from_tui, mut to_tui) =
+            pair(&front, true, up.clone(), down.clone()).at(Site::Pair, Source::Other)?;
+        let (mut from_server, mut to_server) =
+            pair(&backend, false, down.clone(), up.clone()).at(Site::Pair, Source::Other)?;
+        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let (requests, overrides) = (pending.clone(), settings.clone());
+        let close = backend
+            .clone_stream()
+            .at(Site::CloseHandle, Source::Other)?;
+        let registry = sockets.clone();
+        let upstream = std::thread::spawn(move || {
+            let result = (|| -> Result<Infallible, Failure> {
+                loop {
+                    #[cfg(test)]
+                    registry.mark(Point::BeforeRead(Direction::Up));
+                    let text = transfer(from_tui.recv_text(), Site::Read(Direction::Up), &up)?;
+                    let rewritten = message::request(&text, &overrides, &chosen, &requests)
+                        .at(Site::Message(Direction::Up), Source::Other)?;
+                    #[cfg(test)]
+                    registry.mark(Point::BeforeWrite(Direction::Up));
+                    transfer(
+                        to_server.send_text(rewritten.as_deref().unwrap_or(&text)),
+                        Site::Write(Direction::Up),
+                        &up,
+                    )?;
+                }
+            })();
+            let Err(failure) = result;
+            let ended = classify(failure, &registry);
+            report_transfer_error("TUI to server", &ended, &registry);
+            close.close();
+            ended
+        });
+        let result = (|| -> Result<Infallible, Failure> {
             loop {
                 #[cfg(test)]
-                mark(&probe, Point::BeforeRead(Direction::Up));
-                let text = from_tui.recv_text()?;
-                let rewritten = message::request(&text, &overrides, &chosen, &requests)?;
-                to_server.send_text(rewritten.as_deref().unwrap_or(&text))?;
+                sockets.mark(Point::BeforeRead(Direction::Down));
+                let text = transfer(from_server.recv_text(), Site::Read(Direction::Down), &down)?;
+                let rewritten = message::reply(&text, &pending, &bind)
+                    .at(Site::Message(Direction::Down), Source::Other)?;
+                #[cfg(test)]
+                sockets.mark(Point::BeforeWrite(Direction::Down));
+                transfer(
+                    to_tui.send_text(rewritten.as_deref().unwrap_or(&text)),
+                    Site::Write(Direction::Down),
+                    &down,
+                )?;
             }
         })();
-        report_transfer_error("TUI to server", &result);
-        close.close();
-        result
-    });
-    let result = (|| -> io::Result<()> {
-        loop {
-            #[cfg(test)]
-            sockets.mark(Point::BeforeRead(Direction::Down));
-            let text = from_server.recv_text()?;
-            let rewritten = message::reply(&text, &pending, &bind)?;
-            to_tui.send_text(rewritten.as_deref().unwrap_or(&text))?;
-        }
+        let Err(failure) = result;
+        let downstream = classify(failure, sockets);
+        report_transfer_error("server to TUI", &downstream, sockets);
+        front.close();
+        backend.close();
+        // Both directions report their original error before closing the peer reader. Do not lose
+        // a normal thread return containing Err when joining the TUI-to-server worker.
+        let upstream = upstream.join().map_err(|_| Failure {
+            site: Site::Join,
+            source: Source::Other,
+            error: io::Error::other("codex relay upstream panicked"),
+        })?;
+        // relay closing으로 분류한 쪽보다 원 오류를 앞세운다. 그 밖은 downstream 먼저.
+        Ok(match (downstream, upstream) {
+            (Ended::Closing(_), upstream @ Ended::Failed(_)) => upstream,
+            (downstream, _) => downstream,
+        })
     })();
-    report_transfer_error("server to TUI", &result);
-    front.close();
-    backend.close();
-    // Both directions report their original error before closing the peer reader. Do not lose
-    // a normal thread return containing Err when joining the TUI-to-server worker.
-    let upstream_result = upstream
-        .join()
-        .map_err(|_| io::Error::other("codex relay upstream panicked"))?;
-    result.and(upstream_result)
+    let ended = match ended {
+        Ok(ended) => ended,
+        Err(failure) => classify(failure, sockets),
+    };
+    Err(ended.into_error())
 }
 
-fn report_transfer_error(direction: &str, result: &io::Result<()>) {
-    if let Err(error) = result {
-        match error.kind() {
+fn report_transfer_error(direction: &'static str, ended: &Ended, sockets: &Sockets) {
+    let warn = match ended {
+        Ended::Closing(failure) => {
+            tracing::debug!(direction, site = ?failure.site, error = %failure.error, "codex relay closing");
+            false
+        }
+        Ended::Failed(error) => match error.kind() {
             io::ErrorKind::UnexpectedEof
             | io::ErrorKind::ConnectionReset
             | io::ErrorKind::ConnectionAborted
             | io::ErrorKind::BrokenPipe => {
                 tracing::debug!(direction, %error, "codex relay disconnected");
+                false
             }
-            _ => tracing::warn!(direction, %error, "codex relay transfer failed"),
-        }
-    }
+            _ => {
+                tracing::warn!(direction, %error, "codex relay transfer failed");
+                true
+            }
+        },
+    };
+    #[cfg(test)]
+    sockets.mark(Point::Reported {
+        direction,
+        closing: matches!(ended, Ended::Closing(_)),
+        warn,
+    });
+    #[cfg(not(test))]
+    let _ = (warn, sockets);
 }
 
 #[cfg(test)]

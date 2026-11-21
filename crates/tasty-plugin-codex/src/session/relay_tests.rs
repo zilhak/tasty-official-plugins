@@ -556,6 +556,14 @@ fn gated_sockets(hold: &'static [Point]) -> (Sockets, Gate) {
     let point_tx = Mutex::new(point_tx);
     let release_rx = Mutex::new(release_rx);
     let probe: Probe = Arc::new(move |point: Point| {
+        if let Point::Failed {
+            site,
+            source,
+            raw_os_error,
+        } = &point
+        {
+            eprintln!("RELAY_FAILED site={site:?} source={source:?} raw={raw_os_error:?}");
+        }
         let held = hold.contains(&point);
         let _ = point_tx.lock().unwrap().send(point);
         if held {
@@ -587,6 +595,17 @@ impl Gate {
                 Err(error) => panic!("RELAY_PROBE_SETUP {point:?} never came ({error}): {seen:?}"),
             }
         }
+    }
+    /// 지정한 지점이 모두 올 때까지 표지를 받는다. 받은 표지를 모두 돌려준다.
+    fn wait_all(&self, wanted: &[Point]) -> Vec<Point> {
+        let mut seen = Vec::new();
+        while !wanted.iter().all(|point| seen.contains(point)) {
+            match self.points.recv_timeout(Duration::from_secs(5)) {
+                Ok(next) => seen.push(next),
+                Err(error) => panic!("RELAY_PROBE_SETUP {wanted:?} never came ({error}): {seen:?}"),
+            }
+        }
+        seen
     }
     fn release(&self) {
         let _ = self.release.send(());
@@ -748,4 +767,330 @@ fn dropping_a_relay_ends_reads_blocked_after_the_upgrade() {
     dropper.join().unwrap();
     assert_peer_closed(&mut tui, "TUI after drop");
     assert_peer_closed(&mut peer, "backend after drop");
+}
+
+const RELAY_TOKEN: &str = "relay-token";
+
+/// `connection()`을 직접 돌리는 연결 하나. 결과는 완료 채널로 받는다.
+struct Running {
+    done: std::sync::mpsc::Receiver<io::Result<()>>,
+    thread: JoinHandle<()>,
+}
+impl Running {
+    /// 2s 안에 받은 연결 결과. 넘기면 상대를 닫아 회수한 뒤 실패한다.
+    fn finish(self, peers: &[&TcpStream]) -> io::Result<()> {
+        match self.done.recv_timeout(Duration::from_secs(2)) {
+            Ok(result) => {
+                self.thread.join().unwrap();
+                result
+            }
+            Err(_) => {
+                for peer in peers {
+                    let _ = peer.shutdown(std::net::Shutdown::Both);
+                }
+                match self.done.recv_timeout(Duration::from_secs(10)) {
+                    Ok(result) => {
+                        self.thread.join().unwrap();
+                        panic!("the connection did not end within 2s: {result:?}");
+                    }
+                    Err(error) => panic!("RELAY_PROBE_SETUP the connection never ended ({error})"),
+                }
+            }
+        }
+    }
+}
+
+/// TUI 상대를 붙이고 그 front 소켓으로 `connection()`을 띄운다. 레지스트리는 시험이 쥔다.
+fn run_connection(endpoint: Endpoint, sockets: &Arc<Sockets>) -> (Running, TcpStream) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let tui = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    tui.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let front = listener.accept().unwrap().0;
+    let sockets = sockets.clone();
+    let (finished, done) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let result = connection(
+            Stream::Tcp(front),
+            &endpoint,
+            RELAY_TOKEN,
+            (&ResumeSettings::default(), Arc::new(AtomicBool::new(false))),
+            Arc::new(|_| panic!("must not bind")),
+            &sockets,
+        );
+        let _ = finished.send(result);
+    });
+    (Running { done, thread }, tui)
+}
+
+/// 업그레이드까지 간 연결. TUI 상대, TUI의 WebSocket, 백엔드 상대를 돌려준다.
+fn upgraded(sockets: &Arc<Sockets>) -> (Running, TcpStream, WsConn<TcpStream>, TcpStream) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (accepted_tx, accepted) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Ok((mut socket, _)) = listener.accept() {
+            test_server::accept_handshake(&mut socket);
+            let _ = accepted_tx.send(socket);
+        }
+    });
+    let (running, tui) = run_connection(
+        Endpoint::Ws {
+            port,
+            token: "backend".into(),
+        },
+        sockets,
+    );
+    let ws = WsConn::handshake(tui.try_clone().unwrap(), "localhost", Some(RELAY_TOKEN)).unwrap();
+    let backend = accepted
+        .recv_timeout(Duration::from_secs(5))
+        .expect("RELAY_PROBE_SETUP the backend never finished the handshake");
+    (running, tui, ws, backend)
+}
+
+fn reports(points: &[Point]) -> Vec<(&'static str, bool, bool)> {
+    points
+        .iter()
+        .filter_map(|point| match point {
+            Point::Reported {
+                direction,
+                closing,
+                warn,
+            } => Some((*direction, *closing, *warn)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn failures(points: &[Point]) -> Vec<(Site, Source)> {
+    points
+        .iter()
+        .filter_map(|point| match point {
+            Point::Failed { site, source, .. } => Some((*site, *source)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_relay_closing(result: io::Result<()>, seen: &[Point]) {
+    assert_eq!(
+        result.err().map(|error| error.to_string()).as_deref(),
+        Some("relay closing"),
+        "{seen:?}"
+    );
+    assert!(!reports(seen).iter().any(|(_, _, warn)| *warn), "{seen:?}");
+}
+
+/// 두 전송 루프가 닫힌 소켓을 읽고 relay closing으로 끝났는지 본다.
+fn assert_both_reads_closed(seen: &[Point]) {
+    let mut failed = failures(seen);
+    failed.sort_by_key(|(site, _)| format!("{site:?}"));
+    assert_eq!(
+        failed,
+        vec![
+            (Site::Read(Direction::Down), Source::SocketIo),
+            (Site::Read(Direction::Up), Source::SocketIo),
+        ],
+        "{seen:?}"
+    );
+    let mut reported = reports(seen);
+    reported.sort();
+    assert_eq!(
+        reported,
+        vec![
+            ("TUI to server", true, false),
+            ("server to TUI", true, false)
+        ],
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn a_timeout_set_on_a_socket_closed_by_the_relay_ends_as_relay_closing() {
+    let unused = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let (sockets, gate) = gated_sockets(&[Point::AfterTrack(Side::Front)]);
+    let sockets = Arc::new(sockets);
+    let (running, tui) = run_connection(
+        Endpoint::Ws {
+            port: unused.local_addr().unwrap().port(),
+            token: "unused".into(),
+        },
+        &sockets,
+    );
+    let mut seen = gate.wait_for(&Point::AfterTrack(Side::Front));
+    close_streams(&sockets);
+    gate.release();
+    let result = running.finish(&[&tui]);
+    seen.extend(gate.rest());
+    assert_relay_closing(result, &seen);
+    // 전송 루프 전에 끝나므로 보고가 없다.
+    assert!(reports(&seen).is_empty(), "{seen:?}");
+    // macOS는 닫힌 소켓의 기한 설정이 EINVAL이고, 기한 설정이 되는 OS는 다음 header 읽기가 EOF다.
+    let failed = failures(&seen);
+    assert!(
+        failed == [(Site::FrontTimeout, Source::Timeout)]
+            || failed == [(Site::FrontHeader, Source::SocketIo)],
+        "{seen:?}"
+    );
+}
+
+/// 업그레이드 뒤 한쪽 기한을 풀기 직전에 relay를 닫는다.
+fn clear_deadline_after_close(side: Side, hold: &'static [Point], site: Site) {
+    let (sockets, gate) = gated_sockets(hold);
+    let sockets = Arc::new(sockets);
+    let (running, tui, ws, backend) = upgraded(&sockets);
+    drop(ws);
+    let mut seen = gate.wait_for(&Point::BeforeUnlimit(side));
+    close_streams(&sockets);
+    gate.release();
+    let result = running.finish(&[&tui, &backend]);
+    seen.extend(gate.rest());
+    assert_relay_closing(result, &seen);
+    if failures(&seen).first() == Some(&(site, Source::Timeout)) {
+        // macOS: 기한 해제가 EINVAL로 실패해 전송 루프 전에 끝난다.
+        assert_eq!(failures(&seen).len(), 1, "{seen:?}");
+        assert!(reports(&seen).is_empty(), "{seen:?}");
+    } else {
+        // 기한 해제가 되는 OS: 두 전송 루프가 닫힌 소켓을 읽고 끝난다.
+        assert_both_reads_closed(&seen);
+    }
+}
+
+#[test]
+fn clearing_the_front_deadline_after_the_relay_closed_ends_as_relay_closing() {
+    clear_deadline_after_close(
+        Side::Front,
+        &[Point::BeforeUnlimit(Side::Front)],
+        Site::FrontUnlimit,
+    );
+}
+
+#[test]
+fn clearing_the_backend_deadline_after_the_relay_closed_ends_as_relay_closing() {
+    clear_deadline_after_close(
+        Side::Backend,
+        &[Point::BeforeUnlimit(Side::Backend)],
+        Site::BackendUnlimit,
+    );
+}
+
+#[test]
+fn transfers_cut_by_relay_closing_end_without_a_warning() {
+    let (sockets, gate) = gated_sockets(&[]);
+    let sockets = Arc::new(sockets);
+    let (running, tui, ws, backend) = upgraded(&sockets);
+    drop(ws);
+    let mut seen = gate.wait_all(&[
+        Point::BeforeRead(Direction::Up),
+        Point::BeforeRead(Direction::Down),
+    ]);
+    std::thread::sleep(Duration::from_millis(50));
+    close_streams(&sockets);
+    let result = running.finish(&[&tui, &backend]);
+    seen.extend(gate.rest());
+    assert_relay_closing(result, &seen);
+    assert_both_reads_closed(&seen);
+}
+
+#[test]
+fn an_upstream_write_cut_by_relay_closing_ends_without_a_warning() {
+    let (sockets, gate) = gated_sockets(&[Point::BeforeWrite(Direction::Up)]);
+    let sockets = Arc::new(sockets);
+    let (running, tui, mut ws, backend) = upgraded(&sockets);
+    ws.send_text(r#"{"id":1,"method":"noop"}"#).unwrap();
+    let mut seen = gate.wait_for(&Point::BeforeWrite(Direction::Up));
+    close_streams(&sockets);
+    gate.release();
+    let result = running.finish(&[&tui, &backend]);
+    drop(ws);
+    seen.extend(gate.rest());
+    assert_relay_closing(result, &seen);
+    assert!(
+        failures(&seen).contains(&(Site::Write(Direction::Up), Source::SocketIo)),
+        "{seen:?}"
+    );
+    assert!(
+        reports(&seen).contains(&("TUI to server", true, false)),
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn a_downstream_write_cut_by_relay_closing_ends_without_a_warning() {
+    let (sockets, gate) = gated_sockets(&[Point::BeforeWrite(Direction::Down)]);
+    let sockets = Arc::new(sockets);
+    let (running, tui, ws, mut backend) = upgraded(&sockets);
+    drop(ws);
+    test_server::write_text(&mut backend, r#"{"method":"noop"}"#);
+    let mut seen = gate.wait_for(&Point::BeforeWrite(Direction::Down));
+    close_streams(&sockets);
+    gate.release();
+    let result = running.finish(&[&tui, &backend]);
+    seen.extend(gate.rest());
+    assert_relay_closing(result, &seen);
+    assert!(
+        failures(&seen).contains(&(Site::Write(Direction::Down), Source::SocketIo)),
+        "{seen:?}"
+    );
+    assert!(
+        reports(&seen).contains(&("server to TUI", true, false)),
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn each_relay_connection_half_sets_only_its_own_fault_flag() {
+    let (stream, _peer) = socket_pair();
+    let stream = Stream::Tcp(stream);
+    let (reader_fault, writer_fault) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let (mut reader, mut writer) =
+        pair(&stream, true, reader_fault.clone(), writer_fault.clone()).unwrap();
+    stream.close();
+    let flags = || {
+        (
+            reader_fault.swap(false, Ordering::AcqRel),
+            writer_fault.swap(false, Ordering::AcqRel),
+        )
+    };
+    // reader 쪽 쓰기는 pong과 같은 `Duplex::write_all` 경로다.
+    assert!(reader.send_text("pong path").is_err());
+    assert_eq!(flags(), (true, false));
+    assert!(reader.recv_text().is_err());
+    assert_eq!(flags(), (true, false));
+    assert!(writer.send_text("forward").is_err());
+    assert_eq!(flags(), (false, true));
+}
+
+#[test]
+fn a_parse_error_while_closing_is_still_reported_as_itself() {
+    let (sockets, gate) = gated_sockets(&[]);
+    let sockets = Arc::new(sockets);
+    let (running, tui, mut ws, backend) = upgraded(&sockets);
+    let mut seen = gate.wait_all(&[
+        Point::BeforeRead(Direction::Up),
+        Point::BeforeRead(Direction::Down),
+    ]);
+    // 표지만 세우고 소켓은 닫지 않는다.
+    sockets.state.lock().unwrap().closing = true;
+    ws.send_text("not json").unwrap();
+    let result = running.finish(&[&tui, &backend]);
+    drop(ws);
+    seen.extend(gate.rest());
+    let error = result.expect_err("a parse error must end the connection");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{seen:?}");
+    assert!(
+        error.to_string().starts_with("invalid relay JSON at line "),
+        "{error} {seen:?}"
+    );
+    let reported = reports(&seen);
+    assert!(
+        reported.contains(&("TUI to server", false, true)),
+        "{seen:?}"
+    );
+    assert!(
+        reported.contains(&("server to TUI", true, false)),
+        "{seen:?}"
+    );
 }
