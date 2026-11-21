@@ -477,7 +477,20 @@ pub(crate) const RETENTION: std::time::Duration = std::time::Duration::from_secs
 /// 색인에 남은 이벤트는 지우지 않는다.
 fn claim_points_at_an_event(root: &Path, claim: &Path) -> bool {
     match store::read_text(claim) {
-        Ok(Some(id)) => matches!(read_event(root, id.trim()), Ok(Some(_))),
+        Ok(Some(id)) => match read_event(root, id.trim()) {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            // 이벤트 본문을 읽지 못하면 없는 것과 구분할 수 없다. 남은 미송신 이벤트의 중복 판정
+            // 근거일 수 있으므로 이번에는 지우지 않고 다음 시작 때 다시 본다.
+            Err(e) => {
+                tracing::warn!(
+                    "codex ledger: prune claim {} deferred: event {}: {e}",
+                    claim.display(),
+                    id.trim()
+                );
+                true
+            }
+        },
         // 읽지 못하면 지우지 않는다.
         Ok(None) => false,
         Err(_) => true,
@@ -1101,6 +1114,45 @@ mod tests {
         assert!(
             read_event(root, &done.event_id).unwrap().is_none(),
             "끝난 것은 지운다"
+        );
+    }
+
+    /// claim이 가리키는 이벤트 본문을 읽다 NotFound가 아닌 오류가 나면 이벤트가 없는 것으로 보지 않고
+    /// 그 claim을 남긴다. 이벤트 본문 자리에 일반 파일 대신 폴더를 두면 읽기가 Unix는 EISDIR,
+    /// Windows는 ERROR_ACCESS_DENIED(os error 5)로 실패한다. 같은 prune에서 지운 이벤트를 가리키는
+    /// 오래된 claim은 지운다. 폴더를 치우면 그 claim도 다음 prune에서 지운다.
+    #[test]
+    fn prune_keeps_a_claim_whose_event_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let r = receiver(root, THREAD);
+        let (unreadable, _) = capture(root, &r, completion("k:1", None)).unwrap();
+        let (gone, _) = capture(root, &r, completion("k:2", None)).unwrap();
+        remove_pending(root, &unreadable).unwrap();
+        remove_pending(root, &gone).unwrap();
+        let body = event_file(root, &unreadable.event_id);
+        std::fs::remove_file(&body).unwrap();
+        std::fs::create_dir(&body).unwrap();
+        let err = read_event(root, &unreadable.event_id).unwrap_err();
+        assert_ne!(err.kind(), std::io::ErrorKind::NotFound, "{err}");
+        let later = std::time::SystemTime::now() + RETENTION + std::time::Duration::from_secs(60);
+
+        prune(root, later);
+        assert!(
+            claim_path(root, &r, "k:1").exists(),
+            "본문을 읽지 못한 이벤트의 claim은 남는다"
+        );
+        assert!(read_event(root, &gone.event_id).unwrap().is_none());
+        assert!(
+            !claim_path(root, &r, "k:2").exists(),
+            "지운 이벤트의 오래된 claim은 지운다"
+        );
+
+        std::fs::remove_dir(&body).unwrap();
+        prune(root, later);
+        assert!(
+            !claim_path(root, &r, "k:1").exists(),
+            "이벤트가 없으면 지운다"
         );
     }
 
