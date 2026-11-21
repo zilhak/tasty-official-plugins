@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.markdown"
 name = "Markdown Viewer"
-version = "0.2.4"
+version = "0.2.5"
 description = "Markdown viewer surface (webview)"
 api_version = "1"
 # WebView에는 set_context가 오지 않으므로 테마·단축키 변경 이벤트로 문서를 다시 만든다.
