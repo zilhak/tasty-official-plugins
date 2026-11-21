@@ -391,7 +391,8 @@ would leave that range unchecked.
   every plugin with an archive for a bump, once per release: the notice set (`LICENSE`,
   `THIRD_PARTY_LICENSES.md`, every file in `LICENSES/`), `.gitattributes`, and the
   packaging code (`scripts/package-plugin.sh`, `scripts/lib/notice-set.sh`,
-  `scripts/lib/plugin-build.sh`, `scripts/check.sh`, and the `package` job of
+  `scripts/lib/plugin-build.sh`, `scripts/lib/archive-modes.sh`, `scripts/check.sh`, and
+  the `package` job of
   `release.yml` with the top-level `env` and `defaults` it inherits). A file directly in
   `crates/`, outside every crate (`crates/.gitattributes`), counts the same way, because
   it decides how the files of every crate check out.
@@ -418,7 +419,8 @@ would leave that range unchecked.
   a rule of the version check.
 - On every run, not only when they change, these are undecidable:
   - a `source` or `.` in a listed script or shell region file (`check.sh`,
-    `package-plugin.sh`, `notice-set.sh`, `plugin-build.sh`) of a file the list does not
+    `package-plugin.sh`, `notice-set.sh`, `plugin-build.sh`, `archive-modes.sh`) of a file
+    the list does not
     name, or of a path that is not written out (a variable or a command substitution;
     none is in use now). A command position is the start of a line (also of a line inside
     `$( )`, `<( )`, `>( )`, or a backtick substitution, but not inside arithmetic), a
@@ -552,7 +554,8 @@ order:
    crate with an `assets/NOTICE.md` also gets it as `NOTICE.md`; now that is the markdown
    plugin. Windows targets also get the PDB that the MSVC linker writes next to the
    executable, under the name the executable records. `<id>` is the manifest `id`, for
-   example `com.tasty.claude`.
+   example `com.tasty.claude`. Then the staged folder gets mode 755 for its folders and
+   executable and 644 for every other file, whatever the source modes and the umask are.
 2. `pack`: one `<id>-<version>-<platform>.tar.gz` per plugin. `<version>` is the
    manifest `version`.
 3. `pack` then writes `SHA256SUMS-<platform>.txt` (the `sha256sum` format) and
@@ -563,6 +566,22 @@ The packages are not signed. `pack` fails if the stage holds a `.sig` file or if
 archive contains one. It also fails if an archive lacks a file of the notice set, or the
 `NOTICE.md` of a crate that has one, or if a `windows-*` archive does not hold exactly one
 PDB next to the executable, or another archive holds one.
+
+`pack` also checks the mode and kind of every archive entry, as read by `LC_ALL=C tar -tzf`
+and `tar -tvzf` line by line:
+
+| Entry | Mode |
+|---|---|
+| A folder (`<id>/`, `lang/`, `LICENSES/`) | `drwxr-xr-x` |
+| `<id>/<command>`, the `[entry]` command of the manifest, with `.exe` on `windows-*` | `-rwxr-xr-x` |
+| Every other file (manifest, `lang/`, notice set, `NOTICE.md`, PDB) | `-rw-r--r--` |
+
+A link or another kind of entry fails, and so does an archive without the entry command.
+`tar -tvzf` shows a hard link with `link to` after its name, which also fails. On Windows,
+Git Bash makes the modes up from the file names and contents and takes the umask off them,
+and `chmod` does not change them, so `pack` writes the archives under umask 022 and logs
+the tar version and the caller's umask once. The functions are in
+`scripts/lib/archive-modes.sh`, and `repo-gates` tests them.
 
 The script finds each executable through the `executable` field of cargo's
 `compiler-artifact` messages, and the PDB through the `.pdb` entry of the same message's

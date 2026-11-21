@@ -36,6 +36,7 @@ blob	.gitattributes
 script	scripts/package-plugin.sh
 script	scripts/lib/notice-set.sh
 script	scripts/lib/plugin-build.sh
+script	scripts/lib/archive-modes.sh
 script	scripts/check.sh
 region	.github/workflows/release.yml	top	^env:[[:space:]]*$
 region	.github/workflows/release.yml	top	^defaults:[[:space:]]*$

@@ -17,13 +17,17 @@
 #         *-windows-msvc target it also copies the PDB the linker wrote next to the
 #         executable, under the name the executable records, and fails if cargo
 #         lists none. Plugins whose manifest says `bundle = false` are skipped unless
-#         --all is given, as in tasty's own packaging scripts.
+#         --all is given, as in tasty's own packaging scripts. Each staged folder then
+#         gets mode 755 for its folders and executable and 644 for every other file.
 # pack    Writes DIR/NAME/dist/<id>-<version>-NAME.tar.gz for each staged plugin,
 #         then DIR/NAME/dist/SHA256SUMS-NAME.txt (sha256sum format) and
 #         DIR/NAME/dist/plugins-NAME.tsv (id, version, platform, file, sha256).
 #         Fails if the stage or an archive contains a .sig file, or if an archive
 #         lacks a file of the notice set or the NOTICE.md of its crate. A windows-*
 #         archive must hold exactly one <id>/*.pdb; any other archive must hold none.
+#         tar runs under umask 022. Every entry must be a folder with mode 755, the
+#         [entry] command of the manifest (with .exe on windows-*) with 755, or a
+#         file with 644; a link or another kind of entry fails.
 #
 # NAME is a platform label such as linux-x64 or windows-arm64. The executable path
 # comes from cargo's compiler-artifact messages and the manifest and lang/ from
@@ -41,7 +45,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
@@ -51,6 +55,9 @@ usage() {
 # notice_set_files, stage_notice, listing_has, verify_notice_listing, and NOTICE_ASSET.
 # shellcheck source=scripts/lib/notice-set.sh
 . scripts/lib/notice-set.sh
+# entry_command, normalize_stage_modes, and verify_archive_modes.
+# shellcheck source=scripts/lib/archive-modes.sh
+. scripts/lib/archive-modes.sh
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -147,6 +154,8 @@ cmd_stage() {
     if [[ -d "$src/lang" ]]; then
       cp -R "$src/lang" "$STAGE_DIR/$id/lang"
     fi
+    normalize_stage_modes "$STAGE_DIR/$id" "$(basename "$exe")" ||
+      die "cannot set the file modes of $id"
     echo "staged $id ($crate)" >&2
     count=$((count + 1))
   done <<<"$bins"
@@ -181,18 +190,32 @@ cmd_pack() {
   printf 'id\tversion\tplatform\tfile\tsha256\n' >"$index"
   : >"$sums"
 
-  local dir id version file hash list pdbs
+  # The modes Git Bash reports on Windows are made up and lose the bits of the umask,
+  # so the archives are written under umask 022. Logged to tell runners apart.
+  local tar_version
+  tar_version=$(tar --version | sed -n 1p)
+  echo "tar: $tar_version; caller umask $(umask); archive umask 0022" >&2
+
+  local dir id version exe file hash list pdbs rc
   for dir in "$STAGE_DIR"/*/; do
     id=$(basename "$dir")
     version=$(manifest_string version "$dir/tasty-plugin.toml")
+    exe=$(entry_command "$dir/tasty-plugin.toml") || die "cannot read the [entry] command of $id"
+    [[ "$PLATFORM" == windows-* ]] && exe="$exe.exe"
     file="$id-$version-$PLATFORM.tar.gz"
-    tar -czf "$DIST_DIR/$file" -C "$STAGE_DIR" "$id"
+    (umask 022 && tar -czf "$DIST_DIR/$file" -C "$STAGE_DIR" "$id")
     # Read first, then grep: with pipefail, grep -q ending early can make the
-    # pipeline fail through SIGPIPE and hide a match.
-    list=$(tar -tzf "$DIST_DIR/$file")
+    # pipeline fail through SIGPIPE and hide a match. The exit status is checked
+    # here, so a partial list is never used.
+    if list=$(LC_ALL=C tar -tzf "$DIST_DIR/$file"); then :; else
+      rc=$?
+      die "$file: tar -tzf failed (exit $rc)"
+    fi
     if grep -q '\.sig$' <<<"$list"; then
       die "$file contains a .sig file; packages are not signed"
     fi
+    verify_archive_modes "$DIST_DIR/$file" "$list" "$id" "$exe" "$file" ||
+      die "$file has entries with the wrong mode or kind"
     verify_notice_listing "$list" "$id/" "$file" || die "$file lacks the notice set"
     if crate_has_notice "$id" && ! listing_has "$list" "$id/NOTICE.md"; then
       die "$id/NOTICE.md not in $file"
