@@ -663,3 +663,89 @@ fn a_connection_that_reaches_track_after_drop_started_is_closed_at_once() {
     assert!(rest.contains(&Point::TrackRefused), "{rest:?}");
     assert!(!rest.contains(&Point::AfterTrack(Side::Front)), "{rest:?}");
 }
+
+#[test]
+fn dropping_a_relay_ends_reads_blocked_after_the_upgrade() {
+    use std::time::Instant;
+    let backend = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let backend_port = backend.local_addr().unwrap().port();
+    let (accepted_tx, accepted) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = backend.accept().unwrap();
+        test_server::accept_handshake(&mut socket);
+        let _ = accepted_tx.send(socket);
+    });
+    let (sockets, gate) = gated_sockets(&[]);
+    let relay = Relay::start_with(
+        Endpoint::Ws {
+            port: backend_port,
+            token: "backend".into(),
+        },
+        ResumeSettings::default(),
+        Arc::new(|_| panic!("must not bind")),
+        sockets,
+    )
+    .unwrap();
+    let port: u16 = relay.url.rsplit(':').next().unwrap().parse().unwrap();
+    let mut tui = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    // WsConn이 쥔 복제가 남으면 원본을 닫아도 FIN이 나가지 않으므로 handshake 뒤 바로 놓는다.
+    drop(WsConn::handshake(tui.try_clone().unwrap(), "localhost", Some(&relay.token)).unwrap());
+    let mut peer = accepted
+        .recv_timeout(Duration::from_secs(5))
+        .expect("RELAY_PROBE_SETUP the backend never finished the handshake");
+    server.join().unwrap();
+    let mut entered = Vec::new();
+    while !(entered.contains(&Point::BeforeRead(Direction::Up))
+        && entered.contains(&Point::BeforeRead(Direction::Down)))
+    {
+        match gate.points.recv_timeout(Duration::from_secs(5)) {
+            Ok(point) => entered.push(point),
+            Err(error) => {
+                panic!("RELAY_PROBE_SETUP both reads never started ({error}): {entered:?}")
+            }
+        }
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let (time_tx, times) = std::sync::mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        let _ = time_tx.send(Instant::now());
+        drop(relay);
+        let _ = time_tx.send(Instant::now());
+    });
+    let started = times
+        .recv_timeout(Duration::from_secs(5))
+        .expect("RELAY_PROBE_SETUP the drop thread never started");
+    let limit = Duration::from_secs(2);
+    let deadline = started + limit;
+    let waited = times.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    match waited {
+        Ok(ended) => {
+            let took = ended - started;
+            if took > limit {
+                dropper.join().unwrap();
+                panic!("RELAY_DROP_EXCEEDED 2s: drop took {took:?}");
+            }
+        }
+        Err(_) => {
+            // 상한까지 돌아오지 않았다. 상대를 닫아 relay의 읽기를 풀고 끝 시각을 한 번 더 받는다.
+            let _ = tui.shutdown(std::net::Shutdown::Both);
+            let _ = peer.shutdown(std::net::Shutdown::Both);
+            drop(tui);
+            drop(peer);
+            match times.recv_timeout(Duration::from_secs(10)) {
+                Ok(ended) => {
+                    dropper.join().unwrap();
+                    let took = ended - started;
+                    if took > limit {
+                        panic!("RELAY_DROP_EXCEEDED 2s: drop took {took:?}");
+                    }
+                    panic!("RELAY_PROBE_SETUP late signal, drop within limit ({took:?})");
+                }
+                Err(error) => panic!("RELAY_PROBE_SETUP drop never returned ({error})"),
+            }
+        }
+    }
+    dropper.join().unwrap();
+    assert_peer_closed(&mut tui, "TUI after drop");
+    assert_peer_closed(&mut peer, "backend after drop");
+}

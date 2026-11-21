@@ -15,7 +15,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
@@ -70,9 +70,10 @@ impl Stream {
     }
     fn close(&self) {
         let result = match self {
-            Self::Tcp(s) => s.shutdown(Shutdown::Both),
+            // Windows에서는 shutdown만으로 다른 복제의 막힌 읽기가 깨어나지 않는다.
+            Self::Tcp(s) => tasty_utils::socket_wake::shutdown_both_and_wake(s),
             #[cfg(unix)]
-            Self::Unix(s) => s.shutdown(Shutdown::Both),
+            Self::Unix(s) => s.shutdown(std::net::Shutdown::Both),
         };
         if let Err(error) = result {
             tracing::debug!("codex relay close: {error}");
@@ -324,9 +325,15 @@ impl Sockets {
     /// 시험이 연결의 진행 지점을 보고 순서를 정한다. 레지스트리 락을 쥔 채 부르지 않는다.
     #[cfg(test)]
     fn mark(&self, point: Point) {
-        if let Some(probe) = &self.probe {
-            probe(point);
-        }
+        mark(&self.probe, point);
+    }
+}
+
+/// 연결 스레드가 레지스트리 없이 표지를 남길 때 쓴다.
+#[cfg(test)]
+fn mark(probe: &Option<Probe>, point: Point) {
+    if let Some(probe) = probe {
+        probe(point);
     }
 }
 
@@ -339,11 +346,21 @@ enum Side {
     Backend,
 }
 #[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    /// TUI에서 서버로.
+    Up,
+    /// 서버에서 TUI로.
+    Down,
+}
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 enum Point {
     BeforeTrack(Side),
     AfterTrack(Side),
     TrackRefused,
+    /// 전송 루프가 `recv_text`에 들어가기 직전.
+    BeforeRead(Direction),
 }
 
 /// 종료 표지를 세우고 열린 연결을 모두 닫는다. 두 번 불려도 된다.
@@ -541,9 +558,13 @@ fn connection(
     let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
     let (requests, overrides) = (pending.clone(), settings.clone());
     let close = backend.clone_stream()?;
+    #[cfg(test)]
+    let probe = sockets.probe.clone();
     let upstream = std::thread::spawn(move || {
         let result = (|| -> io::Result<()> {
             loop {
+                #[cfg(test)]
+                mark(&probe, Point::BeforeRead(Direction::Up));
                 let text = from_tui.recv_text()?;
                 let rewritten = message::request(&text, &overrides, &chosen, &requests)?;
                 to_server.send_text(rewritten.as_deref().unwrap_or(&text))?;
@@ -555,6 +576,8 @@ fn connection(
     });
     let result = (|| -> io::Result<()> {
         loop {
+            #[cfg(test)]
+            sockets.mark(Point::BeforeRead(Direction::Down));
             let text = from_server.recv_text()?;
             let rewritten = message::reply(&text, &pending, &bind)?;
             to_tui.send_text(rewritten.as_deref().unwrap_or(&text))?;
