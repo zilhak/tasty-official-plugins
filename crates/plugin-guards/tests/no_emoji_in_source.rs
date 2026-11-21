@@ -75,11 +75,15 @@ fn kind_of(rel: &str) -> Option<Kind> {
 /// Each collected file as (shown path, path to open, kind). The shown path uses `/` and
 /// is only for sorting and reports; the file is read through the path the walk found.
 fn gather(path: &Path, root: &Path, out: &mut Vec<(String, PathBuf, Kind)>) {
-    // Path::is_dir follows links, so a linked folder is walked like any other.
+    // Path::is_dir and Path::is_file follow links, so a linked folder is walked and a
+    // linked file is read like any other. An entry that is neither, such as the end of a
+    // link loop that no longer resolves, is left out.
     if !path.is_dir() {
-        let rel = rel_of(path, root);
-        if let Some(kind) = kind_of(&rel) {
-            out.push((rel, path.to_path_buf(), kind));
+        if path.is_file() {
+            let rel = rel_of(path, root);
+            if let Some(kind) = kind_of(&rel) {
+                out.push((rel, path.to_path_buf(), kind));
+            }
         }
         return;
     }
@@ -289,4 +293,24 @@ fn a_file_is_read_through_the_path_the_walk_found() {
         found,
         ["  crates/tasty-plugin-x/src/name/with.rs:1 U+1F600"]
     );
+}
+
+/// A link that loops back to its own folder ends the walk where it no longer resolves,
+/// and that last name is not read as a file.
+#[cfg(unix)]
+#[test]
+fn a_link_loop_ends_the_walk_without_reading_its_last_name() {
+    let dir = tasty_doc_guards::temp_scratch::Scratch::new("no-emoji-loop");
+    let root = dir.path();
+    let crate_dir = root.join("crates/tasty-plugin-x");
+    std::fs::create_dir_all(crate_dir.join("src")).expect("mkdir");
+    std::fs::write(crate_dir.join("build.rs"), "// \u{1F600}\n").expect("write");
+    std::os::unix::fs::symlink(".", crate_dir.join("src/back.rs")).expect("symlink");
+
+    let (rust, _) = scan_files(root);
+    let mut found = Vec::new();
+    for (rel, text) in &rust {
+        found.extend(violations(rel, text));
+    }
+    assert_eq!(found, ["  crates/tasty-plugin-x/build.rs:1 U+1F600"]);
 }
