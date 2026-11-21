@@ -67,7 +67,7 @@ fn check_text(
         Some(_) => {}
     }
     for (code, catalog) in catalogs {
-        if !catalog.get(key).is_some_and(|s| !s.trim().is_empty()) {
+        if catalog.get(key).is_none_or(|s| s.trim().is_empty()) {
             out.push(format!("  {id} {field} ({key}): blank in {code}"));
         }
     }
