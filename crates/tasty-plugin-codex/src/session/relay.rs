@@ -110,6 +110,9 @@ struct Duplex {
     /// 이 `Duplex`를 쓰는 전송 방향의 소켓 실패 표지. 소켓 읽기·쓰기가 실패하면 선다.
     /// WebSocket 프레임 판정 오류와 소켓 오류를 가르는 데 쓴다.
     fault: Arc<AtomicBool>,
+    /// 시험 표지: 레지스트리, 이 소켓의 쪽, 이 `Duplex`를 쓰는 전송 방향.
+    #[cfg(test)]
+    tap: (Arc<Sockets>, Side, Direction),
 }
 impl Read for Duplex {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
@@ -138,6 +141,11 @@ impl Write for Duplex {
         result
     }
     fn write_all(&mut self, b: &[u8]) -> io::Result<()> {
+        #[cfg(test)]
+        self.tap.0.mark(Point::BeforeSocketWrite {
+            side: self.tap.1,
+            direction: self.tap.2,
+        });
         let result = self
             .write
             .lock()
@@ -153,12 +161,21 @@ impl Write for Duplex {
     }
 }
 /// 한 소켓의 reader 쪽과 writer 쪽 연결. 표지는 각 쪽을 쓰는 전송 방향의 것이다.
+/// `server`면 TUI 쪽 소켓이다. 그 reader는 upstream이, writer는 downstream이 쓴다.
 fn pair(
     s: &Stream,
     server: bool,
-    reader_fault: Arc<AtomicBool>,
-    writer_fault: Arc<AtomicBool>,
+    (reader_fault, writer_fault): (Arc<AtomicBool>, Arc<AtomicBool>),
+    sockets: &Arc<Sockets>,
 ) -> io::Result<(WsConn<Duplex>, WsConn<Duplex>)> {
+    #[cfg(test)]
+    let (side, reader, writer) = if server {
+        (Side::Front, Direction::Up, Direction::Down)
+    } else {
+        (Side::Backend, Direction::Down, Direction::Up)
+    };
+    #[cfg(not(test))]
+    let _ = sockets;
     let write = Arc::new(Mutex::new(s.clone_stream()?));
     Ok((
         WsConn::established(
@@ -166,6 +183,8 @@ fn pair(
                 read: s.clone_stream()?,
                 write: write.clone(),
                 fault: reader_fault,
+                #[cfg(test)]
+                tap: (sockets.clone(), side, reader),
             },
             server,
         ),
@@ -174,6 +193,8 @@ fn pair(
                 read: s.clone_stream()?,
                 write,
                 fault: writer_fault,
+                #[cfg(test)]
+                tap: (sockets.clone(), side, writer),
             },
             server,
         ),
@@ -289,6 +310,30 @@ impl Ended {
             Self::Closing(_) => 1,
             Self::Closed(_) => 0,
         }
+    }
+    /// 다른 방향이 끝난 뒤 따라 나올 수 있는 원 오류인지. 끊긴 쓰기(`BrokenPipe`)와 OS 코드
+    /// 없는 EOF다. 분류 등급은 바꾸지 않고, 두 방향이 모두 `Failed`일 때 합치는 순서에만 쓴다.
+    fn follows_other_end(&self) -> bool {
+        match self {
+            Self::Failed(error) => {
+                error.kind() == io::ErrorKind::BrokenPipe
+                    || (error.kind() == io::ErrorKind::UnexpectedEof
+                        && error.raw_os_error().is_none())
+            }
+            Self::Closing(_) | Self::Closed(_) => false,
+        }
+    }
+    /// 두 방향의 끝을 합친다. 큰 순서는 `rank`다. 둘 다 `Failed`이면 따라 나올 수 있는 결과가
+    /// 그 밖의 원 오류에 양보한다. 그래도 같으면 downstream이 앞선다.
+    fn join(upstream: Self, downstream: Self) -> Self {
+        let up_first = match upstream.rank().cmp(&downstream.rank()) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => {
+                downstream.follows_other_end() && !upstream.follows_other_end()
+            }
+        };
+        if up_first { upstream } else { downstream }
     }
 }
 
@@ -544,6 +589,14 @@ enum Point {
     },
     /// `classify`가 종료 표지를 읽기 직전. 시험이 여기서 분류를 미룬다.
     Classify(Site),
+    /// 끝난 방향이 `closed`를 세우고 상대 방향 소켓을 닫은 직후.
+    AfterSelfClose(Direction),
+    /// `Duplex`가 프레임 하나를 소켓에 쓰기 직전. `direction`은 그 `Duplex`를 쓰는 방향이라
+    /// 백엔드 소켓의 downstream 쓰기는 ping에 답하는 pong뿐이다.
+    BeforeSocketWrite {
+        side: Side,
+        direction: Direction,
+    },
     /// 분류 직전의 실패 자리와 원 오류.
     Failed {
         site: Site,
@@ -786,10 +839,11 @@ fn connection(
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         );
-        let (mut from_tui, mut to_tui) =
-            pair(&front, true, up.clone(), down.clone()).at(Site::Pair, Source::Other)?;
+        let (mut from_tui, mut to_tui) = pair(&front, true, (up.clone(), down.clone()), sockets)
+            .at(Site::Pair, Source::Other)?;
         let (mut from_server, mut to_server) =
-            pair(&backend, false, down.clone(), up.clone()).at(Site::Pair, Source::Other)?;
+            pair(&backend, false, (down.clone(), up.clone()), sockets)
+                .at(Site::Pair, Source::Other)?;
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let (requests, overrides) = (pending.clone(), settings.clone());
         let close = backend
@@ -819,6 +873,8 @@ fn connection(
             report_transfer_error("TUI to server", &ended, &registry);
             shut.store(true, Ordering::Release);
             close.close();
+            #[cfg(test)]
+            registry.mark(Point::AfterSelfClose(Direction::Up));
             ended
         });
         let result = (|| -> Result<Infallible, Failure> {
@@ -843,6 +899,8 @@ fn connection(
         closed.store(true, Ordering::Release);
         front.close();
         backend.close();
+        #[cfg(test)]
+        sockets.mark(Point::AfterSelfClose(Direction::Down));
         // Both directions report their original error before closing the peer reader. Do not lose
         // a normal thread return containing Err when joining the TUI-to-server worker.
         let upstream = upstream.join().map_err(|_| Failure {
@@ -850,13 +908,7 @@ fn connection(
             source: Source::Other,
             error: io::Error::other("codex relay upstream panicked"),
         })?;
-        // 원 오류를 relay closing보다, relay closing을 스스로 닫은 뒤의 끝보다 앞세운다.
-        // 같은 순서면 downstream 먼저.
-        Ok(if upstream.rank() > downstream.rank() {
-            upstream
-        } else {
-            downstream
-        })
+        Ok(Ended::join(upstream, downstream))
     })();
     let ended = match ended {
         Ok(ended) => ended,

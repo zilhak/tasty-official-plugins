@@ -1049,8 +1049,13 @@ fn each_relay_connection_half_sets_only_its_own_fault_flag() {
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
     );
-    let (mut reader, mut writer) =
-        pair(&stream, true, reader_fault.clone(), writer_fault.clone()).unwrap();
+    let (mut reader, mut writer) = pair(
+        &stream,
+        true,
+        (reader_fault.clone(), writer_fault.clone()),
+        &Arc::new(Sockets::new()),
+    )
+    .unwrap();
     stream.close();
     let flags = || {
         (
@@ -1162,7 +1167,7 @@ fn a_reset_classified_after_the_other_direction_closed_keeps_its_error() {
         closed: false,
         warn: false,
     }));
-    std::thread::sleep(Duration::from_millis(100));
+    seen.extend(gate.wait_for(&Point::AfterSelfClose(Direction::Up)));
     gate.release();
     let result = running.finish(Vec::new(), Vec::new());
     seen.extend(gate.rest());
@@ -1192,5 +1197,98 @@ fn a_reset_classified_after_the_other_direction_closed_keeps_its_error() {
         error.kind(),
         io::ErrorKind::ConnectionReset,
         "RELAY_RESET_LOST {error} {seen:?}"
+    );
+}
+
+/// 시험이 본 실패 가운데 그 자리의 원 OS 코드.
+fn failed_raw(points: &[Point], at: Site) -> Option<Option<i32>> {
+    points.iter().find_map(|point| match point {
+        Point::Failed {
+            site, raw_os_error, ..
+        } if *site == at => Some(*raw_os_error),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_pong_cut_by_the_relays_own_close_does_not_replace_the_first_error() {
+    let pong = Point::BeforeSocketWrite {
+        side: Side::Backend,
+        direction: Direction::Down,
+    };
+    let (sockets, gate) = gated_sockets(&[Point::BeforeSocketWrite {
+        side: Side::Backend,
+        direction: Direction::Down,
+    }]);
+    let sockets = Arc::new(sockets);
+    let (running, tui, mut ws, mut backend) = upgraded(&sockets);
+    // 백엔드가 ping을 보낸다. downstream은 ping을 다 읽고 pong을 쓰기 직전에 선다.
+    backend.write_all(&[0x89, 0x00]).unwrap();
+    let mut seen = gate.wait_for(&pong);
+    // 그 사이 upstream이 잘못된 JSON으로 끝나 보고하고, 표지를 세우고, 백엔드 소켓을 닫는다.
+    ws.send_text("not json").unwrap();
+    seen.extend(gate.wait_for(&Point::AfterSelfClose(Direction::Up)));
+    gate.release();
+    let result = running.finish(vec![tui, backend], vec![ws]);
+    seen.extend(gate.rest());
+    assert!(!sockets.state.lock().unwrap().closing, "{seen:?}");
+    let pong_raw = failed_raw(&seen, Site::Read(Direction::Down));
+    eprintln!("RELAY_PONG_FAILED raw={pong_raw:?}");
+    assert!(
+        failures(&seen).contains(&(Site::Read(Direction::Down), Source::SocketIo)),
+        "{seen:?}"
+    );
+    let reported = reports(&seen);
+    eprintln!("RELAY_REPORTED {reported:?}");
+    // 파싱 오류는 원래대로 warn, 끊긴 pong은 debug다.
+    assert!(
+        reported.contains(&("TUI to server", false, true)),
+        "{seen:?}"
+    );
+    assert!(
+        reported.contains(&("server to TUI", false, false)),
+        "{seen:?}"
+    );
+    let error = result.expect_err("a parse error must end the connection");
+    eprintln!("RELAY_PONG_RESULT kind={:?} {error}", error.kind());
+    assert_eq!(
+        error.kind(),
+        io::ErrorKind::InvalidData,
+        "RELAY_PONG_REPLACED_FIRST_ERROR {error} {seen:?}"
+    );
+}
+
+#[test]
+fn a_downstream_eof_classified_first_does_not_hide_an_upstream_error() {
+    let (sockets, gate) = gated_sockets(&[Point::Classify(Site::Message(Direction::Up))]);
+    let sockets = Arc::new(sockets);
+    let (running, tui, mut ws, backend) = upgraded(&sockets);
+    // upstream은 파싱 오류를 받고 분류 직전에 선다.
+    ws.send_text("not json").unwrap();
+    let mut seen = gate.wait_for(&Point::Classify(Site::Message(Direction::Up)));
+    // 백엔드가 정상으로 끝난다. downstream이 EOF로 먼저 끝나 보고하고 스스로 닫는다.
+    let _ = backend.shutdown(std::net::Shutdown::Both);
+    drop(backend);
+    seen.extend(gate.wait_for(&Point::AfterSelfClose(Direction::Down)));
+    gate.release();
+    let result = running.finish(vec![tui], vec![ws]);
+    seen.extend(gate.rest());
+    assert!(!sockets.state.lock().unwrap().closing, "{seen:?}");
+    let reported = reports(&seen);
+    eprintln!("RELAY_REPORTED {reported:?}");
+    assert!(
+        reported.contains(&("TUI to server", false, true)),
+        "{seen:?}"
+    );
+    assert!(
+        reported.contains(&("server to TUI", false, false)),
+        "{seen:?}"
+    );
+    let error = result.expect_err("a parse error must end the connection");
+    eprintln!("RELAY_JOIN_RESULT kind={:?} {error}", error.kind());
+    assert_eq!(
+        error.kind(),
+        io::ErrorKind::InvalidData,
+        "RELAY_EOF_HID_UPSTREAM_ERROR {error} {seen:?}"
     );
 }
