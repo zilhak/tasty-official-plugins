@@ -206,7 +206,9 @@ fn scan_plugin(
         return scan;
     }
     if bodies.is_empty() {
-        scan.no_body = true;
+        // A file with two definitions is reported by its path and count, not as a
+        // missing body.
+        scan.no_body = scan.doubled.is_empty();
         return scan;
     }
     for (prefix, host) in overlapping {
@@ -252,6 +254,12 @@ fn every_host_method_under_a_plugin_namespace_is_handled_by_that_plugin() {
     }
 
     assert!(
+        doubled.is_empty(),
+        "a file defines {DISPATCH_FN} more than once. The check reads one definition per \
+         file:\n{}",
+        doubled.join("\n")
+    );
+    assert!(
         no_body.is_empty(),
         "found no {DISPATCH_FN} body in {no_body:?} although they declare a namespace the \
          host uses. Check the SDK method name and the reader."
@@ -280,12 +288,6 @@ fn every_host_method_under_a_plugin_namespace_is_handled_by_that_plugin() {
         joined, expected,
         "the compared host methods differ from the record for tasty {PINNED_TASTY}. If the pin \
          moved, check the new METHOD_TABLE text and update COMPARED_AT_PIN with that source."
-    );
-    assert!(
-        doubled.is_empty(),
-        "a file defines {DISPATCH_FN} more than once. The check reads one definition per \
-         file:\n{}",
-        doubled.join("\n")
     );
     assert!(
         missing.is_empty(),
@@ -448,4 +450,26 @@ fn a_second_definition_is_refused_in_a_plugin_the_host_does_not_share() {
         ["  tasty-plugin-x/src/main.rs: 2 definitions of handle_ipc_method"]
     );
     assert!(scan.joined.is_empty() && !scan.no_body);
+}
+
+/// A plugin that shares a prefix with the host and has its only dispatch in a file with
+/// two definitions is reported by that file, not as a plugin without a body.
+#[test]
+fn a_second_definition_in_the_only_dispatch_file_names_that_file() {
+    let scratch = tasty_doc_guards::temp_scratch::Scratch::new("namespace-dispatch-plugin");
+    let root = scratch.path();
+    let dir = write_plugin(
+        root,
+        "ns",
+        &[("main.rs", TWO_DISPATCHES), ("util.rs", "fn x() {}\n")],
+    );
+    let scan = scan_plugin("tasty-plugin-x", &dir, root, &host_of(&["ns.a"]));
+    assert_eq!(
+        scan.doubled,
+        ["  tasty-plugin-x/src/main.rs: 2 definitions of handle_ipc_method"]
+    );
+    assert!(
+        !scan.no_body,
+        "the doubled file was reported as a missing body"
+    );
 }
