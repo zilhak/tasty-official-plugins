@@ -234,9 +234,11 @@ this crate and of `plugin-pin-check` only, so it never enters a plugin build.
 - `notice_set`: `LICENSES/` holds at least one license text, and `THIRD_PARTY_LICENSES.md`
   links every file in `LICENSES/` and no file that is missing there. `LICENSES/` holds
   files only; a subfolder or link there fails this check and `stage`.
-- `no_emoji_in_source`: no Rust file under `crates/` and no `tasty-plugin.toml` anywhere
-  in the repository holds a code point in U+1F000..=U+1FAFF. Icons come from the design
-  SVGs.
+- `no_emoji_in_source`: no file whose path ends in `.rs` under `crates/` and no
+  `tasty-plugin.toml` anywhere in the repository holds a code point in U+1F000..=U+1FAFF.
+  Icons come from the design SVGs. The check walks the tree itself and follows folder
+  links. It skips target, dist, and node_modules folders, git and worktree folders, the
+  local agent folders, and folders marked as build caches.
 - `no_clipboard_write`: the masked Rust code under `crates/` holds none of the clipboard
   write call shapes listed in the test (arboard, Wayland, X11, macOS pasteboard, Windows,
   egui, and the copy paths tasty used). The one exception is the `set_text` of the claude
@@ -244,8 +246,8 @@ this crate and of `plugin-pin-check` only, so it never enters a plugin build.
   tests, each of which must still use it.
 - `bundled_namespace_dispatch`: every host method in the `METHOD_TABLE` of the pinned tasty
   commit whose prefix a plugin declares as its `ipc_namespace` has a string arm in that
-  plugin's `handle_ipc_method`, each file defines that function at most once, and the
-  compared method set matches the record for the pin.
+  plugin's `handle_ipc_method`, and the compared method set matches the record for the
+  pin. No file under the `src/` of any plugin defines that function more than once.
 - `manifest_cli_catalog_keys`: each non-empty CLI description and argument help in a
   plugin manifest has its translation key, the English catalog value equals the manifest
   text, and the catalog of every built-in language loads a non-blank value.
