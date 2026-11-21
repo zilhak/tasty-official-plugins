@@ -16,7 +16,7 @@
 //! The shared Rust reader of tasty-doc-guards is not used: it does not follow folder links
 //! and reads a file only by its extension, so it skips a file named `.rs`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use plugin_guards::{MANIFEST_NAME, repo_root};
 
@@ -72,12 +72,14 @@ fn kind_of(rel: &str) -> Option<Kind> {
     }
 }
 
-fn gather(path: &Path, root: &Path, out: &mut Vec<(String, Kind)>) {
+/// Each collected file as (shown path, path to open, kind). The shown path uses `/` and
+/// is only for sorting and reports; the file is read through the path the walk found.
+fn gather(path: &Path, root: &Path, out: &mut Vec<(String, PathBuf, Kind)>) {
     // Path::is_dir follows links, so a linked folder is walked like any other.
     if !path.is_dir() {
         let rel = rel_of(path, root);
         if let Some(kind) = kind_of(&rel) {
-            out.push((rel, kind));
+            out.push((rel, path.to_path_buf(), kind));
         }
         return;
     }
@@ -107,8 +109,7 @@ fn scan_files(root: &Path) -> (Files, Files) {
     found.sort_by(|a, b| a.0.cmp(&b.0));
     let mut rust = Vec::new();
     let mut manifests = Vec::new();
-    for (rel, kind) in found {
-        let path = root.join(&rel);
+    for (rel, path, kind) in found {
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
             .replace("\r\n", "\n");
@@ -264,5 +265,28 @@ fn rust_files_are_found_by_name_and_through_folder_links() {
     assert!(
         rust.iter()
             .any(|(rel, _)| rel == "crates/tasty-plugin-x/build.rs")
+    );
+}
+
+/// A file is read through the path the walk found, not through its shown path. On Unix a
+/// file name may hold a backslash, which the shown path turns into `/`.
+#[cfg(unix)]
+#[test]
+fn a_file_is_read_through_the_path_the_walk_found() {
+    let dir = tasty_doc_guards::temp_scratch::Scratch::new("no-emoji-backslash");
+    let root = dir.path();
+    let src = root.join("crates/tasty-plugin-x/src");
+    std::fs::create_dir_all(src.join("name")).expect("mkdir");
+    std::fs::write(src.join("name\\with.rs"), "// \u{1F600}\n").expect("write");
+    std::fs::write(src.join("name/with.rs"), "fn f() {}\n").expect("write");
+
+    let (rust, _) = scan_files(root);
+    let mut found = Vec::new();
+    for (rel, text) in &rust {
+        found.extend(violations(rel, text));
+    }
+    assert_eq!(
+        found,
+        ["  crates/tasty-plugin-x/src/name/with.rs:1 U+1F600"]
     );
 }
