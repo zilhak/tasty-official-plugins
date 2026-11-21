@@ -777,17 +777,21 @@ struct Running {
     thread: JoinHandle<()>,
 }
 impl Running {
-    /// 2s 안에 받은 연결 결과. 넘기면 상대를 닫아 회수한 뒤 실패한다.
-    fn finish(self, peers: &[&TcpStream]) -> io::Result<()> {
+    /// 2s 안에 받은 연결 결과. 시험이 쥔 상대 소켓과 WebSocket 복제를 넘겨받는다.
+    /// 넘기면 상대 원본을 `shutdown(Both)`한 뒤 복제와 원본을 모두 drop해 회수하고 실패한다.
+    fn finish(self, peers: Vec<TcpStream>, conns: Vec<WsConn<TcpStream>>) -> io::Result<()> {
         match self.done.recv_timeout(Duration::from_secs(2)) {
             Ok(result) => {
                 self.thread.join().unwrap();
                 result
             }
             Err(_) => {
-                for peer in peers {
+                // shutdown은 같은 소켓의 모든 복제에 걸린다. 그다음 열린 핸들을 모두 닫는다.
+                for peer in &peers {
                     let _ = peer.shutdown(std::net::Shutdown::Both);
                 }
+                drop(conns);
+                drop(peers);
                 match self.done.recv_timeout(Duration::from_secs(10)) {
                     Ok(result) => {
                         self.thread.join().unwrap();
@@ -919,7 +923,7 @@ fn a_timeout_set_on_a_socket_closed_by_the_relay_ends_as_relay_closing() {
     let mut seen = gate.wait_for(&Point::AfterTrack(Side::Front));
     close_streams(&sockets);
     gate.release();
-    let result = running.finish(&[&tui]);
+    let result = running.finish(vec![tui], Vec::new());
     seen.extend(gate.rest());
     assert_relay_closing(result, &seen);
     // 전송 루프 전에 끝나므로 보고가 없다.
@@ -942,7 +946,7 @@ fn clear_deadline_after_close(side: Side, hold: &'static [Point], site: Site) {
     let mut seen = gate.wait_for(&Point::BeforeUnlimit(side));
     close_streams(&sockets);
     gate.release();
-    let result = running.finish(&[&tui, &backend]);
+    let result = running.finish(vec![tui, backend], Vec::new());
     seen.extend(gate.rest());
     assert_relay_closing(result, &seen);
     if failures(&seen).first() == Some(&(site, Source::Timeout)) {
@@ -985,7 +989,7 @@ fn transfers_cut_by_relay_closing_end_without_a_warning() {
     ]);
     std::thread::sleep(Duration::from_millis(50));
     close_streams(&sockets);
-    let result = running.finish(&[&tui, &backend]);
+    let result = running.finish(vec![tui, backend], Vec::new());
     seen.extend(gate.rest());
     assert_relay_closing(result, &seen);
     assert_both_reads_closed(&seen);
@@ -1000,8 +1004,7 @@ fn an_upstream_write_cut_by_relay_closing_ends_without_a_warning() {
     let mut seen = gate.wait_for(&Point::BeforeWrite(Direction::Up));
     close_streams(&sockets);
     gate.release();
-    let result = running.finish(&[&tui, &backend]);
-    drop(ws);
+    let result = running.finish(vec![tui, backend], vec![ws]);
     seen.extend(gate.rest());
     assert_relay_closing(result, &seen);
     assert!(
@@ -1024,7 +1027,7 @@ fn a_downstream_write_cut_by_relay_closing_ends_without_a_warning() {
     let mut seen = gate.wait_for(&Point::BeforeWrite(Direction::Down));
     close_streams(&sockets);
     gate.release();
-    let result = running.finish(&[&tui, &backend]);
+    let result = running.finish(vec![tui, backend], Vec::new());
     seen.extend(gate.rest());
     assert_relay_closing(result, &seen);
     assert!(
@@ -1075,8 +1078,7 @@ fn a_parse_error_while_closing_is_still_reported_as_itself() {
     // 표지만 세우고 소켓은 닫지 않는다.
     sockets.state.lock().unwrap().closing = true;
     ws.send_text("not json").unwrap();
-    let result = running.finish(&[&tui, &backend]);
-    drop(ws);
+    let result = running.finish(vec![tui, backend], vec![ws]);
     seen.extend(gate.rest());
     let error = result.expect_err("a parse error must end the connection");
     assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{seen:?}");
