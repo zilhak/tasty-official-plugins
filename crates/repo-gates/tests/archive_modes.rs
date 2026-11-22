@@ -917,7 +917,17 @@ fn names(n: usize) -> Vec<String> {
 /// Runs verify_archive_owners inside an if on <archive>, with <names> or, when None, the
 /// names the real tar lists. Returns whether it passed and its stderr.
 fn owners_of(archive: &Path, names: Option<&[String]>) -> (bool, String) {
+    owners_with(archive, names, &[])
+}
+
+/// owners_of with the variables <envs> set for the check.
+fn owners_with(
+    archive: &Path,
+    names: Option<&[String]>,
+    envs: &[(&str, String)],
+) -> (bool, String) {
     let mut cmd = Command::new("bash");
+    cmd.envs(envs.iter().map(|(k, v)| (*k, v.as_str())));
     cmd.current_dir(support::repo_root()).args([
         "-c",
         ". \"$1\"; if [ -n \"${USE_TAR-}\" ]; then NAMES=$(LC_ALL=C tar -tzf \"$2\") || exit 3; fi; \
@@ -1239,6 +1249,111 @@ fn a_failed_gzip_fails_even_when_the_tar_is_whole() {
         "h13g: {err}"
     );
     assert!(!err.contains("entry "), "h13g: {err}");
+}
+
+/// An od in <dir> that runs the real one, except for the call that <part> names: "head"
+/// (a header read, with -N) or "tail" (the read after the end marker, without -N). There
+/// it prints what the real od prints and exits 1 when OD_MODE is "status", or prints
+/// nothing and exits 0 when OD_MODE is "short".
+fn fake_od(dir: &Path) -> PathBuf {
+    let out = Command::new("bash")
+        .args(["-c", "command -v od"])
+        .output()
+        .expect("find od");
+    let real = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    assert!(out.status.success() && !real.is_empty(), "no od");
+    let bin = dir.join("od-bin");
+    fs::create_dir_all(&bin).expect("mkdir");
+    let od = bin.join("od");
+    fs::write(
+        &od,
+        format!(
+            "#!/bin/sh\n\
+             case \" $* \" in *\" -N \"*) part=head ;; *) part=tail ;; esac\n\
+             if [ \"$part\" = \"$OD_PART\" ]; then\n\
+             \x20 case $OD_MODE in\n\
+             \x20   status) '{real}' \"$@\"; exit 1 ;;\n\
+             \x20   short) exit 0 ;;\n\
+             \x20 esac\n\
+             fi\n\
+             exec '{real}' \"$@\"\n"
+        ),
+    )
+    .expect("write od");
+    fs::set_permissions(&od, fs::Permissions::from_mode(0o755)).expect("chmod od");
+    bin
+}
+
+/// h14: the check fails when od fails or prints too few bytes, for a header read and for
+/// the read after the end marker. The archives end with one more zero block, as GNU tar
+/// pads them, so the second read happens; h14t also has a nonzero byte there.
+#[test]
+fn a_failed_or_short_od_read_fails() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let bin = fake_od(tmp.path());
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let good = good_headers();
+    let mut padded = tar_of(&good);
+    padded.extend_from_slice(&[0u8; 512]);
+    let mut dirty = tar_of(&good);
+    let mut tail = [0u8; 512];
+    tail[100] = 1;
+    dirty.extend_from_slice(&tail);
+    for (case, bytes, part, mode, want) in [
+        ("h14p", &padded, "none", "status", ""),
+        (
+            "h14h",
+            &padded,
+            "head",
+            "status",
+            "od failed or read too few bytes at byte 0",
+        ),
+        (
+            "h14hs",
+            &padded,
+            "head",
+            "short",
+            "od failed or read too few bytes at byte 0",
+        ),
+        (
+            "h14t",
+            &dirty,
+            "tail",
+            "status",
+            "od failed or read too few bytes at byte ",
+        ),
+        (
+            "h14ts",
+            &dirty,
+            "tail",
+            "short",
+            "od failed or read too few bytes at byte ",
+        ),
+    ] {
+        let dir = tmp.path().join(case);
+        fs::create_dir_all(&dir).expect("mkdir");
+        let archive = gz(&dir, bytes);
+        let (ok, err) = owners_with(
+            &archive,
+            Some(&names(good.len())),
+            &[
+                ("PATH", path.clone()),
+                ("OD_PART", part.to_owned()),
+                ("OD_MODE", mode.to_owned()),
+            ],
+        );
+        if want.is_empty() {
+            assert!(ok, "{case}: {err}");
+        } else {
+            assert!(!ok, "{case} passed");
+            assert!(err.contains(want), "{case}: {err}");
+            assert!(!err.contains("nonzero bytes"), "{case}: {err}");
+        }
+    }
 }
 
 /// h9: a stored user or group name never reaches the error, as release logs are public.
