@@ -1193,14 +1193,15 @@ fn the_header_count_must_match_the_listing() {
     }
 }
 
-/// h11: a header after a single zero block, which tar does not list. h12: data after the end
-/// marker. h13e: no end marker. h13s: a second zero block of 171 bytes.
+/// h11: the header of an empty file after a single zero block, which tar does not list; with
+/// no data after it, only the check of the second zero block rejects it. h12: data after the
+/// end marker. h13e: no end marker. h13s: a second zero block of 171 bytes.
 #[test]
 fn the_archive_must_end_with_two_zero_blocks_and_zero_bytes() {
     let good = good_headers();
     let mut b = good.concat();
     b.extend_from_slice(&[0u8; 512]);
-    b.extend_from_slice(&file_edit(&format!("{ID}/hidden"), b"x", |h| {
+    b.extend_from_slice(&file_edit(&format!("{ID}/hidden"), b"", |h| {
         put(h, 265, b"user")
     }));
     b.extend_from_slice(&[0u8; 1024]);
