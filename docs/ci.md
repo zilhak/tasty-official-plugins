@@ -600,7 +600,9 @@ another tar stops it, and so does a missing `gzip` or `od`. A listing shows a st
   last path part that starts with `._`) fail;
 - every entry has uid 0, gid 0, and user and group names of NUL bytes only;
 - the archive ends with two zero blocks, followed by zero bytes only, and holds as many
-  headers as `tar -tzf` lists names.
+  headers as `tar -tzf` lists names;
+- a failed `gzip -dc`, and an `od` that exits nonzero or prints fewer bytes than the
+  archive holds at that point, fail the check.
 
 The errors of this check never print a stored name, as release logs are public; the mode
 check above prints the listing line. A path fits USTAR when it fits the 100-byte name

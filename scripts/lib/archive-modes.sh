@@ -124,6 +124,8 @@ verify_archive_modes() {
 # The numeric fields take octal digits between leading blanks and trailing blanks or NULs.
 # The archive must end with two zero blocks followed by zero bytes only, and hold as many
 # headers as <names> has lines; names, kinds, and links are verify_archive_modes's part.
+# A failed gzip, and an od that exits nonzero or prints fewer bytes than the file holds at
+# that offset, fail the check.
 # Every problem is printed as an error line with <label>, never with a stored name, as
 # release logs are public. Returns 1 if there is one.
 verify_archive_owners() (
