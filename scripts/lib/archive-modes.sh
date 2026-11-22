@@ -143,21 +143,45 @@ verify_archive_owners() (
   # od reads a.tar by a plain relative name, so no path is quoted in the awk commands.
   cd "$tmp" || exit 1
   NAMES="$names" LABEL="$label" TARFILE=a.tar SIZE="$size" awk '
-    # Reads up to 512 bytes at <off> into b[0..511] and returns how many there were.
-    function block(off,   cmd, line, nf, f, i, k) {
-      for (i = 0; i < 512; i++) b[i] = 0
-      if (off >= total) return 0
+    # Runs od on a.tar from byte <from>, for <count> bytes or to the end when <count> is
+    # empty, and returns how many bytes it printed, or -1 when od failed or printed another
+    # number of bytes than a.tar holds there. The first <keep> bytes go to b[0..], and nonzero
+    # counts the nonzero ones. The command prints the exit status of od on a line of its own,
+    # as close() does not return it in every awk.
+    function readod(from, count, keep,   cmd, line, nf, f, i, k, r, st, want) {
+      for (i = 0; i < keep; i++) b[i] = 0
       k = 0
-      cmd = "od -An -v -tu1 -j " off " -N 512 " file
-      while ((cmd | getline line) > 0) {
+      nonzero = 0
+      st = ""
+      cmd = "od -An -v -tu1 -j " from ((count == "") ? "" : " -N " count) " " file "; echo od-exit $?"
+      while ((r = (cmd | getline line)) > 0) {
         nf = split(line, f, " ")
+        if (f[1] == "od-exit") { st = f[2]; continue }
         for (i = 1; i <= nf; i++) {
-          if (k < 512) b[k] = f[i] + 0
+          if (k < keep) b[k] = f[i] + 0
+          if (f[i] + 0 != 0) nonzero++
           k++
         }
       }
       close(cmd)
+      want = total - from
+      if (count != "" && want > count) want = count
+      if (r < 0 || st != "0" || k != want) return -1
       return k
+    }
+    # Reads up to 512 bytes at <off> into b[0..511] and returns how many there were, or -1.
+    function block(off,   k) {
+      if (off >= total) {
+        for (k = 0; k < 512; k++) b[k] = 0
+        return 0
+      }
+      k = readod(off, 512, 512)
+      if (k < 0) fail(sprintf("od failed or read too few bytes at byte %d", off))
+      return k
+    }
+    # The number of nonzero bytes from <off> to the end, or -1.
+    function after(off) {
+      return (readod(off, "", 0) < 0) ? -1 : nonzero
     }
     function zero(   i) {
       for (i = 0; i < 512; i++) if (b[i] != 0) return 0
@@ -203,10 +227,12 @@ verify_archive_owners() (
       ended = 0
       while (1) {
         k = block(off)
+        if (k < 0) break
         if (k == 0) { fail("the archive ends without two zero blocks"); break }
         if (k < 512) { short(off, k); break }
         if (zero()) {
           k = block(off + 512)
+          if (k < 0) break
           if (k == 0) { fail("the archive ends without two zero blocks"); break }
           if (k < 512) { short(off + 512, k); break }
           if (!zero()) {
@@ -265,14 +291,9 @@ verify_archive_owners() (
       }
       if (ended) {
         if (rest < total) {
-          cmd = "od -An -v -tu1 -j " rest " " file
-          nz = 0
-          while ((cmd | getline line) > 0) {
-            nf = split(line, f, " ")
-            for (i = 1; i <= nf; i++) if (f[i] + 0 != 0) nz++
-          }
-          close(cmd)
-          if (nz) fail("the archive has nonzero bytes after its two zero blocks")
+          nz = after(rest)
+          if (nz < 0) fail(sprintf("od failed or read too few bytes at byte %d", rest))
+          else if (nz) fail("the archive has nonzero bytes after its two zero blocks")
         }
         if (n != want)
           fail(sprintf("the archive has %d headers but tar -tzf listed %d names", n, want))
