@@ -972,15 +972,12 @@ fn good_ustar_archives_pass_the_owner_check() {
                 .ok()
                 .and_then(|s| u64::from_str_radix(s, 8).ok())
                 .expect("size");
-            put(
-                &mut h,
-                100,
-                if h[156] == b'5' {
-                    b"000755 \0"
-                } else {
-                    b"000644 \0"
-                },
-            );
+            let mode: &[u8] = if h[156] == b'5' {
+                b"000755 \0"
+            } else {
+                b"000644 \0"
+            };
+            put(&mut h, 100, mode);
             put(&mut h, 108, b"000000 \0");
             put(&mut h, 116, b"000000 \0");
             put(&mut h, 124, format!("{size:011o} ").as_bytes());
