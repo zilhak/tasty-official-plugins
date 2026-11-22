@@ -105,7 +105,7 @@ Each runner needs:
 
 | Runner | Needs |
 |---|---|
-| All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, `tar`, `awk`, and `sha256sum` or `shasum` (`scripts/package-plugin.sh`; Git for Windows provides them on Windows). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
+| All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, GNU tar or bsdtar, `gzip`, `od`, `awk`, and `sha256sum` or `shasum` (`scripts/package-plugin.sh`; Git for Windows provides them on Windows, but MinGit lacks `od`). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
 | Windows (both) | Git for Windows, whose bash runs `scripts/check.sh` (bash need not be on `PATH`: the jobs find `bin\bash.exe` from the location of `git` and put that folder first on `PATH`, ahead of the WSL bash in System32), PowerShell 7 (`pwsh`), and Visual Studio Build Tools with the MSVC x64 tools, `vswhere.exe`, and `dumpbin.exe` |
 | `[win-arm64]` | In addition, the MSVC ARM64 build tools (C dependencies are compiled for ARM64) and the `aarch64-pc-windows-msvc` Rust target installed for the toolchain above |
 | `[self-hosted, Linux, X64]` and `[self-hosted, Linux, ARM64]` | Both Linux runners take the jobs on `[self-hosted, Linux]`, so both need everything here. For `plugin-version-check.yml`, `rustfmt` from the toolchain and access to GitHub to install `strip-cfg-test` and to fetch tasty commits that the Cargo git cache does not have. `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `lint` job needs no installed tools: it downloads shellcheck and actionlint into the runner tool cache, which needs access to GitHub, `curl`, and `tar` with `xz`. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum` |
@@ -585,6 +585,29 @@ Git Bash makes the modes up from the file names and contents and takes the umask
 and `chmod` does not change them, so `pack` writes the archives under umask 022 and logs
 the tar version and the caller's umask once. The functions are in
 `scripts/lib/archive-modes.sh`, and `repo-gates` tests them.
+
+The archives are POSIX USTAR, and every entry has uid 0, gid 0, and no user or group name,
+so no account name of the build machine is stored, and an extract as root gives the files
+to root. `pack` runs GNU tar with `--format=ustar --owner=0 --group=0 --numeric-owner` and
+bsdtar with `--format ustar --uid 0 --gid 0 --numeric-owner --no-mac-metadata`, with
+`TAR_OPTIONS` empty (an owner map there overrides `--owner`) and `COPYFILE_DISABLE=1`;
+another tar stops it, and so does a missing `gzip` or `od`. A listing shows a stored name
+`0` the same as no name, so `pack` reads the headers instead, with `gzip` and `od`:
+
+- every header is USTAR (magic `ustar\0`, version `00`) with a right checksum and octal
+  numbers, and has type `0` (file) or `5` (folder, size 0);
+- a PAX or GNU header, a file whose stored path ends with `/`, and an AppleDouble entry (a
+  last path part that starts with `._`) fail;
+- every entry has uid 0, gid 0, and user and group names of NUL bytes only;
+- the archive ends with two zero blocks, followed by zero bytes only, and holds as many
+  headers as `tar -tzf` lists names.
+
+The errors of this check never print a stored name, as release logs are public; the mode
+check above prints the listing line. A path fits USTAR when it fits the 100-byte name
+field, or splits at a slash into a prefix of up to 155 bytes and a name of up to 100; the
+trailing slash of a folder counts as part of the name. GNU tar stops at a path that does
+not fit, while bsdtar skips the entry and exits 0, so `pack` also compares the number of
+entries in the archive with the stage.
 
 The script finds each executable through the `executable` field of cargo's
 `compiler-artifact` messages, and the PDB through the `.pdb` entry of the same message's
