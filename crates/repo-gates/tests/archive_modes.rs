@@ -1287,7 +1287,9 @@ fn fake_od(dir: &Path) -> PathBuf {
 
 /// h14: the check fails when od fails or prints too few bytes, for a header read and for
 /// the read after the end marker. The archives end with one more zero block, as GNU tar
-/// pads them, so the second read happens; h14t also has a nonzero byte there.
+/// pads them, so the second read happens. In h14t and h14ts that padding is all zero, so
+/// the od failure is the only reason to reject them; h14tz has a nonzero byte there that an
+/// od printing nothing would hide.
 #[test]
 fn a_failed_or_short_od_read_fails() {
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -1322,13 +1324,20 @@ fn a_failed_or_short_od_read_fails() {
         ),
         (
             "h14t",
-            &dirty,
+            &padded,
             "tail",
             "status",
             "od failed or read too few bytes at byte ",
         ),
         (
             "h14ts",
+            &padded,
+            "tail",
+            "short",
+            "od failed or read too few bytes at byte ",
+        ),
+        (
+            "h14tz",
             &dirty,
             "tail",
             "short",
