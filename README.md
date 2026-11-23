@@ -16,10 +16,13 @@ and pull requests target `develop`. See [docs/branching.md](docs/branching.md).
 
 ## Releases
 
-A `v*` tag on `main` publishes the eight plugins for five platforms on a GitHub Release
-of this repository: one archive per plugin and platform, a SHA-256 list and a TSV list
-per platform, and `release-meta.toml`. The tag is `v` + the version in `VERSION`. The
-packages are not signed. See [docs/ci.md](docs/ci.md#releases).
+A `v*` tag on `main` publishes the eight plugins for five platforms as a pre-release on a
+GitHub Release of this repository: one archive per plugin and platform, a SHA-256 list
+and a TSV list per platform, and `release-meta.toml`. The tag is `v` + the version in
+`VERSION`. The packages are not signed. A Release becomes Latest only after a published
+Tasty release bundles it; then its notes say which Tasty it needs (`Requires Tasty`).
+Until then the notes say `Requires Tasty: pending`, and installing its files by hand
+into a released Tasty may fail. See [docs/ci.md](docs/ci.md#releases).
 
 ## License
 

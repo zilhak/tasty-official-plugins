@@ -12,11 +12,13 @@ workflow.
 | File | Trigger | What it does |
 |---|---|---|
 | `.github/workflows/ci.yml` | push to `develop`, `release`, or `main`, pull request to one of them, manual | `check` job: fmt, clippy, test on Linux, then the WebKitGTK tests. `test` job: clippy, unit tests, and the `plugin-guards` source checks on Windows x64 and macOS arm64, and on macOS also the `repo-gates` integration tests. `lint` job: shellcheck on every shell script and actionlint on every workflow. `audit` job: runs `cargo audit` on `Cargo.lock`. `licenses` job: checks the dependency licenses against `deny.toml` with cargo-deny. `build` job: builds the plugin crates for five platforms. On Windows it also checks that the binaries link the C runtime statically |
-| `.github/workflows/release.yml` | push of a `v*` tag; manual (`workflow_dispatch`) | On a tag, releases the plugins on a GitHub Release of this repository (see [Releases](#releases)). A manual run builds the same release files as workflow artifacts and creates no Release |
+| `.github/workflows/release.yml` | push of a `v*` tag; manual (`workflow_dispatch`) | On a tag, publishes the plugins as a pre-release on a GitHub Release of this repository, never as Latest (see [Releases](#releases)). A manual run builds the same release files as workflow artifacts and creates no Release |
+| `.github/workflows/promote.yml` | manual (`workflow_dispatch`) from `main` | Marks a published pre-release as Latest after a published Tasty release bundles it (see [Promotion](#promotion)) |
 | `.github/workflows/plugin-version-check.yml` | push to `develop`, `release`, or `main`, pull request to one of them, for changes outside Markdown and `docs/` (the notice files `THIRD_PARTY_LICENSES.md` and `LICENSES/` count); manual | Checks that each plugin whose build output changed raised its version (see [Plugin version check](#plugin-version-check)), then runs the `repo-gates` tests |
 
 The workflows use `permissions: contents: read` by default. In `release.yml`, only the
-`create-release` and `publish` jobs get `contents: write`. In `ci.yml`, a new run waits
+`create-release` and `publish` jobs get `contents: write`; in `promote.yml`, only the
+`promote` job. In `ci.yml`, a new run waits
 for the older run on the same ref instead of cancelling it, as in tasty: on the
 self-hosted runners a run can take longer than the time between pushes, and a waiting run
 is replaced by the newer push. Pull request runs cancel the older run. A run never waits
@@ -51,6 +53,7 @@ the x64 or the ARM64 runner takes each one, whichever is free:
 | `ci.yml` | `check`, `lint`, `audit`, `licenses` |
 | `plugin-version-check.yml` | `check` |
 | `release.yml` | `create-release`, `release-meta`, `publish` |
+| `promote.yml` | `promote` |
 
 Only the `build` and `package` matrix entries are tied to a platform's runner. A job on
 the shared label gives the same result on either runner:
@@ -108,7 +111,7 @@ Each runner needs:
 | All | Git, and rustup with the toolchain in `rust-toolchain.toml` (Rust 1.96.0 with `rustfmt` and `clippy`). For `release.yml`, GNU tar or bsdtar, `gzip`, `od`, `awk`, and `sha256sum` or `shasum` (`scripts/package-plugin.sh`; Git for Windows provides them on Windows, but MinGit lacks `od`). On Linux the jobs add `$HOME/.cargo/bin` to `PATH`, as tasty does |
 | Windows (both) | Git for Windows, whose bash runs `scripts/check.sh` (bash need not be on `PATH`: the jobs find `bin\bash.exe` from the location of `git` and put that folder first on `PATH`, ahead of the WSL bash in System32), PowerShell 7 (`pwsh`), and Visual Studio Build Tools with the MSVC x64 tools, `vswhere.exe`, and `dumpbin.exe` |
 | `[win-arm64]` | In addition, the MSVC ARM64 build tools (C dependencies are compiled for ARM64) and the `aarch64-pc-windows-msvc` Rust target installed for the toolchain above |
-| `[self-hosted, Linux, X64]` and `[self-hosted, Linux, ARM64]` | Both Linux runners take the jobs on `[self-hosted, Linux]`, so both need everything here. For `plugin-version-check.yml`, `rustfmt` from the toolchain and access to GitHub to install `strip-cfg-test` and to fetch tasty commits that the Cargo git cache does not have. `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `lint` job needs no installed tools: it downloads shellcheck and actionlint into the runner tool cache, which needs access to GitHub, `curl`, and `tar` with `xz`. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum` |
+| `[self-hosted, Linux, X64]` and `[self-hosted, Linux, ARM64]` | Both Linux runners take the jobs on `[self-hosted, Linux]`, so both need everything here. For `plugin-version-check.yml`, `rustfmt` from the toolchain and access to GitHub to install `strip-cfg-test` and to fetch tasty commits that the Cargo git cache does not have. `pkg-config` and the WebKitGTK 4.1 development files (`libwebkit2gtk-4.1-dev` on Debian and Ubuntu, which brings the GTK 3, JavaScriptCore, and libsoup 3 headers) for the `check` job, `xvfb-run` (`xvfb`) for the WebKitGTK tests, and a C compiler. The `audit` job installs `cargo-audit` into the runner tool cache. The `lint` job needs no installed tools: it downloads shellcheck and actionlint into the runner tool cache, which needs access to GitHub, `curl`, and `tar` with `xz`. The `release-meta` job of `release.yml` needs `jq` or Python 3 (`scripts/release-meta.sh`). The `create-release` and `publish` jobs need the GitHub CLI (`gh`) and `sha256sum`. The `promote` job of `promote.yml` needs `gh`, `sha256sum`, `awk`, and `sed`. `gh` must accept `--prerelease` on `release create` and `release edit`, and `--latest` on `release edit` |
 | `[self-hosted, macOS, ARM64]` | The Xcode command line tools, and access to GitHub to install `strip-cfg-test` into the runner tool cache for the `repo-gates` tests |
 
 ## Tests by platform
@@ -413,8 +416,10 @@ would leave that range unchecked.
   of its git repository is compared as the whole repository (`judge_pin_moves`). An
   update of a crates.io crate in `Cargo.lock` needs one too, unless the plugin is already
   above its version at the tip of `origin/main` (the local `main` only when there is no
-  `origin/main`). `main` moves only for releases and hotfixes, so its tip is the published
-  state, and tags are not read. A local check uses the `origin/main` the clone last
+  `origin/main`). `main` moves only for releases and hotfixes, so its tip is the baseline.
+  Neither tags nor the state of Releases are read, and the tip can be ahead of what is
+  published: between a tag push and its publish, and while a pre-release waits for
+  promotion. A local check uses the `origin/main` the clone last
   fetched: if it was not fetched after a release, the baseline is older and a second
   update can pass locally; the CI checkout fetches it on every run. `[workspace]` and
   unknown sections are undecidable, and so is a changed `[workspace.dependencies]` line
@@ -723,21 +728,34 @@ tasty's general package does not bundle agent-stream by default.
 
 ## Releases
 
-The repository version is in `VERSION` (`MAJOR.MINOR.PATCH`). A release is the push of
-the tag `v` + `VERSION` on a `main` commit. The tag goes on the commit that bumps
-`VERSION`: `create-release` uses the body of the tag commit as the Release notes. The
-release steps are in [branching.md](branching.md).
+The repository version is in `VERSION` (`MAJOR.MINOR.PATCH`, a SemVer core version
+without leading zeros). A release is the push of the tag `v` + `VERSION` on a `main`
+commit. The tag goes on the commit that bumps `VERSION`: `create-release` uses the body
+of the tag commit as the Release notes. The release steps are in
+[branching.md](branching.md).
+
+A release has two stages:
+
+1. The tag push publishes the Release as a **pre-release**. GitHub never makes a
+   pre-release Latest, so a person who downloads "the latest plugins" does not get files
+   that no released Tasty reads yet. The files are public, so tasty's packaging, which
+   downloads by tag without authentication, can bundle them. A draft would not do: its
+   files cannot be downloaded without authentication.
+2. After a published Tasty release bundles the tag and the release has been verified
+   with it, `promote.yml` marks it Latest and records the Tasty versions in its notes
+   (see [Promotion](#promotion)). This is the only path to Latest.
 
 ### Jobs
 
 | Job | Runner | Permissions | What it does |
 |---|---|---|---|
-| `create-release` | `[self-hosted, Linux]` | `contents: write` | Tag runs only. Fails unless the tag commit is an ancestor of `origin/main` and the tag equals `v` + `VERSION`. Fails if a published Release with the tag exists. Reuses a draft Release only if its notes record the same commit (`Commit: <sha>`), and fails otherwise. Without a Release, creates a draft whose notes give the commit and the tasty rev |
+| `create-release` | `[self-hosted, Linux]` | `contents: write` | Tag runs only. Fails unless the tag commit is an ancestor of `origin/main` and the tag equals `v` + `VERSION` in the form `scripts/release-check.sh tag` accepts. Fails if a published Release with the tag exists. Reuses a draft Release only if the `Commit:` line of its marker block names the same commit, and fails otherwise. Without a Release, creates a draft pre-release whose notes end with the marker block (see [Release notes](#release-notes)) |
 | `release-meta` | `[self-hosted, Linux]` | `contents: read` | Writes `release-meta.toml` with `scripts/release-meta.sh` and uploads it as the artifact `release-meta` |
 | `package` | the five platform runners | `contents: read` | Builds and packages the eight plugins and uploads the artifact `plugins-<platform>` |
-| `publish` | `[self-hosted, Linux]` | `contents: write` | Tag runs only. Downloads the artifacts, runs `sha256sum -c` for each platform, checks that each platform has 8 archives, 8 hash lines, and 8 TSV rows, that `release-meta.toml` names this tag, commit, and the 8 plugins, and that there are 51 files. Uploads them to the draft, then publishes the Release |
+| `publish` | `[self-hosted, Linux]` | `contents: write` | Tag runs only. Downloads the artifacts, runs `sha256sum -c` for each platform, checks that each platform has 8 archives, 8 hash lines, and 8 TSV rows, that `release-meta.toml` names this tag, commit, and the 8 plugins, and that there are 51 files. Uploads them to the draft. Settles and checks the marker block against `release-meta.toml`, then publishes the Release as a pre-release with the checked notes. Last, checks that the Release is a published pre-release and not Latest |
 
 On a tag run, `release-meta` and `package` start only after `create-release` succeeds.
+`publish` checks out the tag commit only for `scripts/release-check.sh`.
 
 ### Release files
 
@@ -751,16 +769,157 @@ On a tag run, `release-meta` and `package` start only after `create-release` suc
 The files are attached to the Release of the tag in this repository and are
 downloaded from
 `https://github.com/zilhak/tasty-official-plugins/releases/download/<tag>/<file>`.
-There is no merged hash list or TSV across platforms.
+There is no merged hash list or TSV across platforms. This URL works the same for a
+pre-release and for Latest, so tasty, which pins a tag in its lock file, needs no change
+for either stage.
+
+### Release notes
+
+The notes start with the body of the tag commit, which is free text. They end with a
+marker block, the last paragraph, which the release scripts read and write:
+
+```
+Commit: <commit of this repository the tag points at>
+tasty rev: <tasty commit the plugins were built from>
+Requires Tasty: pending (a Tasty release that includes tasty commit <tasty rev>)
+```
+
+Promotion replaces the pending line with `Requires Tasty: <version> or later` and adds
+`Verified with Tasty: <minimum> (minimum), <bundling> (bundled) on <platforms>`. It does
+not change the `Commit:` and `tasty rev:` lines; after promotion, `tasty rev:` is the only
+build pin left in the notes. The pending line does not name a Tasty version, because no
+Tasty release bundles the plugins when the tag is pushed.
+
+`scripts/release-check.sh` is the one parser of the block: `create-release`, `publish`,
+and `scripts/release-promote.sh` call it. Its head comment describes the block and each
+command, and `crates/repo-gates/tests/release_check.rs` pins what it accepts and refuses.
+Before publishing, `publish` makes the block hold exactly one pending line (adding it to
+a reused draft that lacks it, keeping one of identical copies) and checks the `Commit:`,
+`tasty rev:`, and pending pin against the `release-meta.toml` of the run. A block it
+cannot settle or that does not match keeps the Release a draft.
 
 ### Failures and reruns
 
-If `create-release` fails, no Release is created. If a later job fails or is cancelled,
-the Release stays a draft. In both cases nothing is published.
-A rerun of the workflow for the same tag reuses the draft. `publish` does not overwrite
-an asset: an asset already on the draft is skipped if its SHA-256 equals the new file,
-and the job fails if it differs. The job also fails if the draft has an asset that is
-not one of the 51 files. In that case, delete the draft (or the asset) by hand and rerun.
+If `create-release` fails, no Release is created. If a later job fails or is cancelled
+before the publish request, the Release stays a draft. In both cases nothing is
+published. A rerun of the workflow for the same tag reuses the draft. `publish` does not
+overwrite an asset: an asset already on the draft is skipped if its SHA-256 equals the
+new file, and the job fails if it differs. The job also fails if the draft has an asset
+that is not one of the 51 files. In that case, delete the draft (or the asset) by hand
+and rerun.
+
+A failure after the publish request (in "Check the published state") leaves the Release
+published. A rerun does not repair it, and neither path writes to the published
+Release: a rerun of the whole workflow stops in `create-release` ("already published"),
+and a rerun of the failed jobs stops in the upload step of `publish` ("not a draft").
+Instead, read the state, notes, and files of the Release and decide:
+
+- **Only the state is off.** The marker block and the files match the run: one `Commit:`
+  line with the peeled tag commit and the `commit` of the run's `release-meta.toml`, one
+  `tasty rev:` line and one pending line pinned to its `tasty_rev`, and the 51 published
+  files with the names and hashes of the run's checked files. If the state is also right
+  (a pre-release, not Latest), the release is done; record it. If it is not a pre-release
+  or is Latest, set it back to a pre-release by hand (`gh release edit <tag>
+  --prerelease`) and check Latest again. Do not upload files again.
+- **The notes or files do not match.** Setting the state back does not fix the notes or
+  files, so the tag does not count as released. Keep the published notes and files as
+  they are; if the state is off, set it back to a pre-release only. Promotion refuses
+  such a Release on its own (check 7 of `scripts/release-promote.sh` compares the files
+  and the marker block the same way), so it never becomes Latest. Report the mismatch and
+  release the fix under the next patch tag.
+
+A rerun uses the workflow file of the tag commit. Runs of tags made before the
+pre-release stage (`v0.1.0` to `v0.1.2`) keep their old `release.yml`; their Releases
+are all published, so a rerun stops in `create-release`.
+
+### Promotion
+
+`promote.yml` marks a pre-release Latest. The plugins maintainer runs it when both of
+these hold: a published Tasty release pins the tag in its `official-plugins.lock.toml`
+(the tasty maintainers report the Tasty release), and the verification below passed.
+Run it from `main`; the job fails on another ref:
+
+```
+gh workflow run promote.yml --ref main -f tag=vX.Y.Z -f min_tasty=A.B.C \
+  -f new_tasty=A.B.C -f verified_on="linux-x64, macos-arm64, windows-x64"
+```
+
+| Input | Meaning |
+|---|---|
+| `tag` | The plugin Release to promote |
+| `min_tasty` | The oldest Tasty release the Release supports. It is written as `Requires Tasty: <min_tasty> or later` |
+| `new_tasty` | The Tasty release that bundles the Release |
+| `verified_on` | The platforms of the verification, on one line |
+
+The job runs `scripts/release-promote.sh`, which also runs locally with `gh` signed in
+and `GH_REPO` set. It changes nothing unless all of its checks pass; its head comment
+lists them, and `crates/repo-gates/tests/release_promote.rs` runs each refusal with a
+fake `gh`. In short, the Release must be a published pre-release of the tag commit, the
+two Tasty versions must be published Tasty releases with `min_tasty` not above
+`new_tasty`, the lock file at the `new_tasty` tag must pin this repository, tag, and
+commit with the same archive hashes, the current Latest must be older (or there is none),
+and the published files and marker block must still match what `publish` checked. Then
+one `gh release edit` writes the notes, clears the pre-release flag, and marks the
+Release Latest, and the script checks that Latest is the tag.
+
+- **Rerun.** If the edit went through but its reply was lost, run the same inputs again:
+  a Release that is already Latest with exactly these lines succeeds without a change.
+  Latest with other lines fails.
+- **One at a time.** All runs share one concurrency group, so two promotions never read
+  the same Latest and both pass.
+- **Order.** A pre-release that is never promoted, because a newer Release was promoted
+  first, stays a pre-release. An older tag is never made Latest again.
+- **Where the workflow must be.** `workflow_dispatch` needs the workflow file on the
+  default branch, `develop`, to be listed, and `--ref main` runs the scripts of `main`.
+  The pre-release stage of `release.yml` and `promote.yml` with its script must both be
+  on `main` before the first tag that uses them, and `promote.yml` also on `develop`.
+  Otherwise a published pre-release has no way to Latest.
+- **Releases from before.** `v0.1.2` became Latest before this stage existed and stays
+  Latest until a newer Release is promoted. Promoting `v0.1.2`, `v0.1.1`, or `v0.1.0`
+  fails: they are not pre-releases and their notes have no pending line.
+
+The supported minimum Tasty of a Release is, by default, the first Tasty release that
+bundles it: `min_tasty` equals `new_tasty`. That version passed tasty's lock file checks
+and was shipped with the plugins. An older version is named as `min_tasty` only after the
+same verification on it.
+
+### Verification before promotion
+
+The verification uses the published pre-release files themselves. The bundling host is
+the published package of `new_tasty`. When `min_tasty` is older, the pre-release
+archives are installed by hand into the published package of `min_tasty`. The evidence
+goes into the maintainer's release report; the Release notes keep only the versions and
+platforms (`Verified with Tasty`).
+
+- **Hosts.** Evidence that needs a direct install (agent-stream, which has
+  `bundle = false`, and every archive put into a `min_tasty` host) comes from a GUI host:
+  `plugin install` needs the GUI, and a headless host cannot install. A headless host
+  gives evidence only for the plugins already bundled in its package.
+- **Direct install into an older host.** The host must not hold a bundled copy of the
+  same plugin id: the GUI installs its bundled plugins at start, and a direct install
+  into an id that already exists fails. Use a separate install state with no install
+  record whose bundled plugin folder is empty (for example through
+  `TASTY_BUILTIN_PLUGINS_DIR` pointing at an empty folder). Unsigned official archives
+  need `--allow-unverified`.
+- **Platforms.** At least one platform of each OS family: linux-x64, macos-arm64, and
+  windows-x64. For linux-arm64 and windows-arm64, the download with SHA-256 check and
+  the packaging checks of the Tasty release CI stand in, for bundled plugins only: Tasty
+  packaging downloads only plugins with `bundle = true`. For agent-stream, the archive
+  check of `publish` on all five platforms covers the files, and install and run are
+  verified only on the platforms where it was installed by hand. The report names those
+  platforms and says that linux-arm64 and windows-arm64 have the archive check only.
+- **Evidence per host and platform.**
+  1. The plugin executable and `tasty-plugin.toml` in each installed plugin folder have
+     the hash of the same files in the pre-release archive, for bundled and for directly
+     installed copies.
+  2. No manifest is refused: no `skipped` warning from the loader or the CLI dynamic
+     commands, nothing in the discovery log, no `invalid plugin manifest` from
+     `plugin install`.
+  3. `plugin list` shows each bundled plugin as `connected` without `last_failure`, with
+     the version of its `[[plugin]]` entry in `release-meta.toml`. agent-stream gets the
+     same check, and the manifest check of item 2, after its direct install on a GUI host.
+  4. One basic action per plugin, such as opening its surface kind or running one of its
+     CLI commands.
 
 ### release-meta.toml
 

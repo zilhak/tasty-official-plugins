@@ -48,10 +48,18 @@ commit.
    `git push --atomic origin release main vX.Y.Z`.
 
 The tag push starts `release.yml`, which checks that the tag commit is on `main` and
-that the tag equals `v` + `VERSION`, then publishes the Release of the tag
-([CI and release workflows](ci.md#releases)). If `create-release` fails, no Release is
-created. If a later job fails, the Release stays a draft. Either way, fix the cause and
-rerun the workflow for the same tag.
+that the tag equals `v` + `VERSION`, then publishes the Release of the tag as a
+pre-release, not as Latest ([CI and release workflows](ci.md#releases)). If
+`create-release` fails, no Release is created. If a later job fails before the publish
+request, the Release stays a draft: fix the cause and rerun the workflow for the same
+tag. A failure after the publish request leaves the Release published, and a rerun
+stops without changing it (a full rerun in `create-release`, a rerun of the failed jobs
+in the upload step of `publish`); check the Release by hand as
+[Failures and reruns](ci.md#failures-and-reruns) describes.
+
+4. After a published Tasty release bundles the tag and the release is verified with it,
+   promote it to Latest with `promote.yml` run from `main`
+   ([Promotion](ci.md#promotion)). Until then it stays a pre-release.
 
 ## Hotfixes
 
@@ -60,8 +68,11 @@ rerun the workflow for the same tag.
    body is the release note.
 3. Tag the version commit (`git tag -a vX.Y.Z -m vX.Y.Z`) and push `main` with the tag
    only: `git push --atomic origin main vX.Y.Z`. `release` is not part of this push.
+   The tag push publishes a pre-release, as for a release.
 4. Back-merge `main` into `release` and `develop`. If the target is ahead, this is a
    merge commit.
+5. Promote the hotfix Release to Latest with `promote.yml` after a published Tasty
+   release bundles it, as in step 4 of [Releasing to main](#releasing-to-main).
 
 Do not back-merge with cherry-pick. A cherry-picked commit has a different hash, so the
 next `release` to `main` promotion cannot fast-forward.
