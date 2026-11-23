@@ -29,6 +29,10 @@
 //!
 //! The home folder of the user holds a folder with the same name as a local agent folder.
 //! A mention right after a home prefix or near a home word (HOME_NEARBY) is allowed.
+//!
+//! The vendored list is checked against the tree too: every listed bundle is a file,
+//! and no minified file outside the list sits directly in the markdown assets folder
+//! (read on its own, whatever the scan prunes) or anywhere the scan starts from.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Write as _};
@@ -974,14 +978,19 @@ fn read_bodies(
     Ok(bodies)
 }
 
+/// The paths of the tree at `root` before the file filters: from Git when it is a Git
+/// checkout, by walking otherwise.
+fn population(root: &Path) -> Result<Vec<Candidate>, String> {
+    if root.join(".git").exists() {
+        git_candidates(root)
+    } else {
+        walked_candidates(root)
+    }
+}
+
 /// Reads the tree at `root`: from Git when it is a Git checkout, by walking otherwise.
 fn scan(root: &Path) -> Result<Report, String> {
-    let candidates = if root.join(".git").exists() {
-        git_candidates(root)?
-    } else {
-        walked_candidates(root)?
-    };
-    let candidates: Vec<Candidate> = candidates
+    let candidates: Vec<Candidate> = population(root)?
         .into_iter()
         .filter(|c| is_scan_target(c.key()))
         .collect();
@@ -1978,4 +1987,141 @@ fn a_build_dir_under_another_name_is_still_pruned() {
         is_pruned_dir(dir.path(), "target-e2e"),
         "with a marker the folder is pruned whatever its name"
     );
+}
+
+/// The folder that holds the vendored bundles.
+const ASSETS_DIR: &str = "crates/tasty-plugin-markdown/assets";
+
+fn is_minified_name(name: &str) -> bool {
+    name.ends_with(".min.js") || name.ends_with(".min.css")
+}
+
+/// Unlisted minified files directly in the assets folder. The folder is read on its
+/// own, without the Git list, the pruned names, or the cache markers of the citation
+/// scan, so a marker there cannot hide a new bundle.
+fn unlisted_in_assets(root: &Path) -> Result<Vec<String>, String> {
+    let dir = path_of(root, ASSETS_DIR);
+    let entries =
+        std::fs::read_dir(&dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot read an entry of {}: {e}", dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let key = format!("{ASSETS_DIR}/{name}");
+        if is_minified_name(name) && !VENDORED_FILES.contains(&key.as_str()) {
+            out.push(key);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Unlisted minified files anywhere in the paths the citation scan starts from, before
+/// its filters. Untracked local files and caches are left out as there.
+fn unlisted_anywhere(root: &Path) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for candidate in population(root)? {
+        if let Candidate::Untracked { key } = &candidate
+            && is_local_untracked(root, key)
+        {
+            continue;
+        }
+        let key = candidate.key();
+        let name = key.rsplit('/').next().unwrap_or("");
+        if is_minified_name(name) && !VENDORED_FILES.contains(&key) {
+            out.push(key.to_string());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Registered bundles that are not a file at their path.
+fn registered_but_missing(root: &Path) -> Vec<&'static str> {
+    VENDORED_FILES
+        .iter()
+        .copied()
+        .filter(|key| !path_of(root, key).is_file())
+        .collect()
+}
+
+#[test]
+fn the_vendored_list_matches_the_tree() {
+    let root = repo_root();
+    assert!(
+        registered_but_missing(&root).is_empty(),
+        "the vendored list names bundles that are not there; move the entries with the \
+         bundles: {:?}",
+        registered_but_missing(&root)
+    );
+    let direct = unlisted_in_assets(&root).unwrap_or_else(|e| panic!("{e}"));
+    let anywhere = unlisted_anywhere(&root).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        direct.is_empty() && anywhere.is_empty(),
+        "minified bundles that the vendored list does not name; add them to \
+         VENDORED_FILES so the citation scan leaves them out: {direct:?} {anywhere:?}"
+    );
+}
+
+/// The four registered bundles as empty files under `root`.
+fn seed_registered(root: &Path) {
+    for key in VENDORED_FILES {
+        let path = path_of(root, key);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("folder");
+        std::fs::write(path, "").expect("write");
+    }
+}
+
+#[test]
+fn the_assets_folder_is_read_directly_even_with_a_cache_marker() {
+    let dir = Scratch::new("cite-assets-marker");
+    let root = dir.path();
+    seed_registered(root);
+    let assets = path_of(root, ASSETS_DIR);
+    std::fs::write(
+        assets.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .expect("write the marker");
+    std::fs::write(assets.join("extra.min.js"), "").expect("write");
+    // A folder with a bundle-like name is not a file.
+    std::fs::create_dir(assets.join("folder.min.js")).expect("folder");
+    assert_eq!(
+        unlisted_in_assets(root).unwrap_or_else(|e| panic!("{e}")),
+        vec![format!("{ASSETS_DIR}/extra.min.js")]
+    );
+}
+
+#[test]
+fn an_unlisted_bundle_elsewhere_is_found() {
+    let repo = Repo::new("cite-bundle-elsewhere");
+    repo.add("crates/other/web/x.min.css", b"");
+    repo.add("crates/other/web/y.css", b"");
+    assert_eq!(
+        unlisted_anywhere(repo.root()).unwrap_or_else(|e| panic!("{e}")),
+        vec!["crates/other/web/x.min.css".to_string()]
+    );
+}
+
+#[test]
+fn a_registered_bundle_must_be_a_file() {
+    let gone = VENDORED_FILES[0];
+
+    let dir = Scratch::new("cite-bundle-gone");
+    seed_registered(dir.path());
+    std::fs::remove_file(path_of(dir.path(), gone)).expect("remove");
+    assert_eq!(registered_but_missing(dir.path()), vec![gone]);
+
+    let dir = Scratch::new("cite-bundle-folder");
+    seed_registered(dir.path());
+    let path = path_of(dir.path(), gone);
+    std::fs::remove_file(&path).expect("remove");
+    std::fs::create_dir(&path).expect("a folder in its place");
+    assert_eq!(registered_but_missing(dir.path()), vec![gone]);
 }
