@@ -489,10 +489,17 @@ norm_path() {
     }'
 }
 
+# The repository path of <rel> inside the crate directory <dir>. A crate at the root of its
+# repository has the directory "." and no prefix: git cannot read <commit>:./path.
+repo_path() {  # <dir> <rel>
+    if [ "$1" = . ]; then printf '%s' "$2"; else printf '%s/%s' "$1" "$2"; fi
+}
+
 # Stops as undecidable when package <name> in <dir> reads a file outside its directory that
-# tasty-extra-inputs.txt does not list. Test files and comment lines are skipped.
+# tasty-extra-inputs.txt does not list. Test files and comment lines are skipped. A crate at
+# the root of its repository has the whole repository as its directory.
 pin_check_outside_inputs() {  # <src> <commit> <dir> <name>
-    local src="$1" c="$2" dir="$3" name="$4" hits line rest file content lit base resolved
+    local src="$1" c="$2" dir="$3" name="$4" hits line rest file content lit base resolved fdir
     hits=$(xgit -C "$src" grep -nE '(include_(str|bytes)!|concat!|rerun-if-changed).*\.\./' "$c" -- \
         "$dir" ":(exclude)$dir/tests" ":(exclude)$dir/**/tests.rs" ":(exclude)$dir/**/tests/**" \
         ":(exclude)$dir/benches" ":(exclude)$dir/examples")
@@ -506,11 +513,24 @@ pin_check_outside_inputs() {  # <src> <commit> <dir> <name>
         if grep -qE '^[[:space:]]*//' <<<"$content"; then continue; fi
         lit=$(printf '%s\n' "$content" | grep -oE '"[^"]*\.\./[^"]*"' | sed -n '1p')
         lit=${lit#\"}; lit=${lit%\"}
-        case "$lit" in *rerun-if-changed=*) lit=${lit#*rerun-if-changed=}; base="$dir" ;;
-            *) base=$(dirname "$file") ;; esac
+        case "$lit" in
+            *rerun-if-changed=*)
+                lit=${lit#*rerun-if-changed=}
+                # Cargo runs a build script in the root of the package that owns it. A
+                # build.rs right next to a package manifest is read from that package; any
+                # other file (a helper a build script includes) from the crate judged.
+                base="$dir"
+                fdir=$(dirname "$file")
+                if [ "$(basename "$file")" = build.rs ] \
+                    && xgit -C "$src" cat-file -e "$c:$(repo_path "$fdir" Cargo.toml)" 2>/dev/null; then
+                    base="$fdir"
+                fi ;;
+            *) base=$(dirname "$file") ;;
+        esac
         lit=${lit%%\{*}
         resolved=$(norm_path "$base/$lit")
         [ -n "$resolved" ] || die "$name reads a path above the source root ($file: $lit)"
+        [ "$dir" = . ] && continue
         case "$resolved" in "$dir"/*) continue ;; esac
         extra_input_listed "$name" "$resolved" \
             || die "$name reads $resolved outside its crate ($file); add it to scripts/lib/tasty-extra-inputs.txt"
@@ -519,19 +539,33 @@ $hits
 EOF2
 }
 
-# Reads the edition from the manifest of <dir> at <commit>; stops when it cannot.
+# Reads the edition from the manifest of <dir> at <commit>; stops when it cannot. The
+# edition of [package], or with edition.workspace = true the one of [workspace.package] in
+# the same manifest; an edition in another table is not taken.
 pin_edition() {  # <src> <commit> <dir> <name>
-    local e
-    e=$(xgit -C "$1" show "$2:$3/Cargo.toml" \
-        | sed -n 's/^edition[[:space:]]*=[[:space:]]*"\([0-9]*\)".*/\1/p' | sed -n '1p')
-    [ -n "$e" ] || die "cannot read the edition of $4 ($3/Cargo.toml at ${2:0:8})"
+    local e man
+    man=$(repo_path "$3" Cargo.toml)
+    e=$(xgit -C "$1" show "$2:$man" | awk "$TOML_KEY_AWK"'
+        /^[[:space:]]*\[/ {
+            h = $0; sub(/^[[:space:]]*\[+/, "", h); sub(/\].*$/, "", h)
+            n = split_key(h, hp); in_pkg = (n == 1 && hp[1] == "package")
+            in_wp = (n == 2 && hp[1] == "workspace" && hp[2] == "package")
+            next
+        }
+        in_pkg && /^edition[[:space:]]*=[[:space:]]*"[0-9]*"/ { if (pe == "") { pe = $0; sub(/^[^"]*"/, "", pe); sub(/".*/, "", pe) } next }
+        in_pkg && /^edition[[:space:]]*\.[[:space:]]*workspace[[:space:]]*=[[:space:]]*true/ { inherit = 1; next }
+        in_pkg && /^edition[[:space:]]*=[[:space:]]*\{[[:space:]]*workspace[[:space:]]*=[[:space:]]*true[[:space:]]*\}/ { inherit = 1; next }
+        in_wp && /^edition[[:space:]]*=[[:space:]]*"[0-9]*"/ { if (we == "") { we = $0; sub(/^[^"]*"/, "", we); sub(/".*/, "", we) } next }
+        END { if (pe != "") print pe; else if (inherit && we != "") print we }')
+    [ -n "$e" ] || die "cannot read the edition of $4 ($man at ${2:0:8})"
     PIN_EDITION="$e"
 }
 
 # The shipped content of one file of an extracted tree: Rust after the judge and rustfmt
 # without blank lines, the crate manifest without its version line, anything else as is.
 pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
-    local f="$1/$3" out fmt vline
+    local f="$1/$3" out fmt vline man
+    man=$(repo_path "$4" Cargo.toml)
     if [ ! -f "$f" ]; then
         # A missing Rust file and a copy emptied as test-only count as the same, as in
         # shipped_sum; other files tell a missing file from an empty one.
@@ -547,9 +581,21 @@ pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
             [ -n "$out" ] || { printf '<no-ship>'; return; }
             printf '%s' "$out" | cksum
             ;;
-        "$4/Cargo.toml")
+        "$man")
             out=$(cat "$f")
-            vline=$(printf '%s' "$out" | version_line_no)
+            vline=""
+            # At the root of a repository [workspace.package] can come before [package]:
+            # the version declared in [package] is the one left out. Without one, the
+            # first version line, as for every other manifest.
+            if [ "$4" = . ]; then
+                vline=$(printf '%s' "$out" | awk -v re="$VERSION_LINE_RE" "$TOML_KEY_AWK"'
+                    /^[[:space:]]*\[/ {
+                        h = $0; sub(/^[[:space:]]*\[+/, "", h); sub(/\].*$/, "", h)
+                        in_pkg = (split_key(h, hp) == 1 && hp[1] == "package"); next
+                    }
+                    in_pkg && $0 ~ re { print NR; exit }')
+            fi
+            [ -n "$vline" ] || vline=$(printf '%s' "$out" | version_line_no)
             [ -n "$vline" ] && out=$(printf '%s' "$out" | sed "${vline}d")
             printf '%s' "$out" | cksum
             ;;
@@ -569,7 +615,7 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         case "$f" in
-            "$dir"/tests/*|"$dir"/benches/*|"$dir"/examples/*|*.md) continue ;;
+            "$(repo_path "$dir" tests)"/*|"$(repo_path "$dir" benches)"/*|"$(repo_path "$dir" examples)"/*|*.md) continue ;;
         esac
         diffs+=("$f")
         case "$f" in *.rs) has_rs=1 ;; esac
@@ -585,7 +631,12 @@ EOF2
         mkdir -p "$raw" "$cooked" || die "cannot create the work directory."
         present=()
         for f in "${paths[@]}"; do
-            xgit -C "$src" cat-file -e "$c:$f" 2>/dev/null && present+=("$f")
+            # The crate at the root of its repository is the tree itself: <commit>:. does not read.
+            if [ "$f" = . ]; then
+                xgit -C "$src" cat-file -e "$c^{tree}" 2>/dev/null && present+=("$f")
+            else
+                xgit -C "$src" cat-file -e "$c:$f" 2>/dev/null && present+=("$f")
+            fi
         done
         if [ "${#present[@]}" -gt 0 ]; then
             xgit -C "$src" archive --format=tar "$c" -- "${present[@]}" | tar -x -C "$raw" \
@@ -619,7 +670,7 @@ pin_root_inherited_changed() {  # <src> <old> <new>
 
 # Whether the manifest of <dir> inherits something other than lints from the workspace.
 pin_inherits() {  # <src> <commit> <dir>
-    xgit -C "$1" show "$2:$3/Cargo.toml" | awk '
+    xgit -C "$1" show "$2:$(repo_path "$3" Cargo.toml)" | awk '
         /^\[/ { lints = ($0 ~ /^\[lints/) }
         !lints && /workspace[[:space:]]*=[[:space:]]*true/ { found = 1 }
         END { exit found ? 0 : 1 }'

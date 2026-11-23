@@ -409,9 +409,10 @@ would leave that range unchecked.
   Only 0 passes.
 - Besides the plugin directories and their path dependencies, the check judges the root
   build inputs. A tasty pin move or a changed `[workspace.dependencies]` entry needs a
-  bump of each plugin whose dependency closure holds a changed crate. An update of a
-  crates.io crate in `Cargo.lock` needs one too, unless the plugin is already above its
-  version at the tip of `origin/main` (the local `main` only when there is no
+  bump of each plugin whose dependency closure holds a changed crate. A crate at the root
+  of its git repository is compared as the whole repository (`judge_pin_moves`). An
+  update of a crates.io crate in `Cargo.lock` needs one too, unless the plugin is already
+  above its version at the tip of `origin/main` (the local `main` only when there is no
   `origin/main`). `main` moves only for releases and hotfixes, so its tip is the published
   state, and tags are not read. A local check uses the `origin/main` the clone last
   fetched: if it was not fetched after a release, the baseline is older and a second

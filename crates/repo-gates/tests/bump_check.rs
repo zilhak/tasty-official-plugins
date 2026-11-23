@@ -1491,6 +1491,317 @@ fn a_pin_move_with_a_lower_version_is_undecidable() {
     );
 }
 
+// A crate at the root of its git repository: package_dirs_at gives it the directory ".".
+
+const EXT_MANIFEST: &str = "[package]\nname = \"ext\"\nversion = \"1.0.0\"\nedition = \"2021\"\n";
+const EXT_LIB: &str = "pub fn e() -> u32 {\n    1\n}\n";
+
+impl PinFixture {
+    /// The git repository whose root is the crate ext, next to the fixture repositories.
+    fn ext_dir(&self) -> std::path::PathBuf {
+        self.repo.parent().expect("temp dir").join("ext-src")
+    }
+
+    fn ext_write(&self, rel: &str, body: &str) {
+        write(&self.ext_dir(), rel, body);
+    }
+
+    /// Makes the repository of ext with `manifest` at its root, src/lib.rs, README.md,
+    /// tests/t.rs and `files`, pins ext in [workspace.dependencies] for beta, and commits.
+    fn root_crate_source(&self, manifest: &str, files: &[(&str, &str)]) {
+        let e = self.ext_dir();
+        fs::create_dir_all(&e).expect("ext dir");
+        init_repo(&e);
+        self.ext_write("Cargo.toml", manifest);
+        self.ext_write("src/lib.rs", EXT_LIB);
+        self.ext_write("README.md", "ext\n");
+        self.ext_write("tests/t.rs", "#[test]\nfn t() {}\n");
+        for (rel, body) in files {
+            self.ext_write(rel, body);
+        }
+        commit_all(&e, "ext seed");
+        let r1 = git_out(&e, &["rev-parse", "HEAD"]);
+        self.add_entry(&format!(
+            "ext = {{ git = \"file://{}\", rev = \"{r1}\" }}",
+            e.display()
+        ));
+        self.edit_file(
+            "crates/tasty-plugin-beta/Cargo.toml",
+            "tasty-b.workspace = true\n",
+            "tasty-b.workspace = true\next.workspace = true\n",
+        );
+        self.cargo(&["metadata", "--format-version", "1"]);
+        self.commit("let beta use ext");
+    }
+
+    /// Commits the repository of ext and moves only the ext entry there (move_pin would move
+    /// the tasty entries too), then commits.
+    fn move_ext_pin(&self) {
+        let e = self.ext_dir();
+        commit_all(&e, "change ext");
+        let r2 = git_out(&e, &["rev-parse", "HEAD"]);
+        let toml = fs::read_to_string(self.repo.join("Cargo.toml")).expect("read");
+        let line = toml
+            .lines()
+            .find(|l| l.starts_with("ext = "))
+            .expect("ext entry")
+            .to_string();
+        let head = line.split_once("rev = \"").expect("rev").0;
+        self.edit_root(&line, &format!("{head}rev = \"{r2}\" }}"));
+        self.cargo(&["metadata", "--format-version", "1"]);
+        self.commit("move the ext pin");
+    }
+
+    /// The pin move of ext after `change`, with the default manifest and files.
+    fn ext_move(change: impl Fn(&PinFixture)) -> (i32, String) {
+        let f = PinFixture::new();
+        f.root_crate_source(EXT_MANIFEST, &[]);
+        change(&f);
+        f.move_ext_pin();
+        f.check(&HEAD_RANGE)
+    }
+}
+
+#[test]
+fn a_pin_move_of_a_root_crate_with_only_a_readme_change_needs_no_bump() {
+    let (code, text) = PinFixture::ext_move(|f| f.ext_write("README.md", "ext, more\n"));
+    assert_eq!(code, 0, "{text}");
+}
+
+#[test]
+fn a_pin_move_of_a_root_crate_that_changes_its_source_demands_a_bump() {
+    let (code, text) =
+        PinFixture::ext_move(|f| f.ext_write("src/lib.rs", &EXT_LIB.replace("1\n", "2\n")));
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.starts_with("ext ") && r.contains("changed: src/lib.rs")),
+        "{text}"
+    );
+    assert!(!text.contains("crates/tasty-plugin-alpha:"), "{text}");
+}
+
+#[test]
+fn a_pin_move_of_a_root_crate_that_changes_only_its_tests_needs_no_bump() {
+    let (code, text) = PinFixture::ext_move(|f| {
+        f.ext_write("tests/t.rs", "#[test]\nfn t() {\n    assert!(true);\n}\n")
+    });
+    assert_eq!(code, 0, "{text}");
+}
+
+/// A root crate may read any file of its repository: data.txt is inside the crate, so its
+/// change is content, not an outside input.
+#[test]
+fn a_root_crate_reading_a_file_of_its_repository_is_not_outside_its_crate() {
+    let f = PinFixture::new();
+    f.root_crate_source(
+        EXT_MANIFEST,
+        &[
+            (
+                "src/lib.rs",
+                "pub const D: &str = include_str!(\"../data.txt\");\n",
+            ),
+            ("data.txt", "1\n"),
+        ],
+    );
+    f.ext_write("data.txt", "2\n");
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("changed: data.txt"), "{text}");
+}
+
+/// The version line of the root manifest is left out as for a crate in a directory, also
+/// when [workspace.package] comes first with a version of its own.
+#[test]
+fn a_pin_move_of_a_root_crate_that_changes_only_its_version_line() {
+    let workspace_first = "[workspace]\n\n[workspace.package]\nversion = \"9.0.0\"\n\n\
+                           [package]\nname = \"ext\"\nversion = \"1.0.0\"\nedition = \"2021\"\n";
+    for manifest in [EXT_MANIFEST, workspace_first] {
+        let f = PinFixture::new();
+        f.root_crate_source(manifest, &[]);
+        f.ext_write(
+            "Cargo.toml",
+            &manifest.replacen("version = \"1.0.0\"", "version = \"1.0.1\"", 1),
+        );
+        f.move_ext_pin();
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 0, "{manifest}:\n{text}");
+    }
+}
+
+/// version.workspace = true in [package] takes the version of [workspace.package] in the
+/// same manifest: a change there is the inherited change, not content.
+#[test]
+fn a_root_crate_that_inherits_a_changed_workspace_version_demands_a_bump() {
+    let manifest = "[workspace]\n\n[workspace.package]\nversion = \"1.0.0\"\n\n\
+                    [package]\nname = \"ext\"\nversion.workspace = true\nedition = \"2021\"\n";
+    let f = PinFixture::new();
+    f.root_crate_source(manifest, &[]);
+    f.ext_write(
+        "Cargo.toml",
+        &manifest.replacen("version = \"1.0.0\"", "version = \"1.0.1\"", 1),
+    );
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r
+                .contains("the inherited [workspace.dependencies] or [workspace.package] changed")),
+        "{text}"
+    );
+    assert!(!text.contains("changed: Cargo.toml"), "{text}");
+}
+
+const OTHER_MANIFEST: &str =
+    "[package]\nname = \"other\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+
+/// The build script of a package in a directory of the repository reads its
+/// rerun-if-changed paths from that package, as Cargo runs it: ../../data.txt is the
+/// data.txt at the root.
+#[test]
+fn a_root_crate_scans_a_sub_package_build_script_from_its_own_root() {
+    let f = PinFixture::new();
+    f.root_crate_source(
+        EXT_MANIFEST,
+        &[
+            ("crates/other/Cargo.toml", OTHER_MANIFEST),
+            ("crates/other/src/lib.rs", "pub fn o() {}\n"),
+            (
+                "crates/other/build.rs",
+                "fn main() {\n    println!(\"cargo:rerun-if-changed=../../data.txt\");\n}\n",
+            ),
+            ("data.txt", "1\n"),
+        ],
+    );
+    f.ext_write("data.txt", "2\n");
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.contains("changed: data.txt")),
+        "{text}"
+    );
+}
+
+/// A file that a build script includes is not a build script next to a package manifest,
+/// so its rerun-if-changed paths are read from the crate judged: both stop the check.
+#[test]
+fn a_root_crate_resolves_a_helper_of_a_build_script_from_the_crate_being_judged() {
+    for target in ["../../data.txt", "../../../outside.txt"] {
+        let f = PinFixture::new();
+        f.root_crate_source(
+            EXT_MANIFEST,
+            &[
+                ("crates/other/Cargo.toml", OTHER_MANIFEST),
+                ("crates/other/src/lib.rs", "pub fn o() {}\n"),
+                (
+                    "crates/other/build.rs",
+                    "#[path = \"support/helper.rs\"]\nmod helper;\n\nfn main() {\n    helper::h();\n}\n",
+                ),
+                (
+                    "crates/other/support/helper.rs",
+                    &format!(
+                        "pub fn h() {{\n    println!(\"cargo:rerun-if-changed={target}\");\n}}\n"
+                    ),
+                ),
+                ("data.txt", "1\n"),
+            ],
+        );
+        f.ext_write("data.txt", "2\n");
+        f.move_ext_pin();
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 2, "{target}:\n{text}");
+        assert!(
+            text.contains(&format!(
+                "ext reads a path above the source root (crates/other/support/helper.rs: {target})"
+            )),
+            "{target}:\n{text}"
+        );
+    }
+}
+
+/// rustfmt gets the edition of [package], or of [workspace.package] when [package] inherits
+/// it, not an edition of another table that comes first. `gen` is reserved in 2024, so the
+/// wrong edition makes a formatting change look like content.
+#[test]
+fn a_root_crate_reads_the_edition_of_its_package_section() {
+    let inherits = "[workspace]\n\n[workspace.package]\nedition = \"2021\"\n\n\
+                    [package]\nname = \"ext\"\nversion = \"1.0.0\"\nedition.workspace = true\n";
+    let own = "[workspace]\n\n[workspace.package]\nedition = \"2024\"\n\n\
+               [package]\nname = \"ext\"\nversion = \"1.0.0\"\nedition = \"2021\"\n";
+    for manifest in [inherits, own] {
+        let f = PinFixture::new();
+        f.root_crate_source(manifest, &[("src/lib.rs", "pub fn gen( ){}\n")]);
+        f.ext_write("src/lib.rs", "pub fn gen() {}\n");
+        f.move_ext_pin();
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 0, "{manifest}:\n{text}");
+    }
+}
+
+/// A path above the repository stops the check from shipped code, not from tests/.
+#[test]
+fn a_root_crate_reads_above_its_repository_only_from_shipped_code() {
+    let line = "pub const X: &str = include_str!(\"../../x\");\n";
+    let (code, text) = PinFixture::ext_move(|f| {
+        f.ext_write("tests/t.rs", &format!("#[test]\nfn t() {{}}\n{line}"))
+    });
+    assert_eq!(code, 0, "tests/:\n{text}");
+
+    let (code, text) =
+        PinFixture::ext_move(|f| f.ext_write("src/lib.rs", &format!("{EXT_LIB}{line}")));
+    assert_eq!(code, 2, "src/:\n{text}");
+    assert!(
+        text.contains("ext reads a path above the source root (src/lib.rs: ../../x)"),
+        "src/:\n{text}"
+    );
+}
+
+/// The root crate covers its whole repository: a change of another package in it is a
+/// change of the root crate too.
+#[test]
+fn a_pin_move_of_a_root_crate_covers_the_whole_repository() {
+    let f = PinFixture::new();
+    f.root_crate_source(
+        EXT_MANIFEST,
+        &[
+            ("crates/other/Cargo.toml", OTHER_MANIFEST),
+            ("crates/other/src/lib.rs", "pub fn o() {}\n"),
+        ],
+    );
+    f.ext_write("crates/other/src/lib.rs", "pub fn o() {}\npub fn p() {}\n");
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("changed: crates/other/src/lib.rs"), "{text}");
+}
+
+/// Only the #[cfg(test)] part of the root crate changed; needs the real judge.
+#[test]
+fn a_pin_move_of_a_root_crate_that_changes_only_test_code_needs_no_bump() {
+    let lib = format!(
+        "{EXT_LIB}\n#[cfg(test)]\nmod tests {{\n    #[test]\n    fn t() {{\n        assert_eq!(super::e(), 1);\n    }}\n}}\n"
+    );
+    let f = PinFixture::new();
+    f.root_crate_source(EXT_MANIFEST, &[("src/lib.rs", &lib)]);
+    f.ext_write(
+        "src/lib.rs",
+        &lib.replace(
+            "assert_eq!(super::e(), 1);",
+            "assert_eq!(super::e(), 1, \"e\");",
+        ),
+    );
+    f.move_ext_pin();
+    let (code, text) = f.check_judged(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}
+
 // ── root build inputs ────────────────────────────────────────────────────────
 
 /// Case 9: Only an entry of [workspace.dependencies] changed (no rev change).
