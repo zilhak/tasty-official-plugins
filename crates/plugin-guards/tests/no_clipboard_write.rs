@@ -495,6 +495,26 @@ impl<'a> Code<'a> {
         })
     }
 
+    /// Whether the `,` at token `comma` ends an arm: an `=>` comes before it in the same
+    /// match body. Inside other brackets, macro arguments among them, the comma is read
+    /// locally as before.
+    fn ends_arm(&self, comma: usize) -> bool {
+        let mut k = comma;
+        while k > 0 {
+            match self.tok(k - 1) {
+                ")" | "]" | "}" => match self.bracket_open(k - 1) {
+                    Some(open) => k = open,
+                    None => return true,
+                },
+                "{" => return self.back(k - 1, 1) == "!",
+                "(" | "[" => return true,
+                ">" if self.back(k - 1, 1) == "=" => return true,
+                _ => k -= 1,
+            }
+        }
+        true
+    }
+
     /// Whether the name at token `name`, called with the arguments that open at token
     /// `open`, stands in a pattern: after `let`, or at the start of a match arm. Read
     /// from the tokens around it alone, inside macro arguments too. The tests below
@@ -540,7 +560,12 @@ impl<'a> Code<'a> {
                 let after = self.after_pattern(end);
                 let arm_end = (self.tok(after) == "=" && self.tok(after + 1) == ">")
                     || self.tok(after) == "if";
-                arm_end && (self.tok(before) != "}" || self.ends_arm_body(before))
+                arm_end
+                    && match self.tok(before) {
+                        "}" => self.ends_arm_body(before),
+                        "," => self.ends_arm(before),
+                        _ => true,
+                    }
             }
             _ => false,
         }
@@ -1719,6 +1744,18 @@ fn copy_command_patterns_outside_the_read_places_stay_reported() {
             1,
         ),
         ("if let r#CopyText(_) = c {}", 1),
+        (
+            "match cmd { OutputCommand::CopyText(_) | OpenUrl { .. } => {} _ => {} }",
+            1,
+        ),
+        (
+            "match cmd { OpenUrl { .. } | OutputCommand::CopyText(_) => {} _ => {} }",
+            1,
+        ),
+        (
+            "if let OpenUrl { .. } | OutputCommand::CopyText(_) = cmd {}",
+            1,
+        ),
     ]);
     let offenders = found(
         "macro_rules! matches { ($a:expr, $b:expr) => {}; }\n\
@@ -1741,5 +1778,43 @@ fn macro_tokens_are_read_by_the_same_local_rule() {
         "matches![c, Command::CopyText(_) if ready]",
         "matches!{c, Command::CopyText(_) if ready}",
         "matches!(c, Command::CopyText(_) | Command::CopyImage(_) if ready)",
+    ]);
+}
+
+/// Given an egui copy command built by a closure in a match guard, after the comma
+/// between the closure's parameters, when the file is read, then it is reported: that
+/// comma does not end an arm.
+#[test]
+fn a_copy_command_built_by_a_closure_in_a_guard_is_a_write() {
+    let offenders = found(
+        "fn f() {\n    \
+         match () {\n        \
+         _ if Send(out) & |_, _| OutputCommand::CopyText(text.clone()) => (),\n        \
+         _ => (),\n    \
+         }\n\
+         }\n",
+    );
+    assert_eq!(offenders.len(), 1, "{offenders:?}");
+    assert!(offenders[0].contains(":3 (fn f)"), "{offenders:?}");
+}
+
+/// Given an egui copy command returned by a `move` closure in a match guard, when the
+/// file is read, then it is reported.
+#[test]
+fn a_copy_command_returned_by_a_move_closure_in_a_guard_is_a_write() {
+    assert_writes(&[(
+        "match () { _ if return move |_, _| OutputCommand::CopyText(t.clone()) => (), _ => () }",
+        1,
+    )]);
+}
+
+/// Given an egui copy command at the start of an arm after a comma that ends the arm
+/// before it, when the file is read, then nothing is reported.
+#[test]
+fn a_copy_command_pattern_after_an_arm_ending_in_a_comma_is_not_a_write() {
+    assert_no_writes(&[
+        "match c { A => x, OutputCommand::CopyText(_) => {} _ => {} }",
+        "match c { A => f(a, b), OutputCommand::CopyText(_) if ready => {} _ => {} }",
+        "match c { OutputCommand::CopyText(_) => {}, OutputCommand::CopyImage(_) => {} }",
     ]);
 }
