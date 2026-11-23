@@ -15,12 +15,14 @@
 //!   is read from the index, and also from the work tree when that copy differs, because a
 //!   commit takes the index. A tracked link is read as its target text from the index,
 //!   whatever form the checkout gave it, and a work tree path through a linked folder is
-//!   not read. Every untracked path that Git does not ignore is read too, except the local
-//!   agent files and folders and anything under a folder marked as a build cache. Tracked
-//!   paths are read wherever they sit, also under `dist` or a cache folder.
-//! - Without Git, as in a source tarball, the tree is walked. The walk skips build,
-//!   dependency, and editor folders, the local agent files and folders, and folders marked
-//!   as build caches.
+//!   not read. Every untracked path that Git does not ignore is read too, except a path
+//!   with any part among the pruned names (PRUNE_NAMES: build, dependency, editor, and
+//!   tool folders, and the local agent files and folders) and anything under a folder
+//!   marked as a build cache. Tracked paths are read wherever they sit, also under `dist`
+//!   or a cache folder.
+//! - Without Git, as in a source tarball, the tree is walked. The walk skips the same
+//!   pruned names, whether a file or a folder carries them, and folders marked as build
+//!   caches.
 //!
 //! Files with a binary extension and the vendored minified bundles are not read. A file
 //! that is not UTF-8 is listed and fails the check, so a new text format is not skipped
@@ -1154,10 +1156,11 @@ const IDS: &[&str] = &[
     "round-number",
 ];
 
-/// One line per pattern that this pattern alone reports. The numbers, slug, coordinate,
-/// and file name are made up for this check.
-fn one_line_per_pattern() -> Vec<(&'static str, String)> {
-    vec![
+/// Lines that one pattern alone reports, at least one per pattern. The numbers, slug,
+/// coordinate, and file name are made up for this check. The split number has only nine
+/// shapes, so all of them are generated instead of fixing one value.
+fn lines_by_pattern() -> Vec<(&'static str, String)> {
+    let mut lines = vec![
         ("todo-number", fx!("see todo", " 7391").to_string()),
         (
             "conductor-ticket",
@@ -1179,17 +1182,23 @@ fn one_line_per_pattern() -> Vec<(&'static str, String)> {
             fx!("the folder .", "claude", " holds it").to_string(),
         ),
         ("prose-todo", "a TODO in prose".to_string()),
-        ("split-number", "x (04) y".to_string()),
         ("plan-coordinate", "see Q.7.X.Y here".to_string()),
         ("round-number", "see R7391 here".to_string()),
-    ]
+    ];
+    lines.extend(split_lines().map(|line| ("split-number", line)));
+    lines
+}
+
+/// `x (0N) y` for every split digit N.
+fn split_lines() -> impl Iterator<Item = String> {
+    (1..=9).map(|d| format!("x (0{d}) y"))
 }
 
 #[test]
 fn the_table_holds_the_ten_patterns_and_each_one_reports() {
     let ids: Vec<&str> = PATTERNS.iter().map(|(id, _, _)| *id).collect();
     assert_eq!(ids, IDS, "the pattern table changed");
-    for (id, line) in one_line_per_pattern() {
+    for (id, line) in lines_by_pattern() {
         let found: Vec<&str> = violations_in_line("crates/x/src/lib.rs", &line)
             .into_iter()
             .map(|(id, _)| id)
@@ -1214,11 +1223,11 @@ fn todo_number_catches_numbered_citations_only() {
         (fx!("see TODO", "  7391"), Some(fx!("TODO", "  7391"))),
         (fx!("see TODO", " \t 7391"), Some(fx!("TODO", " \t 7391"))),
         (fx!("see TODO", " -7391"), Some(fx!("TODO", " -7391"))),
-        ("// TODO: refactor this later", None),
-        ("TODOS are not numbered", None),
+        ("// TODO: cache the result", None),
+        ("TODOS stay plain", None),
         (fx!("8213번 ", "TODO", " — x"), Some(fx!("8213번 ", "TODO"))),
         (fx!("(9175번", "TODO", ")"), Some(fx!("9175번", "TODO"))),
-        (fx!("이번 ", "TODO", " 는 크다"), None),
+        (fx!("이번 ", "TODO", " 도 같다"), None),
         (fx!("번 ", "TODO"), None),
         (fx!("TODO: ", "7391"), None),
         (fx!("TODO. ", "7391"), None),
@@ -1237,9 +1246,9 @@ fn todo_number_is_not_evaded_by_case() {
         (fx!("ToDo", "-6047"), Some(fx!("ToDo", "-6047"))),
         (fx!("(todo", "8213)"), Some(fx!("todo", "8213"))),
         (fx!("see Todo", " 7391"), Some(fx!("Todo", " 7391"))),
-        ("// todo: refactor this later", None),
-        ("// todo(scope): replace it later", None),
-        ("let todos = todo_marker_end(line, 4);", None),
+        ("// todo: cache the result", None),
+        ("// todo(io): read in chunks", None),
+        ("let todos = load_items();", None),
         (fx!("todo_", "7391"), None),
     ];
     for (line, want) in cases {
@@ -1253,8 +1262,8 @@ fn todo_number_takes_the_slash_as_a_separator() {
         (fx!("(todo", "/6047 R2)"), Some(fx!("todo", "/6047"))),
         (fx!("TODO", "/9175"), Some(fx!("TODO", "/9175"))),
         (fx!("x/todo", "//8213.md"), Some(fx!("todo", "//8213"))),
-        ("TODO/changelog either way", None),
-        ("note/todo/abstract/quote", None),
+        ("TODO/notes in one list", None),
+        ("notes/todo/drafts/old", None),
     ];
     for (line, want) in cases {
         assert_eq!(find_todo_number(line).as_deref(), *want, "{line}");
@@ -1336,7 +1345,7 @@ fn workspace_subdir_catches_paths_into_the_folder() {
 #[test]
 fn dated_slug_catches_date_and_word() {
     assert_eq!(
-        find_dated_slug(fx!("the slug was 2001-02", "-03-sample-slug here")).as_deref(),
+        find_dated_slug(fx!("it reads 2001-02", "-03-sample-slug now")).as_deref(),
         Some(fx!("2001-02", "-03-sample-slug"))
     );
     assert_eq!(
@@ -1366,15 +1375,15 @@ fn local_folder_catches_mentions() {
     let ws = Some(fx!(".", "claude", "-workspace"));
     let short = Some(fx!(".", "claude"));
     assert_eq!(
-        find_local_folder(fx!("output goes under .", "claude", "-workspace here")).as_deref(),
+        find_local_folder(fx!("logs pile up in .", "claude", "-workspace now")).as_deref(),
         ws
     );
     assert_eq!(
-        find_local_folder(fx!("shots go to .", "claude", "-workspace/temp/ here")).as_deref(),
+        find_local_folder(fx!("keep a copy in .", "claude", "-workspace/temp/ too")).as_deref(),
         ws
     );
     assert_eq!(
-        find_local_folder(fx!("claude", "-workspace/temp is the place")).as_deref(),
+        find_local_folder(fx!("claude", "-workspace/temp holds the rest")).as_deref(),
         Some(fx!("claude", "-workspace"))
     );
     assert_eq!(
@@ -1382,19 +1391,19 @@ fn local_folder_catches_mentions() {
         ws
     );
     assert_eq!(
-        find_local_folder(fx!("the setting is in .", "claude", "/CLAUDE.md")).as_deref(),
+        find_local_folder(fx!("the color lives in .", "claude", "/CLAUDE.md")).as_deref(),
         short
     );
     assert_eq!(
-        find_local_folder(fx!("./.", "claude", "/x is read")).as_deref(),
+        find_local_folder(fx!("./.", "claude", "/x opens")).as_deref(),
         short
     );
     assert_eq!(
-        find_local_folder(fx!(r".\.", "claude", r"\x is read")).as_deref(),
+        find_local_folder(fx!(r".\.", "claude", r"\x opens")).as_deref(),
         short
     );
     assert_eq!(
-        find_local_folder(fx!("the folder .", "claude", " alone")).as_deref(),
+        find_local_folder(fx!("one .", "claude", " per user")).as_deref(),
         short
     );
 }
@@ -1402,21 +1411,21 @@ fn local_folder_catches_mentions() {
 #[test]
 fn local_folder_home_exemption_is_adjacent_not_line_wide() {
     for line in [
-        "~/.claude/settings.json is merged",
-        "$HOME/.claude/projects is read",
+        "~/.claude/settings.json gets a new key",
+        "$HOME/.claude/projects lists the runs",
         "%USERPROFILE%\\.claude\\settings.json",
         "Ok(base.home_dir().join(\".claude\"))",
-        "아니면 홈의 `.claude/projects`.",
-        "$CLAUDE_CONFIG_DIR unset means .claude/projects",
+        "기본 경로는 홈의 `.claude/projects`.",
+        "$CLAUDE_CONFIG_DIR empty, so .claude/projects",
     ] {
         assert_eq!(find_local_folder(line), None, "{line}");
     }
     let short = Some(fx!(".", "claude"));
     for line in [
-        fx!("~/.tasty and .", "claude", "/CLAUDE.md are compared"),
-        fx!("after Homebrew installs, .", "claude", "/CLAUDE.md changes"),
-        fx!("renderHome() reads .", "claude", "/settings.json"),
-        fx!("홈 화면 설정은 .", "claude", "/CLAUDE.md 가 정한다"),
+        fx!("~/.tasty gets a copy of .", "claude", "/CLAUDE.md"),
+        fx!("Homebrew leaves .", "claude", "/CLAUDE.md alone"),
+        fx!("drawHome() then writes .", "claude", "/settings.json"),
+        fx!("홈 화면 색은 .", "claude", "/CLAUDE.md 에 적는다"),
     ] {
         assert_eq!(find_local_folder(line).as_deref(), short, "{line}");
     }
@@ -1426,9 +1435,9 @@ fn local_folder_home_exemption_is_adjacent_not_line_wide() {
 fn local_folder_allows_identifiers_and_build_outputs() {
     for line in [
         "id = \"com.tasty.claude\"",
-        "com.tasty.claude-design was removed",
+        "com.tasty.claude-extra is an id",
         "crates/tasty-plugin-claude/tasty-plugin.toml.sig",
-        "site/release.json is read",
+        "site/release.json lists it",
         "target/release/tasty-plugin-claude",
         "notify_mod/claude/.claude-plugin/plugin.json",
     ] {
@@ -1439,19 +1448,19 @@ fn local_folder_allows_identifiers_and_build_outputs() {
 #[test]
 fn prose_todo_catches_prose_but_not_task_markers() {
     let cases: &[(&str, bool)] = &[
-        ("//! this TODO is only a move", true),
-        ("// unlike the \"one `*` only\" line of the TODO page", true),
-        ("/// (kept apart — a separate TODO if needed).", true),
-        ("/// left as `TODO` in its own source", true),
-        ("// noted as a separate TODO.", true),
-        ("// later TODOs take the same path", true),
-        ("// TODO: switch to the released version", false),
-        ("// TODO(scope): replace after the change", false),
-        ("// TODO(someone): upstream decides", false),
-        ("// TODO: this TODO goes on below", true),
-        ("// TODO(someone) later", true),
-        ("// TODO fix later", true),
-        ("let todo = 3; // todo list here", false),
+        ("//! the TODO above was a rename", true),
+        ("// as the \"two rows at most\" note in the TODO says", true),
+        ("/// (blue for now — the TODO may pick a color).", true),
+        ("/// the word `TODO` shows up in the sample", true),
+        ("// counted in the TODO.", true),
+        ("// both TODOs hold the color", true),
+        ("// TODO: drop the fallback once the field ships", false),
+        ("// TODO(parser): handle tabs", false),
+        ("// TODO(owner): pick the default", false),
+        ("// TODO: the TODO in the next row counts too", true),
+        ("// TODO(owner) soon", true),
+        ("// TODO rename soon", true),
+        ("let todo = 1; // a todo count", false),
         ("fn todo_marker() {}", false),
     ];
     for (line, caught) in cases {
@@ -1484,11 +1493,11 @@ fn split_number_catches_a_zero_and_one_digit_in_brackets() {
 #[test]
 fn plan_coordinate_catches_dotted_coordinates_only() {
     assert_eq!(
-        find_plan_coordinate("refactor (Q.7.X.Y.1 step 1)").as_deref(),
+        find_plan_coordinate("move it (Q.7.X.Y.1 part 1)").as_deref(),
         Some("Q.7.X.Y")
     );
     assert_eq!(
-        find_plan_coordinate("the end of Q.7.X.Z.3.c").as_deref(),
+        find_plan_coordinate("after Q.7.X.Z.3.c only").as_deref(),
         Some("Q.7.X.Z")
     );
     assert_eq!(
@@ -1747,7 +1756,7 @@ const CLEAN_LINE: &[u8] = b"nothing to see\n";
 fn the_notice_body_is_read_with_every_pattern_but_prose() {
     let repo = Repo::new("cite-notice");
     let key = "crates/tasty-plugin-markdown/assets/NOTICE.md";
-    let lines = one_line_per_pattern();
+    let lines = lines_by_pattern();
     let mut text = String::new();
     for (_, line) in &lines {
         text.push_str(line);
@@ -1899,14 +1908,18 @@ fn paths_are_matched_as_git_gives_them() {
 #[cfg(unix)]
 #[test]
 fn a_backslash_in_a_name_does_not_match_an_allowlisted_path() {
-    let line = "x (04) y";
-    assert!(violations_in_line(SELF_KEY, line).is_empty());
+    let mut text = String::new();
+    for line in split_lines() {
+        assert!(violations_in_line(SELF_KEY, &line).is_empty(), "{line}");
+        text.push_str(&line);
+        text.push('\n');
+    }
     let name = SELF_KEY.replace('/', "\\");
     let repo = Repo::new("cite-backslash");
-    repo.add(&name, format!("{line}\n").as_bytes());
+    repo.add(&name, text.as_bytes());
     assert_eq!(
         found(&repo.scan()),
-        vec![(name, Source::Index, "split-number")],
+        vec![(name, Source::Index, "split-number"); 9],
         "a single file named like the allowlisted path got its exemption"
     );
 }
@@ -2051,21 +2064,33 @@ fn registered_but_missing(root: &Path) -> Vec<&'static str> {
         .collect()
 }
 
+/// Where the vendored list and the tree disagree.
+#[derive(Debug, Default, PartialEq)]
+struct BundleInventory {
+    /// Listed bundles that are not a file at their path.
+    missing: Vec<&'static str>,
+    /// Unlisted minified files directly in the markdown assets folder.
+    in_assets: Vec<String>,
+    /// Unlisted minified files anywhere the citation scan starts from.
+    anywhere: Vec<String>,
+}
+
+/// The three checks of the vendored list, as the real tree test runs them.
+fn bundle_inventory(root: &Path) -> Result<BundleInventory, String> {
+    Ok(BundleInventory {
+        missing: registered_but_missing(root),
+        in_assets: unlisted_in_assets(root)?,
+        anywhere: unlisted_anywhere(root)?,
+    })
+}
+
 #[test]
 fn the_vendored_list_matches_the_tree() {
-    let root = repo_root();
-    assert!(
-        registered_but_missing(&root).is_empty(),
-        "the vendored list names bundles that are not there; move the entries with the \
-         bundles: {:?}",
-        registered_but_missing(&root)
-    );
-    let direct = unlisted_in_assets(&root).unwrap_or_else(|e| panic!("{e}"));
-    let anywhere = unlisted_anywhere(&root).unwrap_or_else(|e| panic!("{e}"));
-    assert!(
-        direct.is_empty() && anywhere.is_empty(),
-        "minified bundles that the vendored list does not name; add them to \
-         VENDORED_FILES so the citation scan leaves them out: {direct:?} {anywhere:?}"
+    assert_eq!(
+        bundle_inventory(&repo_root()),
+        Ok(BundleInventory::default()),
+        "the vendored list and the tree disagree. Move a listed entry with its bundle, \
+         and add a new minified bundle to VENDORED_FILES so the citation scan leaves it out"
     );
 }
 
@@ -2106,6 +2131,70 @@ fn an_unlisted_bundle_elsewhere_is_found() {
     assert_eq!(
         unlisted_anywhere(repo.root()).unwrap_or_else(|e| panic!("{e}")),
         vec!["crates/other/web/x.min.css".to_string()]
+    );
+}
+
+/// A repository holding the registered bundles as untracked empty files.
+fn inventory_repo(what: &str) -> Repo {
+    let repo = Repo::new(what);
+    seed_registered(repo.root());
+    repo
+}
+
+#[test]
+fn the_inventory_passes_a_tree_that_matches_the_list() {
+    let repo = inventory_repo("cite-inventory-clean");
+    assert_eq!(
+        bundle_inventory(repo.root()),
+        Ok(BundleInventory::default())
+    );
+}
+
+#[test]
+fn the_inventory_reports_a_missing_registered_bundle() {
+    let repo = inventory_repo("cite-inventory-missing");
+    let gone = VENDORED_FILES[0];
+    std::fs::remove_file(path_of(repo.root(), gone)).expect("remove");
+    assert_eq!(
+        bundle_inventory(repo.root()),
+        Ok(BundleInventory {
+            missing: vec![gone],
+            ..BundleInventory::default()
+        })
+    );
+}
+
+#[test]
+fn the_inventory_reports_an_unlisted_bundle_beside_a_cache_marker_in_assets() {
+    let repo = inventory_repo("cite-inventory-assets");
+    let assets = path_of(repo.root(), ASSETS_DIR);
+    std::fs::write(
+        assets.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .expect("write the marker");
+    std::fs::write(assets.join("extra.min.js"), "").expect("write");
+    // The marker hides the untracked bundle from the Git list, so only the direct read
+    // of the folder reports it.
+    assert_eq!(
+        bundle_inventory(repo.root()),
+        Ok(BundleInventory {
+            in_assets: vec![format!("{ASSETS_DIR}/extra.min.js")],
+            ..BundleInventory::default()
+        })
+    );
+}
+
+#[test]
+fn the_inventory_reports_an_unlisted_bundle_elsewhere() {
+    let repo = inventory_repo("cite-inventory-elsewhere");
+    repo.add("crates/other/web/x.min.css", b"");
+    assert_eq!(
+        bundle_inventory(repo.root()),
+        Ok(BundleInventory {
+            anywhere: vec!["crates/other/web/x.min.css".to_string()],
+            ..BundleInventory::default()
+        })
     );
 }
 
