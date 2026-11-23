@@ -255,8 +255,8 @@ impl<'a> Code<'a> {
                 ")" | "]" => depth += 1,
                 "}" if depth > 0 => depth += 1,
                 "(" | "[" | "{" if depth > 0 => depth -= 1,
-                "," if depth == 0 => break,
-                ";" | "{" | "}" | "(" | "[" => break,
+                "," | ";" if depth == 0 => break,
+                "{" | "}" | "(" | "[" => break,
                 _ => {}
             }
             from -= 1;
@@ -1025,6 +1025,17 @@ fn commas_inside_the_receiver_do_not_end_the_call() {
             "{src}: {offenders:?}"
         );
     }
+}
+
+/// Given a multi-line Core port call whose receiver block holds a statement end, when the
+/// file is read, then the receiver word before that statement end counts and the call is
+/// reported.
+#[test]
+fn statement_ends_inside_the_receiver_do_not_end_the_call() {
+    let src = "fn f() {\n    ({ let c = core.clipboard_arc(); c })\n        .write_text(t);\n}\n";
+    let offenders = found(src);
+    assert_eq!(offenders.len(), 1, "{src}: {offenders:?}");
+    assert!(offenders[0].contains(":3 (fn f)"), "{src}: {offenders:?}");
 }
 
 /// Given a multi-line Core port call whose receiver holds a turbofish with commas, when
