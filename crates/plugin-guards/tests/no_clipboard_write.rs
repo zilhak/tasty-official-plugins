@@ -118,6 +118,8 @@ struct Code<'a> {
     source: Source<'a>,
     tokens: Vec<Range<usize>>,
     line_starts: Vec<usize>,
+    /// The `<` of each turbofish, keyed by the token of its closing `>`.
+    turbofish: BTreeMap<usize, usize>,
 }
 
 impl<'a> Code<'a> {
@@ -144,11 +146,14 @@ impl<'a> Code<'a> {
         let line_starts = std::iter::once(0)
             .chain(source.code.match_indices('\n').map(|(at, _)| at + 1))
             .collect();
-        Code {
+        let mut code = Code {
             source,
             tokens,
             line_starts,
-        }
+            turbofish: BTreeMap::new(),
+        };
+        code.turbofish = code.turbofish_opens();
+        code
     }
 
     /// The text of token `i`, or "" past either end.
@@ -182,8 +187,26 @@ impl<'a> Code<'a> {
         &self.source.code[self.line_starts[line]..end]
     }
 
+    /// The token that closes the `(`, `[`, or `{` at token `i`, counting all three kinds.
+    fn bracket_close(&self, i: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for j in i..self.tokens.len() {
+            match self.tok(j) {
+                "(" | "[" | "{" => depth += 1,
+                ")" | "]" | "}" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(j);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// The `<` of each turbofish `::<...>` in the file, keyed by the token of its closing
-    /// `>`. The `>` of `->` and `=>` inside does not close it.
+    /// `>`. A turbofish that does not close is left out.
     fn turbofish_opens(&self) -> BTreeMap<usize, usize> {
         let mut out = BTreeMap::new();
         for lt in 2..self.tokens.len() {
@@ -191,7 +214,8 @@ impl<'a> Code<'a> {
                 continue;
             }
             let mut depth = 0usize;
-            for j in lt..self.tokens.len() {
+            let mut j = lt;
+            while j < self.tokens.len() {
                 match self.tok(j) {
                     "<" => depth += 1,
                     ">" if matches!(self.tok(j - 1), "-" | "=") => {}
@@ -202,8 +226,14 @@ impl<'a> Code<'a> {
                             break;
                         }
                     }
+                    "(" | "[" | "{" => match self.bracket_close(j) {
+                        Some(close) => j = close,
+                        None => break,
+                    },
+                    ";" | ")" | "]" | "}" => break,
                     _ => {}
                 }
+                j += 1;
             }
         }
         out
@@ -214,11 +244,10 @@ impl<'a> Code<'a> {
     /// outer call, skipping blocks, brackets, and turbofish generics of the receiver, and
     /// on to the `)` that closes the arguments.
     fn call_statement(&self, first: usize, open: usize) -> &str {
-        let turbofish = self.turbofish_opens();
         let mut depth = 0usize;
         let mut from = first;
         while from > 0 {
-            if let Some(&lt) = turbofish.get(&(from - 1)) {
+            if let Some(&lt) = self.turbofish.get(&(from - 1)) {
                 from = lt;
                 continue;
             }
@@ -1036,4 +1065,38 @@ fn commas_inside_a_turbofish_of_the_receiver_do_not_end_the_call() {
     let src = "fn f() {\n    consume::<u8, u16>(\n        ({ clipboard_data }),\n        self.write_text(surface_id, &text),\n    );\n}\n";
     let offenders = found(src);
     assert!(offenders.is_empty(), "{src}: {offenders:?}");
+}
+
+/// Given comparisons inside const arguments of a turbofish, an unclosed turbofish in a
+/// macro, and a function type with `->` inside a turbofish, when the file is read, then
+/// only the calls whose own receiver holds the word are reported.
+#[test]
+fn a_turbofish_ends_at_its_own_closing_angle_bracket() {
+    let passes = [
+        "fn f() {\n    let k = f::<{ A < B }>();\n    let clipboard = 1;\n    port_for(a > b)\n        .write_text(t);\n}\n",
+        "fn f() {\n    consume(\n        flag::<{ 1 < 2 }>(),\n        clipboard_data,\n        2 > port\n            .write_text(x),\n    );\n}\n",
+        "fn f() {\n    macro_tokens!(tag::<);\n    let clipboard = 1;\n    port_for(a > b)\n        .write_text(t);\n}\n",
+    ];
+    for src in passes {
+        let offenders = found(src);
+        assert!(offenders.is_empty(), "{src}: {offenders:?}");
+    }
+    let writes = [
+        (
+            "fn f() {\n    clipboard_from(make(flag::<{ 1 < 2 }>(), 2) > 1)\n        .write_text(text);\n}\n",
+            3,
+        ),
+        (
+            "fn f() {\n    core.clipboard_for::<fn(u8) -> u8, Id>()\n        .write_text(t);\n}\n",
+            3,
+        ),
+    ];
+    for (src, line) in writes {
+        let offenders = found(src);
+        assert_eq!(offenders.len(), 1, "{src}: {offenders:?}");
+        assert!(
+            offenders[0].contains(&format!(":{line} (fn f)")),
+            "{src}: {offenders:?}"
+        );
+    }
 }
