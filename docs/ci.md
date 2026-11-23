@@ -196,7 +196,8 @@ the `check` job with `scripts/check.sh test` on Linux, and in the `test` job on 
 and macOS in a step of their own, because the `--lib --bins` run leaves them out. Run them
 with `cargo test --locked -p plugin-guards`. They read the sources as text and use the
 source readers of `tasty-doc-guards` from the pinned tasty commit, a dev-dependency of
-this crate and of `plugin-pin-check` only, so it never enters a plugin build. One check,
+this crate and of `plugin-pin-check` only, so it never enters a plugin build. Function
+bodies are found with the span reader of this crate (`plugin_guards::fn_spans`). One check,
 `no_local_doc_citation`, also runs `git` in a Git checkout to list the files and read
 the index.
 
@@ -243,15 +244,17 @@ the index.
   Icons come from the design SVGs. The check walks the tree itself and follows folder
   links. It skips target, dist, and node_modules folders, git and worktree folders, the
   local agent folders, and folders marked as build caches.
-- `no_clipboard_write`: the masked Rust code under `crates/` holds none of the clipboard
-  write call shapes listed in the test (arboard, Wayland, X11, macOS pasteboard, Windows,
-  egui, and the copy paths tasty used). The one exception is the `set_text` of the claude
+- `no_clipboard_write`: the masked Rust code under `crates/`, read as tokens, holds none
+  of the clipboard write calls listed in the test (arboard, Wayland, X11, macOS
+  pasteboard, Windows, egui, and the copy paths tasty used). It follows `use ... as`
+  renames of those functions and counts clearing an arboard clipboard. The test file
+  (`SHAPES`, `offenders_in`) holds the exact rules. The one exception is the `set_text` of the claude
   screen test double in `error_scan.rs`, allowed only for its receivers inside the listed
   tests, each of which must still use it.
 - `bundled_namespace_dispatch`: every host method in the `METHOD_TABLE` of the pinned tasty
   commit whose prefix a plugin declares as its `ipc_namespace` has a string arm in that
-  plugin's `handle_ipc_method`, and the compared method set matches the record for the
-  pin. No Rust file (extension `rs`) under the `src/` of any plugin defines that function
+  plugin's `handle_ipc_method` (its body found by `plugin_guards::fn_spans`), and the
+  compared method set matches the record for the pin. No Rust file (extension `rs`) under the `src/` of any plugin defines that function
   more than once.
 - `manifest_cli_catalog_keys`: each non-empty CLI description and argument help in a
   plugin manifest has its translation key, the English catalog value equals the manifest
