@@ -23,4 +23,4 @@
 
 - 커밋 형식과 단위는 [커밋 컨벤션](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/commit-convention.md)을 따른다.
 - `--no-verify`를 쓰지 않는다. 훅이 막으면 우회하지 말고 고치거나 보고한다.
-- `.claude`와 `.claude-workspace`는 git에 넣지 않는다. 로컬 경로와 로컬 작업 문서를 이 레포에 적지 않는다.
+- 에이전트가 쓰는 로컬 설정·작업 폴더(`.gitignore`가 제외한다)는 git에 넣지 않는다. 로컬 경로와 로컬 작업 문서를 이 레포에 적지 않는다.
