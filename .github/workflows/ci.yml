@@ -188,8 +188,13 @@ jobs:
             exit 1
           fi
           echo "TASTY_STRIP_CFG_TEST_BIN=$bin" >> "$GITHUB_ENV"
+      # The dev-bundle tests run the script with the system /bin/bash, the bash 3.2 that
+      # macOS ships; see crates/repo-gates/tests/dev_bundle_lock.rs.
       - name: test (repo-gates, macOS)
         if: runner.os == 'macOS'
+        env:
+          REPO_GATES_DEV_BUNDLE_BASH: /bin/bash
+          REPO_GATES_DEV_BUNDLE_BASH_VERSION: "3.2"
         run: cargo test --locked -p repo-gates
 
   # shellcheck on every shell script and actionlint on every workflow. Both tools are
