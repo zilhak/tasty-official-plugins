@@ -10,7 +10,9 @@
 //! Wayland and X11 selections, the macOS pasteboard, the Windows clipboard, egui and
 //! egui-winit copies, and the names tasty used for its own copy paths. A write function
 //! renamed by `use ... as` is followed, and clearing an arboard clipboard (bound to a
-//! name or created in the same statement) counts as a write. The reading is syntax only:
+//! name or created in the same statement) counts as a write. The egui copy commands are
+//! enum variants: named in a pattern after `let` or at the start of a match arm, they only
+//! take a command apart and are not writes (`Code::in_pattern`). The reading is syntax only:
 //! a write function passed as a value, an arboard clipboard reached through another
 //! binding, and calls a macro produces are not found. `offenders_in` and the tests below
 //! hold the exact rules. Copies done by an eframe widget, a WebView, or a
@@ -34,12 +36,24 @@ use tasty_doc_guards::source_text::rust_sources;
 struct Shape {
     call: &'static str,
     receiver: Option<&'static str>,
+    /// Whether the name is an enum variant, which a pattern can also name. A pattern
+    /// only takes a value apart, so the variant named there is not a write.
+    variant: bool,
 }
 
 const fn shape(call: &'static str) -> Shape {
     Shape {
         call,
         receiver: None,
+        variant: false,
+    }
+}
+
+const fn variant(call: &'static str) -> Shape {
+    Shape {
+        call,
+        receiver: None,
+        variant: true,
     }
 }
 
@@ -67,12 +81,13 @@ const SHAPES: &[Shape] = &[
     shape("handle_platform_output("),
     shape("copy_with_egui_winit("),
     shape("take_egui_copy("),
-    shape("CopyImage("),
+    variant("CopyImage("),
     shape(".copy_image("),
     // tasty's Core clipboard port. The same name writes text to a PTY elsewhere.
     Shape {
         call: ".write_text(",
         receiver: Some("clipboard"),
+        variant: false,
     },
     // Capture publishing (text and image under one owner).
     shape("write_text_and_image("),
@@ -87,7 +102,7 @@ const SHAPES: &[Shape] = &[
     shape("clearContents("),
     // Added here: egui text copies.
     shape(".copy_text("),
-    shape("CopyText("),
+    variant("CopyText("),
 ];
 
 /// The test double whose `set_text` is not a clipboard write.
@@ -111,6 +126,13 @@ const DOUBLE_FNS: &[&str] = &[
 /// reason are those of `no_emoji_in_source`: losing all of codex (49), claude (42), or
 /// markdown (21) fails, losing one of the smaller crates does not.
 const MIN_RUST_FILES: usize = 165;
+
+/// Keywords that end a pattern: a pattern path or binding never holds them.
+const STOP_WORDS: &[&str] = &[
+    "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "fn", "for", "if",
+    "impl", "in", "let", "loop", "match", "mod", "move", "pub", "return", "static", "struct",
+    "type", "unsafe", "use", "where", "while",
+];
 
 /// The masked code of one file read as tokens: identifier runs and single other
 /// characters, by byte range. Whitespace and line breaks only separate tokens.
@@ -304,6 +326,225 @@ impl<'a> Code<'a> {
                 .trim(self.tokens[i].end..self.tokens[i + 1].start)
                 .is_empty()
     }
+
+    /// The text of the token `n` places before token `i`, or "" before the start.
+    fn back(&self, i: usize, n: usize) -> &str {
+        i.checked_sub(n).map_or("", |j| self.tok(j))
+    }
+
+    /// Whether token `i` is a name a pattern can hold: an identifier run, a number, or
+    /// `_`, but not a keyword that ends a pattern.
+    fn is_name(&self, i: usize) -> bool {
+        self.is_ident_tok(i) && !STOP_WORDS.contains(&self.tok(i))
+    }
+
+    /// Whether token `i` is a `|` with no `|` on either side.
+    fn is_single_bar(&self, i: usize) -> bool {
+        self.tok(i) == "|" && self.back(i, 1) != "|" && self.tok(i + 1) != "|"
+    }
+
+    /// Whether token `i` belongs inside one pattern: a name, `&`, `@`, a path `::`, or a
+    /// rest or range `..`.
+    fn is_pattern_tok(&self, i: usize) -> bool {
+        let pair = |t: &str| self.back(i, 1) == t || self.tok(i + 1) == t;
+        self.is_name(i)
+            || matches!(self.tok(i), "&" | "@")
+            || (self.tok(i) == ":" && pair(":"))
+            || (self.tok(i) == "." && pair("."))
+    }
+
+    /// Whether the `[` at token `i` indexes the value before it. After `let` it opens a
+    /// slice pattern, although `let` reads as an identifier.
+    fn is_index(&self, i: usize) -> bool {
+        (i > 0 && self.is_ident_tok(i - 1) && self.back(i, 1) != "let")
+            || matches!(self.back(i, 1), ")" | "]" | "?")
+    }
+
+    /// The `(`, `[`, or `{` that the token `close` closes, counting all three kinds.
+    fn bracket_open(&self, close: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for j in (0..=close).rev() {
+            match self.tok(j) {
+                ")" | "]" | "}" => depth += 1,
+                "(" | "[" | "{" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(j);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The first token of the path that ends with the name at token `name`: back over
+    /// `::` segments and their turbofish generics.
+    fn path_start(&self, mut name: usize) -> usize {
+        while self.back(name, 1) == ":" && self.back(name, 2) == ":" {
+            let colons = name - 2;
+            let segment = colons.checked_sub(1).and_then(|end| {
+                self.turbofish
+                    .get(&end)
+                    .map_or(Some(end), |&lt| lt.checked_sub(3))
+            });
+            match segment.filter(|&j| self.is_name(j)) {
+                Some(j) => name = j,
+                None => return colons,
+            }
+        }
+        name
+    }
+
+    /// The first token of the bracket group that opens at token `open`, with the path
+    /// that names it.
+    fn group_start(&self, open: usize) -> usize {
+        let Some(end) = open.checked_sub(1) else {
+            return open;
+        };
+        match self.turbofish.get(&end) {
+            Some(&lt) if lt >= 3 && self.is_name(lt - 3) => self.path_start(lt - 3),
+            Some(_) => open,
+            None if self.is_name(end) => self.path_start(end),
+            None => open,
+        }
+    }
+
+    /// The first token of the one pattern that ends just before token `end`.
+    fn alternative_start(&self, end: usize) -> usize {
+        let mut k = end;
+        while k > 0 {
+            if matches!(self.tok(k - 1), ")" | "]") {
+                match self.bracket_open(k - 1) {
+                    Some(open) => k = open,
+                    None => break,
+                }
+            } else if let Some(&lt) = self.turbofish.get(&(k - 1)) {
+                k = lt;
+            } else if self.is_pattern_tok(k - 1) {
+                k -= 1;
+            } else {
+                break;
+            }
+        }
+        k
+    }
+
+    /// The token before a pattern that starts at token `start`: back over reference
+    /// and binding prefixes, the alternatives before it, and a leading `|`.
+    fn before_pattern(&self, mut start: usize) -> Option<usize> {
+        loop {
+            let from = start;
+            while self.back(start, 1) == "&"
+                || (self.back(start, 1) == "mut" && self.back(start, 2) == "&")
+            {
+                start -= if self.back(start, 1) == "&" { 1 } else { 2 };
+            }
+            if self.back(start, 1) == "@" && start >= 2 && self.is_name(start - 2) {
+                start -= 2;
+                if self.back(start, 1) == "mut" {
+                    start -= 1;
+                }
+                if self.back(start, 1) == "ref" {
+                    start -= 1;
+                }
+            }
+            if start > 0 && self.is_single_bar(start - 1) {
+                let alternative = self.alternative_start(start - 1);
+                if alternative == start - 1 {
+                    return alternative.checked_sub(1); // A leading `|`.
+                }
+                start = alternative;
+            }
+            if start == from {
+                return start.checked_sub(1);
+            }
+        }
+    }
+
+    /// The token after a pattern that ends at token `end`: past the alternatives after it.
+    fn after_pattern(&self, end: usize) -> usize {
+        let mut k = end + 1;
+        while self.is_single_bar(k) {
+            k += 1;
+            loop {
+                if matches!(self.tok(k), "(" | "[") {
+                    match self.bracket_close(k) {
+                        Some(close) => k = close + 1,
+                        None => break,
+                    }
+                } else if let Some(&gt) = self.turbofish_close.get(&k) {
+                    k = gt + 1;
+                } else if self.is_pattern_tok(k) {
+                    k += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        k
+    }
+
+    /// Whether the `}` at token `close` ends an arm body: its `{` follows `=>`.
+    fn ends_arm_body(&self, close: usize) -> bool {
+        self.bracket_open(close).is_some_and(|open| {
+            self.tok(open) == "{"
+                && self.bracket_close(open) == Some(close)
+                && self.back(open, 2) == "="
+                && self.back(open, 1) == ">"
+        })
+    }
+
+    /// Whether the name at token `name`, called with the arguments that open at token
+    /// `open`, stands in a pattern: after `let`, or at the start of a match arm. Read
+    /// from the tokens around it alone, inside macro arguments too. The tests below
+    /// hold the forms it takes and the ones it leaves as calls.
+    fn in_pattern(&self, name: usize, open: usize) -> bool {
+        let Some(mut end) = self.bracket_close(open) else {
+            return false;
+        };
+        let mut start = self.path_start(name);
+        // Climb out of the tuple, tuple struct, and slice patterns around it.
+        let mut k = start;
+        while k > 0 {
+            let t = self.tok(k - 1);
+            if matches!(t, ")" | "]") {
+                match self.bracket_open(k - 1) {
+                    Some(open) => k = open,
+                    None => break,
+                }
+            } else if let Some(&lt) = self.turbofish.get(&(k - 1)) {
+                k = lt;
+            } else if t == "(" || (t == "[" && !self.is_index(k - 1)) {
+                if self.back(k - 1, 1) == "!" {
+                    break; // Macro arguments.
+                }
+                match self.bracket_close(k - 1) {
+                    Some(close) => end = close,
+                    None => break,
+                }
+                start = self.group_start(k - 1);
+                k = start;
+            } else if self.is_pattern_tok(k - 1) || t == "," || self.is_single_bar(k - 1) {
+                k -= 1;
+            } else {
+                break;
+            }
+        }
+        let Some(before) = self.before_pattern(start) else {
+            return false;
+        };
+        match self.tok(before) {
+            "let" => true,
+            "{" | "," | "}" => {
+                let after = self.after_pattern(end);
+                let arm_end = (self.tok(after) == "=" && self.tok(after + 1) == ">")
+                    || self.tok(after) == "if";
+                arm_end && (self.tok(before) != "}" || self.ends_arm_body(before))
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A shape split into its parts: whether it starts with a dot, the name, and whether it
@@ -338,6 +579,9 @@ fn shape_at(code: &Code, shape: &Shape, alias: Option<&str>, i: usize) -> bool {
     let open = code.after_name(name_at);
     if code.tok(open) != "(" || (empty && !code.empty_args(open)) {
         return false;
+    }
+    if shape.variant && code.in_pattern(name_at, open) {
+        return false; // A pattern takes the command apart.
     }
     shape.receiver.is_none_or(|word| {
         let pos = code.start(i);
@@ -1228,4 +1472,274 @@ fn a_call_name_turbofish_left_unclosed_is_not_a_call() {
         let offenders = found(src);
         assert!(offenders.is_empty(), "{src}: {offenders:?}");
     }
+}
+
+/// The writes reported for `body` placed in `fn f`, one line below its signature.
+fn found_in_fn(body: &str) -> Vec<String> {
+    found(&format!("fn f() {{\n    {body}\n}}\n"))
+}
+
+/// Asserts that each body in `cases` holds no write.
+fn assert_no_writes(cases: &[&str]) {
+    for body in cases {
+        let offenders = found_in_fn(body);
+        assert!(offenders.is_empty(), "{body}: {offenders:?}");
+    }
+}
+
+/// Asserts that each body in `cases` holds the given number of writes, all reported on
+/// the line of the body.
+fn assert_writes(cases: &[(&str, usize)]) {
+    for &(body, count) in cases {
+        let offenders = found_in_fn(body);
+        assert_eq!(offenders.len(), count, "{body}: {offenders:?}");
+        for offender in &offenders {
+            assert!(offender.contains(":2 (fn f)"), "{body}: {offenders:?}");
+        }
+    }
+}
+
+/// Given an egui copy command named in the pattern of `let`, `if let`, `let ... else`,
+/// or a `let` chain, when the file is read, then nothing is reported.
+#[test]
+fn a_copy_command_pattern_after_let_is_not_a_write() {
+    assert_no_writes(&[
+        "let CopyImage(_) = image;",
+        "if let OutputCommand::CopyText(t) = c {}",
+        "let OutputCommand::CopyText(t) = c else { return };",
+        "if let Some(c) = o && let OutputCommand::CopyText(t) = c {}",
+    ]);
+}
+
+/// Given a tuple struct named like an egui copy command and taken apart by `let` with a
+/// turbofish, when the file is read, then nothing is reported.
+#[test]
+fn a_tuple_struct_named_like_a_copy_command_taken_apart_by_let_is_not_a_write() {
+    let offenders = found(
+        "struct CopyImage<T>(T);\n\
+         fn unpack(image: CopyImage<fn() -> u8>) {\n    \
+         let CopyImage::<fn() -> u8>(_) = image;\n\
+         }\n",
+    );
+    assert!(offenders.is_empty(), "{offenders:?}");
+}
+
+/// Given egui copy commands matched at the start of match arms, as egui-winit handles
+/// them, when the file is read, then nothing is reported.
+#[test]
+fn copy_commands_matched_in_arms_are_not_writes() {
+    assert_no_writes(&[
+        "match command { egui::OutputCommand::CopyText(text) => { drop(text); } \
+         egui::OutputCommand::CopyImage(_) => {} _ => {} }",
+    ]);
+}
+
+/// Given an egui copy command inside a tuple struct pattern after `while let`, or bound
+/// with `@` inside one in an arm with a guard, when the file is read, then nothing is
+/// reported.
+#[test]
+fn a_copy_command_inside_an_outer_pattern_is_not_a_write() {
+    assert_no_writes(&[
+        "while let Some(OutputCommand::CopyImage(i)) = it.next() {}",
+        "match o { Some(c @ OutputCommand::CopyText(_)) if ready => {} _ => {} }",
+    ]);
+}
+
+/// Given egui copy commands joined by `|` in an arm or after `if let`, when the file is
+/// read, then nothing is reported.
+#[test]
+fn alternative_copy_command_patterns_are_not_writes() {
+    assert_no_writes(&[
+        "match c { OutputCommand::CopyText(_) | OutputCommand::CopyImage(_) => {} _ => {} }",
+        "if let A(_) | OutputCommand::CopyText(_) = c {}",
+    ]);
+}
+
+/// Given a pattern with a leading `|` before an egui copy command, after `if let` or in
+/// an arm, when the file is read, then nothing is reported.
+#[test]
+fn a_leading_bar_before_a_copy_command_pattern_is_read_past() {
+    assert_no_writes(&[
+        "if let | OutputCommand::CopyText(_) = c {}",
+        "match c { | OutputCommand::CopyText(_) => {} _ => {} }",
+    ]);
+}
+
+/// Given a reference pattern of an egui copy command, after `if let` or in an arm, when
+/// the file is read, then nothing is reported.
+#[test]
+fn a_reference_pattern_of_a_copy_command_is_not_a_write() {
+    assert_no_writes(&[
+        "if let &OutputCommand::CopyText(_) = r {}",
+        "if let &mut OutputCommand::CopyText(_) = r {}",
+        "match r { &OutputCommand::CopyText(_) => {}, _ => {} }",
+    ]);
+}
+
+/// Given an egui copy command bound with `ref` or `ref mut` and `@`, after `if let` or
+/// in an arm, when the file is read, then nothing is reported.
+#[test]
+fn a_copy_command_bound_by_reference_is_not_a_write() {
+    assert_no_writes(&[
+        "if let ref x @ OutputCommand::CopyText(_) = c {}",
+        "if let ref mut x @ OutputCommand::CopyText(_) = c {}",
+        "match r { ref x @ OutputCommand::CopyText(_) => {}, _ => {} }",
+    ]);
+}
+
+/// Given a copy command bound with `mut` and `@`, after `if let` or in an arm, when the
+/// file is read, then nothing is reported.
+#[test]
+fn a_copy_command_bound_by_a_mut_name_is_not_a_write() {
+    assert_no_writes(&[
+        "if let mut x @ Command::CopyText(_) = c {}",
+        "match c { mut x @ Command::CopyText(_) => {} _ => {} }",
+    ]);
+}
+
+/// Given a reference pattern of a copy command in an arm that follows a block arm with
+/// no comma, when the file is read, then nothing is reported.
+#[test]
+fn a_reference_pattern_after_an_arm_without_a_comma_is_not_a_write() {
+    assert_no_writes(&["match c { &Command::Other => {} &Command::CopyText(_) => {} _ => {} }"]);
+}
+
+/// Given an egui copy command in a slice pattern after `if let` or `let ... else`, when
+/// the file is read, then nothing is reported: the `[` after `let` is not an index.
+#[test]
+fn a_slice_pattern_after_let_is_not_a_write() {
+    assert_no_writes(&[
+        "if let [OutputCommand::CopyText(_)] = v {}",
+        "let [OutputCommand::CopyText(_)] = v else { return };",
+    ]);
+}
+
+/// Given an egui copy command renamed by `use ... as` and named in an `if let` pattern,
+/// when the file is read, then nothing is reported.
+#[test]
+fn a_renamed_copy_command_in_a_pattern_is_not_a_write() {
+    let offenders =
+        found("use egui::OutputCommand::CopyText as Ct;\nfn f() {\n    if let Ct(t) = c {}\n}\n");
+    assert!(offenders.is_empty(), "{offenders:?}");
+}
+
+/// Given egui copy commands built as values, in an initializer, an arm body, a closure,
+/// a reference, an index, a tuple, or after `||`, when the file is read, then each is
+/// reported, and a `let` with a copy command on both sides reports only the right one.
+#[test]
+fn copy_commands_built_as_values_are_writes() {
+    assert_writes(&[
+        ("let x = CopyImage(data);", 1),
+        (
+            "match a { A => OutputCommand::CopyText(t), _ => OutputCommand::CopyImage(i), }",
+            2,
+        ),
+        (
+            "if let Some(x) = o.map(|v| OutputCommand::CopyText(v)) {}",
+            1,
+        ),
+        ("let x = &OutputCommand::CopyText(t);", 1),
+        ("let x = m[OutputCommand::CopyText(k)];", 1),
+        ("let v = (a, OutputCommand::CopyImage(i));", 1),
+        ("let ok = done || send(OutputCommand::CopyText(t));", 1),
+    ]);
+    let offenders = found("fn f() {\n    let CopyImage(x) =\n        CopyImage(y);\n}\n");
+    assert_eq!(offenders.len(), 1, "{offenders:?}");
+    assert!(offenders[0].contains(":3 (fn f)"), "{offenders:?}");
+}
+
+/// Given an egui copy command built in a match guard, when the file is read, then it is
+/// reported although `=>` follows it.
+#[test]
+fn a_copy_command_built_in_a_guard_is_a_write() {
+    assert_writes(&[(
+        "match c { x if x == OutputCommand::CopyText(t) => {} _ => {} }",
+        1,
+    )]);
+}
+
+/// Given a copy command built after a block and `&` in a match guard, when the file is
+/// read, then it is reported: that block does not end an arm body.
+#[test]
+fn a_copy_command_built_after_a_block_in_a_guard_is_a_write() {
+    let offenders = found(
+        "fn keep(_: Command) -> bool { true }\n\
+         fn f() {\n    \
+         match () { _ if { true } & keep(Command::CopyText(t)) => (), _ => () }\n\
+         }\n",
+    );
+    assert_eq!(offenders.len(), 1, "{offenders:?}");
+    assert!(offenders[0].contains(":3 (fn f)"), "{offenders:?}");
+}
+
+/// Given copy command patterns the reader does not take as patterns (a struct pattern
+/// field, a place that takes only irrefutable patterns, the second argument of a
+/// matches macro without a guard, an arm after a non-block arm body or a labeled block
+/// with no comma, an arm after an attribute, a raw identifier), when the file is read,
+/// then each is reported as before.
+#[test]
+fn copy_command_patterns_outside_the_read_places_stay_reported() {
+    assert_writes(&[
+        (
+            "match w { Wrapper { cmd: OutputCommand::CopyText(_) } => {} }",
+            1,
+        ),
+        ("fn g(CopyImage(x): CopyImage<u8>) {}", 1),
+        ("for CopyImage(x) in v {}", 1),
+        ("CopyImage(x) = img;", 1),
+        (
+            "commands.retain(|c| !matches!(c, OutputCommand::CopyText(_)));",
+            1,
+        ),
+        (
+            "!matches!(c, Command::CopyText(_) | Command::CopyImage(_))",
+            2,
+        ),
+        ("assert_matches!(c, OutputCommand::CopyText(_))", 1),
+        ("debug_assert_matches!(c, OutputCommand::CopyText(_))", 1),
+        (
+            "matches!(factory::<u8, u16>(), OutputCommand::CopyText(_))",
+            1,
+        ),
+        (
+            "matches!(<Maker as Factory<u8, u16>>::make(), OutputCommand::CopyText(_))",
+            1,
+        ),
+        ("matches!(|a, x| OutputCommand::CopyText(join(a, x)), _)", 1),
+        (
+            "match c { A => if a {} else {} &Command::CopyText(_) => {} _ => {} }",
+            1,
+        ),
+        (
+            "match c { A => 'body: { break 'body; } &Command::CopyText(_) => {} _ => {} }",
+            1,
+        ),
+        (
+            "match r { #[allow(unused_variables)] OutputCommand::CopyText(_) => {}, _ => {} }",
+            1,
+        ),
+        ("if let r#CopyText(_) = c {}", 1),
+    ]);
+    let offenders = found(
+        "macro_rules! matches { ($a:expr, $b:expr) => {}; }\n\
+         fn f() {\n    \
+         matches!((), OutputCommand::CopyText(t));\n\
+         }\n",
+    );
+    assert_eq!(offenders.len(), 1, "{offenders:?}");
+}
+
+/// Given copy commands inside macro tokens that the local reading takes as patterns (the
+/// left side of `=>` in a user macro, an `if let` in a block passed through, the guarded
+/// second argument of a matches macro), when the file is read, then nothing is reported.
+#[test]
+fn macro_tokens_are_read_by_the_same_local_rule() {
+    assert_no_writes(&[
+        "table!{ Command::CopyText(t) => 1 }",
+        "passthrough!({ if let Command::CopyText(_) = c {} })",
+        "matches!(c, Command::CopyText(_) if ready)",
+        "matches![c, Command::CopyText(_) if ready]",
+        "matches!{c, Command::CopyText(_) if ready}",
+        "matches!(c, Command::CopyText(_) | Command::CopyImage(_) if ready)",
+    ]);
 }
