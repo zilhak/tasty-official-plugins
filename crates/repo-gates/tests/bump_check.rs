@@ -1694,6 +1694,122 @@ fn a_changed_entry_line_that_cannot_be_read_is_undecidable() {
     assert!(text.contains("\"quoted\" = \"1\""), "{text}");
 }
 
+impl PinFixture {
+    /// Turns off the default features of tasty-b in its entry line and commits.
+    fn turn_off_tasty_b_defaults(&self) {
+        let toml = fs::read_to_string(self.repo.join("Cargo.toml")).expect("read");
+        let line = toml
+            .lines()
+            .find(|l| l.starts_with("tasty-b = "))
+            .expect("tasty-b entry")
+            .to_string();
+        let changed = line.replacen(" }", ", default-features = false }", 1);
+        write(&self.repo, "Cargo.toml", &toml.replacen(&line, &changed, 1));
+        self.cargo(&["metadata", "--format-version", "1"]);
+        self.commit("turn off the default features of tasty-b");
+    }
+
+    /// Moves the tasty-a entry line into a table `[workspace.dependencies.<name>]` written
+    /// as `name` (quotes kept), one key per line, in front of [profile.release]. Does not
+    /// commit.
+    fn tasty_a_as_subtable(&self, name: &str) {
+        let toml = fs::read_to_string(self.repo.join("Cargo.toml")).expect("read");
+        let line = toml
+            .lines()
+            .find(|l| l.starts_with("tasty-a = { "))
+            .expect("tasty-a entry")
+            .to_string();
+        let body = line
+            .trim_start_matches("tasty-a = { ")
+            .trim_end_matches(" }")
+            .split(", ")
+            .collect::<Vec<_>>()
+            .join("\n");
+        let toml = toml.replacen(&format!("{line}\n"), "", 1).replacen(
+            "[profile.release]",
+            &format!("[workspace.dependencies.{name}]\n{body}\n\n[profile.release]"),
+            1,
+        );
+        write(&self.repo, "Cargo.toml", &toml);
+        self.cargo(&["metadata", "--format-version", "1"]);
+    }
+}
+
+/// Quotes and spaces around the dots do not change the table cargo reads, so a quoted
+/// `[workspace.dependencies]` header is read as that table.
+#[test]
+fn a_quoted_workspace_dependencies_table_is_read() {
+    for header in [
+        "[workspace.\"dependencies\"]",
+        "[ \"workspace\" . dependencies ]",
+    ] {
+        let f = PinFixture::new();
+        f.edit_root("[workspace.dependencies]\n", &format!("{header}\n"));
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("quote the dependencies table");
+        f.turn_off_tasty_b_defaults();
+
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 1, "{header}:\n{text}");
+        assert!(
+            text.contains("crates/tasty-plugin-beta: shipped content changed"),
+            "{header}:\n{text}"
+        );
+        assert!(
+            !text.contains("crates/tasty-plugin-alpha:"),
+            "{header}:\n{text}"
+        );
+        assert!(
+            text.contains("Cargo.toml [workspace.dependencies] tasty-b:"),
+            "{header}:\n{text}"
+        );
+    }
+}
+
+/// A `[workspace.dependencies."<name>"]` table with a quoted name is the entry `<name>`.
+#[test]
+fn a_quoted_workspace_dependency_subtable_is_read() {
+    let f = PinFixture::new();
+    f.with_features();
+    f.tasty_a_as_subtable("\"tasty-a\"");
+    f.commit("write tasty-a as a quoted table");
+    f.edit_root(
+        "[workspace.dependencies.\"tasty-a\"]\n",
+        "[workspace.dependencies.\"tasty-a\"]\nfeatures = [\"x\"]\n",
+    );
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("turn on a feature in the quoted table");
+
+    f.assert_only_alpha_flagged("a quoted table name was skipped");
+}
+
+/// A table that reads as [workspace.dependencies] once quotes are dropped, but that TOML
+/// reads as another table (a dot inside the quotes), is not read as entries; a changed line
+/// of it stops the check instead of passing unseen.
+#[test]
+fn a_workspace_dependencies_table_name_that_is_not_read_is_undecidable() {
+    let f = PinFixture::new();
+    f.edit_root(
+        "[profile.release]",
+        "[workspace.\"dependencies.tasty-a\"]\nfeatures = [\"x\"]\n\n[profile.release]",
+    );
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("add a table whose quoted name holds a dot");
+    f.edit_root("features = [\"x\"]", "features = [\"y\"]");
+    f.commit("change a line of that table");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("cannot read a changed line of [workspace.dependencies]"),
+        "{text}"
+    );
+    assert!(
+        text.contains("[workspace.\"dependencies.tasty-a\"] features = [\"y\"]"),
+        "{text}"
+    );
+}
+
 /// Puts `block` in front of [workspace.dependencies], commits, then turns on feature `x` of
 /// tasty-a and commits again.
 fn multi_line_string_then_feature(block: &str) -> (i32, String) {

@@ -866,16 +866,31 @@ toml_lines() {
 
 # The entries of [workspace.dependencies] as "key<TAB>value" with any rev removed. Dotted
 # keys (`name.features = [...]`) and [workspace.dependencies.<name>] tables are folded into
-# the value of <name>. A line whose key cannot be read comes out under the key <unparsed>.
+# the value of <name>. Table names are split as TOML keys, so quotes and spaces around the
+# dots do not matter. A line whose key cannot be read, and a line of a table that
+# judge_root_manifest hands over as [workspace.dependencies] but that is neither of the two
+# shapes, comes out under the key <unparsed>.
 dep_entries() {  # <toml_lines file>
-    awk -F '\t' '
+    awk -F '\t' "$TOML_KEY_AWK"'
         function add(k, sub_key, v) {
             if (sub_key == "rev") return
             seen[k] = 1
             if (sub_key == "") plain[k] = v
             else tab[k] = tab[k] " " sub_key " = " v ","
         }
-        $1 == "workspace.dependencies" {
+        {
+            # The name judge_root_manifest reads: quotes and spaces dropped.
+            n = $1; gsub(/["\047 ]/, "", n)
+            if (n != "workspace.dependencies" && index(n, "workspace.dependencies.") != 1) next
+            ns = split_key($1, sp)
+            shape = 0
+            if (sp[1] == "workspace" && sp[2] == "dependencies") {
+                if (ns == 2) shape = 1
+                else if (ns == 3) shape = 2
+            }
+            if (shape == 0) { print "<unparsed>\t[" $1 "] " $2; next }
+        }
+        shape == 1 {
             line = $2
             if (!match(line, /^[A-Za-z0-9_-]+([[:space:]]*\.[[:space:]]*[A-Za-z0-9_-]+)*[[:space:]]*=/)) {
                 print "<unparsed>\t" line; next
@@ -886,8 +901,8 @@ dep_entries() {  # <toml_lines file>
             key = lhs; sub(/\..*/, "", key)
             add(key, substr(lhs, length(key) + 2), val); next
         }
-        index($1, "workspace.dependencies.") == 1 {
-            key = substr($1, length("workspace.dependencies.") + 1); gsub(/[[:space:]]/, "", key)
+        shape == 2 {
+            key = sp[3]
             if (key !~ /^[A-Za-z0-9_-]+$/) { print "<unparsed>\t[" $1 "] " $2; next }
             if (!match($2, /^[A-Za-z0-9_-]+([[:space:]]*\.[[:space:]]*[A-Za-z0-9_-]+)*[[:space:]]*=/)) {
                 print "<unparsed>\t[" $1 "] " $2; next

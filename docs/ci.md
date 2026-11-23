@@ -417,7 +417,9 @@ would leave that range unchecked.
   fetched: if it was not fetched after a release, the baseline is older and a second
   update can pass locally; the CI checkout fetches it on every run. `[workspace]` and
   unknown sections are undecidable, and so is a changed `[workspace.dependencies]` line
-  that cannot be read or that no package in `Cargo.lock` answers to. A root `Cargo.toml`
+  that cannot be read or that no package in `Cargo.lock` answers to. The table names are
+  read as TOML keys, so quotes and spaces around the dots do not matter (tabs are not
+  supported); `dep_entries` in the script decides which tables it reads. A root `Cargo.toml`
   with a multi-line string (`"""` or `'''`), with unbalanced brackets, or with a backslash
   escape in a table name or key (`[profile."rele\u0061se"]`; escapes are not decoded) is
   undecidable as a whole. The path patch check below reads the root `Cargo.toml` on every
