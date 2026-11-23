@@ -164,8 +164,9 @@ cleanup() {
     echo "the previous $(basename "$cur") may be partly left in $removing" >&2
   fi
   if [[ $locked -eq 1 ]]; then
-    # Not rm -f: a lock that is already gone is reported. stdin is not a terminal, so rm
-    # never stops to ask.
+    # Not rm -f: a lock that is already gone is reported. rm asks before removing a
+    # write-protected file when stdin is a terminal; with stdin from /dev/null it never asks.
+    # shellcheck disable=SC2217
     { rm "$lock/owner" </dev/null && rmdir "$lock"; } || failed="$failed, remove the lock $lock"
   fi
   cd "$repo" || failed="$failed, leave the build copy"
@@ -272,8 +273,9 @@ fi
 # is removed by hand. Runs exclude each other only where the file system of DIR
 # creates files exclusively, as local file systems do.
 lock="$out/.dev-bundle.lock"
-mkdir "$lock" 2>/dev/null && ( set -C; : >"$lock/owner" ) 2>/dev/null \
-  || die "cannot create the lock $lock: another dev-bundle.sh is writing $out, or a killed run left the lock; remove it if none runs"
+if ! { mkdir "$lock" 2>/dev/null && ( set -C; : >"$lock/owner" ) 2>/dev/null; }; then
+  die "cannot create the lock $lock: another dev-bundle.sh is writing $out, or a killed run left the lock; remove it if none runs"
+fi
 locked=1
 
 count=0
