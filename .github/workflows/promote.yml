@@ -1,0 +1,73 @@
+name: Promote
+
+# Marks a plugin pre-release as Latest, after a published Tasty release bundles it and
+# the release is verified with it. A tag push (release.yml) only publishes pre-releases;
+# this manual run is the only path to Latest. scripts/release-promote.sh holds the
+# checks and changes nothing unless all of them pass. Run it from main:
+#   gh workflow run promote.yml --ref main -f tag=vX.Y.Z -f min_tasty=A.B.C \
+#     -f new_tasty=A.B.C -f verified_on="linux-x64, macos-arm64, windows-x64"
+# See docs/ci.md#promotion.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Plugin Release tag to promote, such as v0.1.3
+        required: true
+        type: string
+      min_tasty:
+        description: Oldest supported Tasty release, X.Y.Z
+        required: true
+        type: string
+      new_tasty:
+        description: Tasty release that bundles this Release, X.Y.Z
+        required: true
+        type: string
+      verified_on:
+        description: Platforms the Release was verified on, one line
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One promotion at a time for the whole repository: two promotions of different tags
+# could both read the same Latest Release and pass, and the later one would win.
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  promote:
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # The checks are the scripts of main.
+      - name: Check the ref
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [[ "$REF" != "refs/heads/main" ]]; then
+            echo "::error::Run promote.yml with --ref main, not $REF"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Promote the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          MIN_TASTY: ${{ inputs.min_tasty }}
+          NEW_TASTY: ${{ inputs.new_tasty }}
+          VERIFIED_ON: ${{ inputs.verified_on }}
+        run: |
+          scripts/release-promote.sh --tag "$TAG" --min-tasty "$MIN_TASTY" \
+            --new-tasty "$NEW_TASTY" --verified-on "$VERIFIED_ON"
