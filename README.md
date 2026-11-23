@@ -206,11 +206,23 @@ default, is cargo's dev profile. Relative paths in `--out`, `--tasty`, and
 `CARGO_TARGET_DIR` are taken from the directory the script is run from.
 
 One run at a time replaces the plugins in `DIR`. After building, a run takes the lock
-`DIR/.dev-bundle.lock`, a folder with the file `owner` in it, and removes it when it ends.
-A run that finds the lock there fails at once without changing `DIR`. A run that was
-killed leaves the lock behind; when no other run is writing to `DIR`, remove the folder
-and run again. Runs keep each other out only when the file system of `DIR` creates files
-exclusively, as local file systems do.
+`DIR/.dev-bundle.lock`, a folder with the file `owner` in it. When it ends, it moves the
+lock into a new `DIR/.dev-bundle.lock.release.*` folder and removes that. A run that finds
+the lock there fails at once and leaves it as it is.
+
+A run can leave the lock folder or a `.dev-bundle.lock.release.*` folder behind when it
+is killed, when it ends on a signal while it takes or releases the lock, or when it makes
+the lock folder but cannot create the `owner` file in it. When no other run is writing to
+`DIR`, remove the folder and run again.
+
+The lock has these limits:
+
+- Runs keep each other out only when the file system of `DIR` creates files
+  exclusively, as local file systems do.
+- An earlier version of `dev-bundle.sh`, which took the lock with `mkdir` alone, is kept
+  out only where `mkdir` fails for an existing folder. uutils `mkdir` before 0.11.0, the
+  default on Ubuntu 26.04, does not, so do not run an earlier version on the same `DIR`
+  there.
 
 Without `--tasty`, the plugins are built against the tasty commit that `Cargo.lock` pins,
 with `--locked`. With `--tasty`, every package that `Cargo.lock` takes from the tasty git

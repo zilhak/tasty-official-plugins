@@ -124,9 +124,9 @@ Each runner needs:
 The `--lib --bins` scope is the one tasty uses for its Windows and macOS unit tests.
 
 The `repo-gates` integration tests run the plugin version check, its fixup, the git
-hooks, and the output lock of `scripts/dev-bundle.sh` on fixture repositories. On macOS they run those shell scripts with the BSD tools
-(`sed`, `awk`, `comm`, `mktemp`) and the bash on `PATH`, which Linux does not cover.
-Before them the job runs `cargo fetch --locked`, because the fixtures resolve with `cargo
+hooks, and the output lock of `scripts/dev-bundle.sh` on fixture repositories. On macOS
+they run those shell scripts with the BSD tools (`sed`, `awk`, `comm`, `mktemp`, `mv`)
+and the bash on `PATH`, which Linux does not cover. Before them the job runs `cargo fetch --locked`, because the fixtures resolve with `cargo
 --offline`, and installs `strip-cfg-test` as `plugin-version-check.yml` does. They do not
 run on Windows.
 
