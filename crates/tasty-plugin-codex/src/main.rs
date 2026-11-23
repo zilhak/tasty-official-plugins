@@ -200,29 +200,59 @@ impl Plugin for CodexPlugin {
     }
 }
 
-/// 실행 이름 뒤 인자들을 UTF-8 문자열로 바꾼다. UTF-8이 아닌 첫 인자의 위치를 실행 이름 다음부터
-/// 1로 세어 돌려준다. 손실 변환(U+FFFD 치환)은 하지 않는다. 바뀐 ID·경로·옵션 값이 다른 대상에
-/// 작용할 수 있다.
-fn utf8_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Vec<String>, usize> {
+/// UTF-8이 아닌 첫 인자의 위치.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NonUtf8Arg {
+    /// argv[0](실행 이름).
+    Program,
+    /// 실행 이름 뒤 n번째 인자. 셸의 `$n`처럼 1부터 센다.
+    Argument(usize),
+}
+
+/// 실행 이름을 포함한 인자들을 UTF-8 문자열로 바꾼다. 손실 변환(U+FFFD 치환)은 하지 않는다.
+/// 바뀐 ID·경로·옵션 값이 다른 대상에 작용할 수 있다.
+fn utf8_args(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<Vec<String>, NonUtf8Arg> {
     args.into_iter()
         .enumerate()
-        .map(|(i, arg)| arg.into_string().map_err(|_| i + 1))
+        .map(|(i, arg)| {
+            arg.into_string().map_err(|_| match i {
+                0 => NonUtf8Arg::Program,
+                n => NonUtf8Arg::Argument(n),
+            })
+        })
         .collect()
 }
 
-/// 프로세스 인자를 읽는다. UTF-8이 아닌 인자가 있으면 그 위치만 stderr에 알리고 사용 오류(종료
-/// 코드 2)로 끝낸다. 인자 원문은 메시지 본문이나 토큰일 수 있어 쓰지 않는다. 실행 이름은 지금까지
-/// 쓰지 않았으므로 검사하지 않는다.
+/// 프로세스 인자를 읽어 실행 이름 뒤 인자들을 돌려준다. 실행 이름이나 인자가 UTF-8이 아니면 그
+/// 위치만 stderr에 알리고 사용 오류(종료 코드 2)로 끝낸다. 인자 원문은 메시지 본문이나 토큰일 수
+/// 있어 쓰지 않는다. `std::env::args`는 건너뛰는 실행 이름도 문자열로 바꾸므로 실행 이름도 함께
+/// 검사한다.
 fn process_args_or_exit() -> Vec<String> {
-    match utf8_args(std::env::args_os().skip(1)) {
-        Ok(args) => args,
-        Err(position) => {
-            eprintln!(
-                "Error: argument {position} is not valid UTF-8. Arguments are counted from 1 after the program name. Nothing was run or sent."
-            );
+    let raw = std::env::args_os();
+    match utf8_args(raw) {
+        Ok(args) => args.into_iter().skip(1).collect(),
+        Err(err) => {
+            let message = match err {
+                NonUtf8Arg::Program => "Error: the program name (argv[0]) contains invalid UTF-8. Nothing was executed or sent.".to_string(),
+                NonUtf8Arg::Argument(n) => format!(
+                    "Error: argument {n} contains invalid UTF-8. The first argument after the program name is numbered 1. Nothing was executed or sent."
+                ),
+            };
+            report_usage_error(&message);
             std::process::exit(2);
         }
     }
+}
+
+/// stderr에 한 줄을 쓴다. stderr가 닫혔거나 가득 차도 알릴 곳이 없으므로 쓰기 오류는 버리고,
+/// 종료 코드는 호출자가 정한다. `eprintln!`은 이때 패닉해 종료 코드 2에 닿지 못한다.
+fn report_usage_error(message: &str) {
+    use std::io::Write as _;
+    let mut stderr = std::io::stderr().lock();
+    let written = writeln!(stderr, "{message}");
+    drop(written);
 }
 
 fn main() -> anyhow::Result<()> {
