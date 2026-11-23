@@ -194,7 +194,9 @@ the `check` job with `scripts/check.sh test` on Linux, and in the `test` job on 
 and macOS in a step of their own, because the `--lib --bins` run leaves them out. Run them
 with `cargo test --locked -p plugin-guards`. They read the sources as text and use the
 source readers of `tasty-doc-guards` from the pinned tasty commit, a dev-dependency of
-this crate and of `plugin-pin-check` only, so it never enters a plugin build.
+this crate and of `plugin-pin-check` only, so it never enters a plugin build. One check,
+`no_local_doc_citation`, also runs `git` in a Git checkout to list the files and read
+the index.
 
 - `notify_mod_language_lists`: the language lists in the Claude mod's TypeScript (the
   notify heading, the queue heading, the gate reason, and the tests of both headings)
@@ -252,6 +254,23 @@ this crate and of `plugin-pin-check` only, so it never enters a plugin build.
 - `manifest_cli_catalog_keys`: each non-empty CLI description and argument help in a
   plugin manifest has its translation key, the English catalog value equals the manifest
   text, and the catalog of every built-in language loads a non-blank value.
+- `no_local_doc_citation`: no text file of the repository cites a document other
+  developers cannot open. It looks for ten shapes: a TODO word followed by a number, a
+  numbered conductor ticket, a path into the local work folder, a date joined to a word
+  by hyphens, a TODO number in an anchor, a mention of the local agent folders (a home
+  path is allowed), TODO in prose (not in Markdown, and not the task markers `TODO:` and
+  `TODO(scope):`), two digits in brackets starting with zero, dotted plan coordinates,
+  and an upper case R with two or more digits. `.gitignore` may name the local folders,
+  and the test file holds the shapes it describes; both are listed with the patterns
+  they may hold. In a Git checkout the files come from Git: tracked paths wherever they
+  sit, read from the index and from the work tree when it differs, a tracked link as its
+  target text, and untracked paths that Git does not ignore, except the local agent
+  files and build caches. Without Git the tree is walked with the pruning of
+  `no_emoji_in_source`. Binary extensions and the vendored minified bundles of the
+  markdown plugin are not read; the plugin's `assets/NOTICE.md` is. A file that is not
+  UTF-8 or cannot be read fails the check. The vendored list is checked as well: each
+  listed bundle is a file, and no unlisted minified file sits directly in the markdown
+  `assets/` folder or anywhere the scan starts from.
 
 The checks that walk the sources fail when they find fewer files or plugins than a floor
 measured in this repository, so an empty walk does not pass.
@@ -262,9 +281,6 @@ measured in this repository, so an empty walk does not pass.
   define them. None of those files exist here, and the one numeric gate value here, the
   license `confidence-threshold` in `deny.toml`, is already fixed by the `repo-gates`
   deny policy test.
-- Markdown assets: the list of vendored minified files and the reading of `NOTICE.md`
-  under the markdown plugin's `assets/` belong to the local document citation scan. They
-  would come with a port of the local-document citation scan.
 - File size limits: tasty's exceptions and frozen budgets for the markdown renderer are
   members of its file size gate. This repository has no file size gate to move them into.
 - Hook commands on the recording path: the check depends on tasty's CLI code to tell
