@@ -1,6 +1,6 @@
 # Agent Stream (`com.tasty.agent-stream`)
 
-- **Status**: Implemented — 이벤트 수집·SSE 전송·요청과 턴 매칭을 제공한다. 인바운드 웹훅은 운영자가 등록한다(아래 [요청과 턴의 매칭 및 웹훅 연결](#턴-correlation--웹훅-인바운드-배선))
+- **Status**: Implemented — 이벤트 수집·SSE 전송·요청과 턴 매칭을 제공한다. 인바운드 웹훅은 운영자가 등록하고, `claude.tell` 배선에는 [인증을 건다](#웹훅-인증-규칙)(아래 [요청과 턴의 매칭 및 웹훅 연결](#턴-correlation--웹훅-인바운드-배선))
 - **주체**: AI Agent (CLI/IPC). 로컬 사용자 UI 없음 — headless
 - **배포/통합**: workspace 번들(`BUILTINS` 등록) · CLI + IPC namespace — [plugins 개념](https://github.com/zilhak/tasty/blob/develop/docs/concepts/plugins.md)
   - `bundle = false` — 배포 패키징(DMG / AppImage / MSIX / deb)에서는 제외한다. 워크스페이스 빌드의 dev 번들 sync 는 그대로 동작한다.
@@ -235,6 +235,12 @@ poison 이전 거부는 starter 호출 0회와 기존 엔드포인트·스냅샷
 
 웹 애플리케이션이 웹훅으로 프롬프트를 보내고 SSE로 응답을 받는 구성을 지원한다. 두 연결은 별개이므로 요청자가 보낸 ID로 요청과 이벤트를 연결한다.
 
+### 웹훅 인증 규칙
+
+`claude.tell` 인바운드 웹훅 배선에는 인증을 반드시 건다. 이 절의 매칭 시퀀스만이 아니라 `claude.tell` 스텝을 포함하는 인바운드 웹훅 등록 전체에 적용한다.
+
+본체의 웹훅 인증은 등록마다 고르는 선택 사항이며, 본체와 이 플러그인 모두 무인증 등록을 거부하지 않는다. 그래서 이 규칙은 등록하는 운영자가 지킨다. 인증을 거는 이유는 [등록 예시](#등록-예시) 끝의 주의 문단에, 인증의 동작은 본체 [선택적 인증](https://github.com/zilhak/tasty/blob/develop/docs/features/webhook/index.md#선택적-인증-가벼운-발신자-확인)에 있다.
+
 <a id="correlation-모델--요청자-제공-request_id"></a>
 
 ### 요청자가 제공하는 request_id
@@ -324,7 +330,7 @@ curl -X POST "$WEBHOOK_URL" \
 
 그러면 surface 42 의 claude 가 그 프롬프트를 받아 실행하고, 그 실행이 만든 SSE 이벤트에 `"request_id":"req-8f3a"` 가 실린다. 그 요청의 `turn_end` 도 같은 값으로 실려 종료를 알린다.
 
-> **인증 토큰을 반드시 건다.** 이 구성은 외부 발신자가 claude 에게 임의 자연어를 주입하게 하고 claude 는 셸에 닿는다. docs/features/webhook/index.md 은 이 경우를 이미 다룬다 — owner 가 값 슬롯에 민감한 IPC 를 열면 그 트리거 책임은 owner 몫이고, **대응책은 인증으로 트리거 주체를 좁히는 것**이다. 무인증 구성을 예시로 쓰지 않는다. 토큰 없는/틀린 호출은 본체 웹훅 리스너가 `401 unauthorized`로 거부하고 시퀀스를 실행하지 않는다. 웹훅의 거부 바디는 고정 문자열이며, SSE 구독의 빈 `401` 바디와 다르다. body 상한 초과나 남용차단 중인 요청은 각각 `413`·`429`가 먼저 적용된다. 웹훅 토큰은 SSE 토큰과 같은 신뢰 수준·같은 저장(설정 파일 평문, unix `0600`)이다.
+> **인증을 거는 이유**([웹훅 인증 규칙](#웹훅-인증-규칙)): 이 구성은 외부 발신자가 claude 에게 임의 자연어를 주입하게 하고 claude 는 셸에 닿는다. docs/features/webhook/index.md 은 이 경우를 이미 다룬다 — owner 가 값 슬롯에 민감한 IPC 를 열면 그 트리거 책임은 owner 몫이고, **대응책은 인증으로 트리거 주체를 좁히는 것**이다. 무인증 구성을 예시로 쓰지 않는다. 토큰 없는/틀린 호출은 본체 웹훅 리스너가 `401 unauthorized`로 거부하고 시퀀스를 실행하지 않는다. 웹훅의 거부 바디는 고정 문자열이며, SSE 구독의 빈 `401` 바디와 다르다. body 상한 초과나 남용차단 중인 요청은 각각 `413`·`429`가 먼저 적용된다. 웹훅 토큰은 SSE 토큰과 같은 신뢰 수준·같은 저장(설정 파일 평문, unix `0600`)이다.
 
 ### FE 계약 요약
 
