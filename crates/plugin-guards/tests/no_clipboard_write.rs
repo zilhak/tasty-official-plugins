@@ -556,7 +556,8 @@ impl<'a> Code<'a> {
             return false;
         };
         match self.tok(before) {
-            "let" => true,
+            // The raw identifier `r#let` names a function, not the keyword.
+            "let" => !(self.back(before, 1) == "#" && self.back(before, 2) == "r"),
             "{" | "," | "}" => {
                 let after = self.after_pattern(end);
                 let arm_end = (self.tok(after) == "=" && self.tok(after + 1) == ">")
@@ -1877,4 +1878,24 @@ fn copy_commands_built_by_closures_in_later_guards_are_writes() {
             1,
         ),
     ]);
+}
+
+/// Given an egui copy command passed to a method or function named by the raw identifier
+/// `r#let`, when the file is read, then it is reported: `r#let` is not the keyword.
+#[test]
+fn a_copy_command_passed_to_a_raw_let_call_is_a_write() {
+    let offenders = found(
+        "fn send(out: &mut PlatformOutput, text: &str) {\n    \
+         out.r#let(OutputCommand::CopyText(text.to_owned()));\n\
+         }\n",
+    );
+    assert_eq!(offenders.len(), 1, "{offenders:?}");
+    assert!(offenders[0].contains(":2 (fn send)"), "{offenders:?}");
+}
+
+/// Given an egui copy command passed to a free function named `r#let`, when the file is
+/// read, then it is reported.
+#[test]
+fn a_copy_command_passed_to_a_raw_let_function_is_a_write() {
+    assert_writes(&[("r#let(OutputCommand::CopyText(x));", 1)]);
 }
