@@ -11,9 +11,9 @@
 //! the lock folder, as uutils mkdir before 0.11.0 does: it finds the folder made by the other
 //! run and exits 0 all the same.
 //!
-//! The runs pass --profile release. Without a profile the script expands an empty array under
-//! set -u, which the bash 3.2 of macOS rejects before the lock is reached. That is a defect of
-//! the script outside the lock, so these tests step around it.
+//! The runs use the default profile, so the script expands an empty array on its way to the
+//! lock; one run passes --profile release. The bash that runs the script can be chosen, and its
+//! version required, through the environment: see `dev_bundle_bash`.
 
 #![cfg(unix)]
 
@@ -22,6 +22,7 @@ mod support;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// Words of the message for a lock that is held or left.
@@ -35,6 +36,54 @@ const CLEANUP_FAILED: &str = "cleanup could not";
 const STUB_CHECK_SH: &str =
     "#!/usr/bin/env bash\ncase \"$1\" in list-bins) echo tasty-plugin-x ;; *) exit 2 ;; esac\n";
 const STUB_CARGO: &str = "#!/bin/sh\nexit 0\n";
+
+/// Names the bash that runs dev-bundle.sh, as an absolute path.
+const BASH_VAR: &str = "REPO_GATES_DEV_BUNDLE_BASH";
+/// Asks for the major.minor version of that bash, for example 3.2.
+const BASH_VERSION_VAR: &str = "REPO_GATES_DEV_BUNDLE_BASH_VERSION";
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+/// The bash that runs dev-bundle.sh: the one `BASH_VAR` names, or else the bash on PATH. When
+/// `BASH_VERSION_VAR` is set, the tests fail unless `BASH_VAR` names a bash of that version.
+fn dev_bundle_bash() -> &'static Path {
+    static BASH: OnceLock<PathBuf> = OnceLock::new();
+    BASH.get_or_init(|| {
+        let want = non_empty_env(BASH_VERSION_VAR);
+        let Some(bash) = non_empty_env(BASH_VAR).map(PathBuf::from) else {
+            if let Some(want) = want {
+                panic!("{BASH_VERSION_VAR}={want} asks for a version, but {BASH_VAR} is not set");
+            }
+            return PathBuf::from("bash");
+        };
+        assert!(
+            bash.is_absolute(),
+            "{BASH_VAR} must be an absolute path: {}",
+            bash.display()
+        );
+        if let Some(want) = want {
+            let out = Command::new(&bash)
+                .arg("-c")
+                .arg(concat!(
+                    r#"printf '%s.%s %s' "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}""#,
+                    r#" "$BASH_VERSION""#
+                ))
+                .stdin(Stdio::null())
+                .output()
+                .unwrap_or_else(|e| panic!("run {}: {e}", bash.display()));
+            let text = String::from_utf8_lossy(&out.stdout).into_owned();
+            let (got, full) = text.split_once(' ').unwrap_or((text.as_str(), ""));
+            assert!(
+                out.status.success() && got == want,
+                "{} is bash {full}, not {want}",
+                bash.display()
+            );
+        }
+        bash
+    })
+}
 
 /// The first `name` on PATH.
 fn real_tool(name: &str) -> PathBuf {
@@ -154,12 +203,10 @@ impl Fixture {
 
     fn command(&self) -> Command {
         let t = self.tmp.path();
-        let mut cmd = Command::new("bash");
+        let mut cmd = Command::new(dev_bundle_bash());
         cmd.arg(t.join("repo/scripts/dev-bundle.sh"))
             .arg("--out")
             .arg(self.out())
-            // See the module comment: a profile keeps the bash 3.2 of macOS going.
-            .args(["--profile", "release"])
             .current_dir(t)
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("HOLD_DIR")
@@ -381,6 +428,18 @@ fn a_second_run_is_refused_while_the_first_holds_the_lock() {
 fn a_run_removes_its_lock_when_it_ends() {
     let f = Fixture::new();
     let out = f.run();
+    assert_passed_and_released(&f, &out);
+    f.assert_out_untouched();
+}
+
+#[test]
+fn a_release_profile_run_removes_its_lock_when_it_ends() {
+    let f = Fixture::new();
+    let out = f
+        .command()
+        .args(["--profile", "release"])
+        .output()
+        .expect("run dev-bundle.sh");
     assert_passed_and_released(&f, &out);
     f.assert_out_untouched();
 }
