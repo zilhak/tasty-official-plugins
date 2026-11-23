@@ -38,7 +38,8 @@
 #       reads and has no Latest Release. Any other failure to read fails.
 #
 # Exit codes: 0 yes or done, 1 no or check failed, 2 usage error.
-# Needs bash; latest also needs gh, and GH_REPO and GH_TOKEN in the environment.
+# Needs bash 3.2 or later (the macOS /bin/bash): no bash 4 syntax. latest also needs gh, and
+# GH_REPO and GH_TOKEN in the environment.
 set -euo pipefail
 
 # Messages show as annotations in a workflow log.
@@ -112,8 +113,9 @@ split_notes() {
   while ((start > 0)) && [[ -n "${lines[start - 1]//[[:space:]]/}" ]]; do start=$((start - 1)); done
   local end=$start
   while ((end > 0)) && [[ -z "${lines[end - 1]//[[:space:]]/}" ]]; do end=$((end - 1)); done
-  BLOCK=("${lines[@]:start:n-start}")
-  BODY=("${lines[@]:0:end}")
+  # ${a[@]+...} keeps an empty array from failing set -u in bash 3.2.
+  BLOCK=(${lines[@]+"${lines[@]:start:n-start}"})
+  BODY=(${lines[@]+"${lines[@]:0:end}"})
   ((${#BLOCK[@]} > 0)) || fail "the release notes have no marker block"
   for line in "${BLOCK[@]}"; do
     case "$line" in
@@ -180,7 +182,7 @@ prepare() {
       *) kept+=("$line") ;;
     esac
   done
-  print_notes "${kept[@]}" "$expected"
+  print_notes ${kept[@]+"${kept[@]}"} "$expected"
 }
 
 verify() {
@@ -238,6 +240,10 @@ promoted() {
   [[ "$(block_lines "Verified with Tasty")" == "$(verified_line "$min" "$new" "$on")" ]] || return 1
 }
 
+lower() {
+  printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 latest() {
   local err out name
   [[ -n "${GH_REPO:-}" ]] || usage "GH_REPO is not set"
@@ -257,7 +263,7 @@ latest() {
   # A repository that cannot be read also answers 404, so read it before taking the 404
   # as "no Latest Release".
   name=$(gh api "repos/$GH_REPO" --jq .full_name) || fail "cannot read the repository $GH_REPO"
-  [[ "${name,,}" == "${GH_REPO,,}" ]] || fail "unexpected repository reply: '$name'"
+  [[ "$(lower "$name")" == "$(lower "$GH_REPO")" ]] || fail "unexpected repository reply: '$name'"
 }
 
 cmd=${1:-}

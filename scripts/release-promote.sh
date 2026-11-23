@@ -35,7 +35,7 @@
 # or later", a Verified with Tasty line is added, the Release stops being a pre-release,
 # and it becomes Latest. Then the Latest Release must be the tag.
 #
-# Needs bash, gh, sha256sum, awk, and sed.
+# Needs bash 3.2 or later (the macOS /bin/bash: no bash 4 syntax), gh, sha256sum, awk, and sed.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -147,6 +147,11 @@ toml_value() {
   printf '%s\n' "$found"
 }
 
+# The GitHub digest of published file $1, or nothing.
+digest_of() {
+  awk -v n="$1" '$1 == n { print $2 }' "$digests"
+}
+
 sha_of() {
   sha256sum "$1" | cut -d' ' -f1
 }
@@ -208,12 +213,14 @@ requires=$("$CHECK" marker "$WORK/notes.md" "Requires Tasty") ||
 # ---- 7. The published files and notes, judged as at publish time ----
 release_api '.assets[] | "\(.name) \(.digest)"' >"$WORK/assets.txt" ||
   fail "check 7: cannot list the files of Release $TAG"
-declare -A digest=()
+# "<name> <sha256>" per published file. A file, not an associative array: bash 3.2 has none.
+digests="$WORK/digests.txt"
+: >"$digests"
 while IFS= read -r line; do
   [[ "$line" =~ ^([^[:space:]/]+)\ sha256:([0-9a-f]{64})$ ]] ||
     fail "check 7: unexpected file reply (a name and a sha256 digest): '$line'"
-  [[ -z "${digest[${BASH_REMATCH[1]}]:-}" ]] || fail "check 7: ${BASH_REMATCH[1]} is listed twice"
-  digest[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
+  [[ -z "$(digest_of "${BASH_REMATCH[1]}")" ]] || fail "check 7: ${BASH_REMATCH[1]} is listed twice"
+  echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}" >>"$digests"
 done <"$WORK/assets.txt"
 
 dl="$WORK/download"
@@ -253,16 +260,16 @@ for platform in "${PLATFORMS[@]}"; do
   fi
 done
 
-if ! diff <(sort "$expected") <(printf '%s\n' "${!digest[@]}" | sort) >"$WORK/names.diff"; then
+if ! diff <(sort "$expected") <(cut -d' ' -f1 "$digests" | sort) >"$WORK/names.diff"; then
   sed 's/^/  /' "$WORK/names.diff" >&2
   fail "check 7: the files of Release $TAG are not the set a tag release uploads (< missing, > extra)"
 fi
 for file in "$dl"/*; do
   name=$(basename "$file")
-  [[ "$(sha_of "$file")" == "${digest[$name]:-}" ]] || fail "check 7: $name differs from its GitHub digest"
+  [[ "$(sha_of "$file")" == "$(digest_of "$name")" ]] || fail "check 7: $name differs from its GitHub digest"
 done
 while read -r name hash; do
-  [[ "${digest[$name]:-}" == "$hash" ]] || fail "check 7: $name differs from its SHA256SUMS hash"
+  [[ "$(digest_of "$name")" == "$hash" ]] || fail "check 7: $name differs from its SHA256SUMS hash"
 done <"$archives"
 
 # The lock file pins the same archives and hashes.
