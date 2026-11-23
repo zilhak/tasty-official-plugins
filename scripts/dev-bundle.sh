@@ -164,10 +164,25 @@ cleanup() {
     echo "the previous $(basename "$cur") may be partly left in $removing" >&2
   fi
   if [[ $locked -eq 1 ]]; then
-    # Not rm -f: a lock that is already gone is reported. rm asks before removing a
-    # write-protected file when stdin is a terminal; with stdin from /dev/null it never asks.
-    # shellcheck disable=SC2217
-    { rm "$lock/owner" </dev/null && rmdir "$lock"; } || failed="$failed, remove the lock $lock"
+    # The lock is first moved out of its path in one rename, into a new empty folder of
+    # this run, and only then taken apart. A run that is about to create the owner file in
+    # the same folder then finds no folder and fails, and the folder a later run makes at
+    # the lock path is never the one removed here. mv moves into the new folder rather
+    # than to a new name because mv -T, which refuses an existing target, is not in BSD
+    # mv; the folder is empty, so nothing is in the way.
+    # Not rm -f: an owner file that is already gone is reported. rm asks before removing
+    # a write-protected file when stdin is a terminal; with stdin from /dev/null it never
+    # asks.
+    released=""
+    if released=$(mktemp -d "$lock.release.XXXXXX") && mv "$lock" "$released/"; then
+      # shellcheck disable=SC2217
+      { rm "$released/.dev-bundle.lock/owner" </dev/null \
+        && rmdir "$released/.dev-bundle.lock" "$released"; } \
+        || failed="$failed, remove the lock $lock (moved to $released)"
+    else
+      failed="$failed, remove the lock $lock"
+      if [[ -n "$released" ]]; then rmdir "$released" || failed="$failed, remove $released"; fi
+    fi
   fi
   cd "$repo" || failed="$failed, leave the build copy"
   if [[ -n "$build_copy" ]]; then rm -rf "$build_copy" || failed="$failed, remove $build_copy"; fi
@@ -268,10 +283,19 @@ fi
 # apart: some mkdir builds (uutils before 0.11.0, the default on Ubuntu 26.04) also
 # exit 0 for the run that lost a race to create the same folder. The owner file, made
 # with bash noclobber (an exclusive create), decides which run holds the lock. A run
-# that cannot create the folder or the owner file fails at once and leaves the path as
-# it found it, since what is there belongs to another run. A lock left by a killed run
-# is removed by hand. Runs exclude each other only where the file system of DIR
-# creates files exclusively, as local file systems do.
+# that cannot create the folder or the owner file fails at once and does not remove
+# what is there, since it may belong to another run.
+#
+# Limits:
+# - Runs exclude each other only where the file system of DIR creates files
+#   exclusively, as local file systems do.
+# - An earlier version of this script, which took the lock with mkdir alone, is kept
+#   out only where mkdir fails for an existing folder; uutils mkdir before 0.11.0 does
+#   not.
+# - A run that ends on a signal while it takes or releases the lock, or that makes the
+#   folder but cannot create the owner file, can leave the lock folder behind, or a
+#   DIR/.dev-bundle.lock.release.* folder. Remove it by hand when no other run is
+#   writing to DIR.
 lock="$out/.dev-bundle.lock"
 if ! { mkdir "$lock" 2>/dev/null && ( set -C; : >"$lock/owner" ) 2>/dev/null; }; then
   die "cannot create the lock $lock: another dev-bundle.sh is writing $out, or a killed run left the lock; remove it if none runs"
