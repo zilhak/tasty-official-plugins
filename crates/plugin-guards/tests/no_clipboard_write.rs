@@ -462,13 +462,23 @@ impl<'a> Code<'a> {
         }
     }
 
+    /// Whether the single `|` at token `bar` starts an alternative: past its reference
+    /// and binding prefixes, a pattern can begin. Otherwise it is a bitwise or.
+    fn starts_alternative(&self, bar: usize) -> bool {
+        let mut j = bar + 1;
+        while matches!(self.tok(j), "&" | "mut" | "ref") {
+            j += 1;
+        }
+        self.is_name(j)
+            || matches!(self.tok(j), "(" | "[")
+            || (self.tok(j) == ":" && self.tok(j + 1) == ":")
+            || (self.tok(j) == "." && self.tok(j + 1) == ".")
+    }
+
     /// The token after a pattern that ends at token `end`: past the alternatives after it.
-    /// A `|` followed by what cannot start a pattern, such as `if`, is a bitwise or.
     fn after_pattern(&self, end: usize) -> usize {
         let mut k = end + 1;
-        while self.is_single_bar(k)
-            && (self.is_pattern_tok(k + 1) || matches!(self.tok(k + 1), "(" | "["))
-        {
+        while self.is_single_bar(k) && self.starts_alternative(k) {
             k += 1;
             loop {
                 if matches!(self.tok(k), "(" | "[") {
@@ -1765,6 +1775,10 @@ fn copy_command_patterns_outside_the_read_places_stay_reported() {
             "match c { A => if a { x } else { y }, OutputCommand::CopyText(_) => {} _ => {} }",
             1,
         ),
+        (
+            "match c { OpenUrl(_) => if ready { f(); }, OutputCommand::CopyText(_) => (), _ => () }",
+            1,
+        ),
     ]);
     let offenders = found(
         "macro_rules! matches { ($a:expr, $b:expr) => {}; }\n\
@@ -1931,5 +1945,51 @@ fn copy_commands_in_closures_joined_by_a_bitwise_or_to_an_if_are_writes() {
             "let mut make = (async |_, _| OutputCommand::CopyText(text.clone()) | if ready { Route(out) } else { Route(out) },);",
             1,
         ),
+    ]);
+}
+
+/// Given an egui copy command joined by a bitwise or to an `if` expression behind
+/// reference prefixes, when the file is read, then it is reported: a reference to an
+/// `if` does not start an alternative.
+#[test]
+fn a_copy_command_joined_by_a_bitwise_or_to_a_reference_of_an_if_is_a_write() {
+    assert_writes(&[(
+        "OutputCommand::CopyText(text) | &if ready { Route(out) } else { Route(out) };",
+        1,
+    )]);
+}
+
+/// Given egui copy commands joined by a bitwise or to an `if` expression behind `&&` or
+/// `&mut`, or built by closures and joined to a reference of one, when the file is read,
+/// then each is reported.
+#[test]
+fn copy_commands_joined_by_a_bitwise_or_to_references_of_ifs_are_writes() {
+    assert_writes(&[
+        (
+            "OutputCommand::CopyText(text) | &&if ready { Route(out) } else { Route(out) };",
+            1,
+        ),
+        (
+            "OutputCommand::CopyText(text) | &mut if ready { Route(out) } else { Route(out) };",
+            1,
+        ),
+        (
+            "let make = (|_: u8, _| OutputCommand::CopyText(text) | &if ready { Route(out) } else { Route(out) },);",
+            1,
+        ),
+        (
+            "let mut make = (async |_, _| OutputCommand::CopyText(text.clone()) | &if ready { Route(out) } else { Route(out) },);",
+            1,
+        ),
+    ]);
+}
+
+/// Given an egui copy command pattern followed by an alternative that opens with a
+/// bracket, when the file is read, then nothing is reported.
+#[test]
+fn an_alternative_opening_with_a_bracket_follows_a_copy_command_pattern() {
+    assert_no_writes(&[
+        "match c { OutputCommand::CopyText(_) | (OutputCommand::CopyImage(_)) => {} _ => {} }",
+        "match c { (OutputCommand::CopyText(_), 1) | (_, 2) => {} _ => {} }",
     ]);
 }
