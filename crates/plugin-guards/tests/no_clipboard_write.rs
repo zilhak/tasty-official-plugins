@@ -1100,3 +1100,21 @@ fn a_turbofish_ends_at_its_own_closing_angle_bracket() {
         );
     }
 }
+
+/// Given a `::<` that a statement end or an unmatched closing bracket cuts off before its
+/// angle brackets close, and a comparison `>` before a later receiver, when the file is
+/// read, then the comparison does not close that turbofish and no call is reported.
+#[test]
+fn an_unclosed_turbofish_does_not_pair_with_a_later_comparison() {
+    let passes = [
+        "fn f() {\n    macro_tokens!(tag::<);\n    let clipboard = 1;\n    2 > port\n        .write_text(t);\n}\n",
+        "fn f() {\n    macro_tokens!((tag::<A), clipboard_data, 2 > port\n        .write_text(t));\n}\n",
+        "fn f() {\n    macro_tokens!([tag::<A], clipboard_data, 2 > port\n        .write_text(t));\n}\n",
+        "fn f() {\n    macro_tokens!({tag::<A}, clipboard_data, 2 > port\n        .write_text(t));\n}\n",
+        "fn f() {\n    macro_tokens!(tag::<A; clipboard_data, 2 > port\n        .write_text(t));\n}\n",
+    ];
+    for src in passes {
+        let offenders = found(src);
+        assert!(offenders.is_empty(), "{src}: {offenders:?}");
+    }
+}
