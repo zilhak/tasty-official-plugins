@@ -123,7 +123,8 @@ not built here.
 
 Three more workspace crates belong to this repository only and are not published
 (`publish = false`): `plugin-pin-check` (the pin and lock tests above), `repo-gates` (the
-tests of the plugin version check, its fixup, and the git hooks), and `plugin-guards`
+tests of the plugin version check, its fixup, the git hooks, and the output lock of
+`dev-bundle.sh`), and `plugin-guards`
 (source checks on the plugin crates that moved here from tasty, see
 [docs/ci.md](docs/ci.md#source-checks-on-the-plugins)). They hold only tests and their
 helpers and are not part of any plugin archive.
@@ -203,6 +204,13 @@ scripts/dev-bundle.sh --out DIR [--profile debug|release|dist] [--tasty DIR] [--
 replaces only those `<id>` folders and leaves anything else in `DIR` alone. `debug`, the
 default, is cargo's dev profile. Relative paths in `--out`, `--tasty`, and
 `CARGO_TARGET_DIR` are taken from the directory the script is run from.
+
+One run at a time replaces the plugins in `DIR`. After building, a run takes the lock
+`DIR/.dev-bundle.lock`, a folder with the file `owner` in it, and removes it when it ends.
+A run that finds the lock there fails at once without changing `DIR`. A run that was
+killed leaves the lock behind; when no other run is writing to `DIR`, remove the folder
+and run again. Runs keep each other out only when the file system of `DIR` creates files
+exclusively, as local file systems do.
 
 Without `--tasty`, the plugins are built against the tasty commit that `Cargo.lock` pins,
 with `--locked`. With `--tasty`, every package that `Cargo.lock` takes from the tasty git
