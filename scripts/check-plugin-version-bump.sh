@@ -882,16 +882,18 @@ dep_entries() {  # <toml_lines file>
             # The name judge_root_manifest reads: quotes and spaces dropped.
             n = $1; gsub(/["\047 ]/, "", n)
             if (n != "workspace.dependencies" && index(n, "workspace.dependencies.") != 1) next
+            # The whole line after the table name: a value may hold tabs.
+            body = substr($0, length($1) + 2)
             ns = split_key($1, sp)
             shape = 0
             if (sp[1] == "workspace" && sp[2] == "dependencies") {
                 if (ns == 2) shape = 1
                 else if (ns == 3) shape = 2
             }
-            if (shape == 0) { print "<unparsed>\t[" $1 "] " $2; next }
+            if (shape == 0) { print "<unparsed>\t[" $1 "] " body; next }
         }
         shape == 1 {
-            line = $2
+            line = body
             if (!match(line, /^[A-Za-z0-9_-]+([[:space:]]*\.[[:space:]]*[A-Za-z0-9_-]+)*[[:space:]]*=/)) {
                 print "<unparsed>\t" line; next
             }
@@ -903,11 +905,11 @@ dep_entries() {  # <toml_lines file>
         }
         shape == 2 {
             key = sp[3]
-            if (key !~ /^[A-Za-z0-9_-]+$/) { print "<unparsed>\t[" $1 "] " $2; next }
-            if (!match($2, /^[A-Za-z0-9_-]+([[:space:]]*\.[[:space:]]*[A-Za-z0-9_-]+)*[[:space:]]*=/)) {
-                print "<unparsed>\t[" $1 "] " $2; next
+            if (key !~ /^[A-Za-z0-9_-]+$/) { print "<unparsed>\t[" $1 "] " body; next }
+            if (!match(body, /^[A-Za-z0-9_-]+([[:space:]]*\.[[:space:]]*[A-Za-z0-9_-]+)*[[:space:]]*=/)) {
+                print "<unparsed>\t[" $1 "] " body; next
             }
-            lhs = substr($2, 1, RLENGTH - 1); val = substr($2, RLENGTH + 1)
+            lhs = substr(body, 1, RLENGTH - 1); val = substr(body, RLENGTH + 1)
             sub(/^[[:space:]]+/, "", val); gsub(/[[:space:]]/, "", lhs)
             add(key, lhs, val); next
         }
@@ -1455,8 +1457,9 @@ EOF2
             die "cannot read a changed line of [workspace.dependencies] in the root Cargo.toml:
 $(awk -F '\t' '$1 == "<unparsed>"' "$WORK/deps.before" "$WORK/deps.after" | sort | uniq -u | cut -f2- | sed 's/^/    /')"
         fi
-        val_b=$(K="$key" awk -F '\t' '$1 == ENVIRON["K"] { print $2 }' "$WORK/deps.before")
-        val_a=$(K="$key" awk -F '\t' '$1 == ENVIRON["K"] { print $2 }' "$WORK/deps.after")
+        # The value is everything after the first tab: it may hold tabs.
+        val_b=$(K="$key" awk -F '\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2) }' "$WORK/deps.before")
+        val_a=$(K="$key" awk -F '\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2) }' "$WORK/deps.after")
         pkg=$(printf '%s\n%s\n' "$val_a" "$val_b" | sed -n 's/.*package[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | sed -n '1p')
         [ -n "$pkg" ] || pkg="$key"
         plugins_linking "$pkg"
@@ -2070,9 +2073,9 @@ if [ -n "$PLUGINS" ]; then
     esac
 fi
 
-# Reasons recorded for a plugin outside its own files, one per line.
+# Reasons recorded for a plugin outside its own files, one per line. A reason may hold tabs.
 extra_reasons_of() {
-    printf '%s\n' "$EXTRA_DIRTY" | P="$1" awk -F '\t' '$1 == ENVIRON["P"] { print "      " $2 }'
+    printf '%s\n' "$EXTRA_DIRTY" | P="$1" awk -F '\t' '$1 == ENVIRON["P"] { print "      " substr($0, length($1) + 2) }'
 }
 
 INVOLVED=$(printf '%s\n' "$CHANGED_CRATES" | sed -n '/./p' | sort -u)

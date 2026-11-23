@@ -1810,6 +1810,132 @@ fn a_workspace_dependencies_table_name_that_is_not_read_is_undecidable() {
     );
 }
 
+/// A tab inside an entry line does not cut off what follows it: the change after the tab is
+/// seen, and the violation block shows both values in full.
+#[test]
+fn a_tab_inside_a_workspace_dependency_entry_does_not_hide_a_change() {
+    let f = PinFixture::new();
+    f.with_features();
+    f.edit_tasty_a_entry(|l| l.replacen(" }", ",\tfeatures = [\"x\"] }", 1));
+    f.commit("turn on a feature after a tab");
+    f.edit_tasty_a_entry(|l| l.replacen("[\"x\"]", "[\"y\"]", 1));
+    f.commit("change the feature after the tab");
+
+    f.assert_only_alpha_flagged("a change after a tab was cut off");
+    let (_, text) = f.check(&HEAD_RANGE);
+    let reason = reasons_of(&text, "alpha")
+        .into_iter()
+        .find(|r| r.starts_with("Cargo.toml [workspace.dependencies] tasty-a:"))
+        .unwrap_or_else(|| panic!("the tasty-a reason:\n{text}"));
+    let (before, after) = reason.split_once(" → ").expect("before → after");
+    assert!(before.contains("features = [\"x\"]"), "{reason}");
+    assert!(after.contains("features = [\"y\"]"), "{reason}");
+}
+
+/// The same in a `[workspace.dependencies.<name>]` table, with the tab on either side of
+/// the `=`.
+#[test]
+fn a_tab_inside_a_workspace_dependency_subtable_line_does_not_hide_a_change() {
+    for line in ["features =\t[\"x\"]", "features\t= [\"x\"]"] {
+        let f = PinFixture::new();
+        f.with_features();
+        f.tasty_a_as_subtable("tasty-a");
+        f.edit_root(
+            "[workspace.dependencies.tasty-a]\n",
+            &format!("[workspace.dependencies.tasty-a]\n{line}\n"),
+        );
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("turn on a feature in the table, with a tab");
+        f.edit_root(line, &line.replacen("[\"x\"]", "[\"y\"]", 1));
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("change the feature after the tab");
+
+        f.assert_only_alpha_flagged(&format!("{line:?}: a change after a tab was cut off"));
+    }
+}
+
+/// A line that is not read as an entry still stops the check when only the part after a
+/// tab changed. One input per place that reports such a line: a quoted key in
+/// [workspace.dependencies], a quoted key in a `[workspace.dependencies.<name>]` table, a
+/// table name that is not read as an entry name, and a table that only reads as
+/// [workspace.dependencies] once quotes are dropped.
+#[test]
+fn an_unreadable_workspace_dependency_line_changed_after_a_tab_is_undecidable() {
+    let cases: [(&str, fn(&PinFixture) -> (String, String, String)); 4] = [
+        ("a quoted key in the table", |f| {
+            let line = "\"q\" = { version = \"1\",\tdefault-features = true }".to_string();
+            f.edit_root(
+                "[workspace.dependencies]\n",
+                &format!("[workspace.dependencies]\n{line}\n"),
+            );
+            let to = line.replacen("true", "false", 1);
+            (
+                line,
+                to,
+                "\"q\" = { version = \"1\",\tdefault-features = false }".into(),
+            )
+        }),
+        ("a quoted key in a dependency table", |f| {
+            f.tasty_a_as_subtable("tasty-a");
+            let line = "\"q\" = [1,\t2]".to_string();
+            f.edit_root(
+                "[workspace.dependencies.tasty-a]\n",
+                &format!("[workspace.dependencies.tasty-a]\n{line}\n"),
+            );
+            (
+                line,
+                "\"q\" = [1,\t3]".into(),
+                "[workspace.dependencies.tasty-a] \"q\" = [1,\t3]".into(),
+            )
+        }),
+        ("a table name that is not an entry name", |f| {
+            let url = format!("file://{}", f.tasty.display());
+            let line = "default-features =\ttrue".to_string();
+            f.edit_root(
+                "[profile.release]",
+                &format!(
+                    "[workspace.dependencies.\"별칭\"]\ngit = \"{url}\"\npackage = \"tasty-b\"\n\
+                     {line}\n\n[profile.release]"
+                ),
+            );
+            (
+                line,
+                "default-features =\tfalse".into(),
+                "[workspace.dependencies.\"별칭\"] default-features =\tfalse".into(),
+            )
+        }),
+        ("a table that is another table in TOML", |f| {
+            let line = "x = [1,\t2]".to_string();
+            f.edit_root(
+                "[profile.release]",
+                &format!("[workspace.\"dependencies.tasty-a\"]\n{line}\n\n[profile.release]"),
+            );
+            (
+                line,
+                "x = [1,\t3]".into(),
+                "[workspace.\"dependencies.tasty-a\"] x = [1,\t3]".into(),
+            )
+        }),
+    ];
+    for (what, add) in cases {
+        let f = PinFixture::new();
+        let (from, to, shown) = add(&f);
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("add a line that is not read as an entry");
+        f.edit_root(&from, &to);
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("change it after the tab");
+
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 2, "{what}:\n{text}");
+        assert!(
+            text.contains("cannot read a changed line of [workspace.dependencies]"),
+            "{what}:\n{text}"
+        );
+        assert!(text.contains(&shown), "{what}:\n{text}");
+    }
+}
+
 /// Puts `block` in front of [workspace.dependencies], commits, then turns on feature `x` of
 /// tasty-a and commits again.
 fn multi_line_string_then_feature(block: &str) -> (i32, String) {
