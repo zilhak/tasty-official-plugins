@@ -26,16 +26,21 @@
 #   5. The Latest Release is older than the tag, or there is no Latest Release. Checked
 #      again right before the edit.
 #   6. The marker block has one Requires Tasty line, and it is pending.
-#   7. The published files are the set a tag release uploads, with no file missing or
-#      extra; their GitHub digests match the published SHA256SUMS lists, plugins TSV
-#      lists, and the lock file; the published release-meta.toml is for this tag and
-#      commit; and the marker block matches it as scripts/release-check.sh verify judges.
-#      The lock file has the same tasty_rev.
+#   7. The published files are the set a tag release of the tag commit uploads, with no
+#      file missing or extra. The expected archives come from the tag commit, not from the
+#      published lists: its scripts/check.sh list-bins and the id and version in each
+#      crate's tasty-plugin.toml, named as scripts/package-plugin.sh names archives. The
+#      published SHA256SUMS lists, plugins TSV lists, release-meta.toml plugins, and lock
+#      file list exactly those archives, with the GitHub digests as hashes; the published
+#      release-meta.toml is for this tag and commit; and the marker block matches it as
+#      scripts/release-check.sh verify judges. The lock file has the same tasty_rev.
 # The promotion is one gh release edit: the pending line becomes "Requires Tasty: <min>
 # or later", a Verified with Tasty line is added, the Release stops being a pre-release,
 # and it becomes Latest. Then the Latest Release must be the tag.
 #
-# Needs bash 3.2 or later (the macOS /bin/bash: no bash 4 syntax), gh, sha256sum, awk, and sed.
+# Runs in a clone that has the tag commit (git reads its tree for check 7).
+# Needs bash 3.2 or later (the macOS /bin/bash: no bash 4 syntax), git, gh, sha256sum, awk,
+# and sed.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -152,6 +157,12 @@ digest_of() {
   awk -v n="$1" '$1 == n { print $2 }' "$digests"
 }
 
+# The value of key $1 in tasty-plugin.toml $2, read as scripts/lib/plugin-build.sh
+# manifest_string reads it: the first "$1 = ..." line, its quoted text.
+manifest_value() {
+  grep -m1 -E "^$1[[:space:]]*=" "$2" | sed 's/.*"\([^"]*\)".*/\1/' || true
+}
+
 sha_of() {
   sha256sum "$1" | cut -d' ' -f1
 }
@@ -232,8 +243,43 @@ meta="$dl/release-meta.toml"
 [[ -f "$meta" ]] || fail "check 7: Release $TAG has no release-meta.toml"
 [[ "$(toml_value "$meta" tag release "check 7")" == "$TAG" ]] || fail "check 7: release-meta.toml is not for $TAG"
 [[ "$(toml_value "$meta" commit release "check 7")" == "$commit" ]] || fail "check 7: release-meta.toml is not for $commit"
-plugins=$(grep -cx '\[\[plugin\]\]' "$meta" || true)
-((plugins > 0)) || fail "check 7: release-meta.toml lists no plugins"
+
+# The expected files come from the tag commit itself, not from the lists being checked:
+# its own scripts/check.sh list-bins names the plugin crates that release.yml packages
+# (stage --all), and scripts/package-plugin.sh names each archive
+# <id>-<version>-<platform>.tar.gz from the id and version in the crate's tasty-plugin.toml.
+git cat-file -e "$commit^{commit}" 2>/dev/null ||
+  fail "check 7: the tag commit $commit is not in this clone; fetch it (promote.yml checks out main with its history)"
+tree="$WORK/tree"
+mkdir -p "$tree/scripts"
+git show "$commit:scripts/check.sh" >"$tree/scripts/check.sh" ||
+  fail "check 7: cannot read scripts/check.sh at $commit"
+bins=$(bash "$tree/scripts/check.sh" list-bins) || fail "check 7: cannot list the plugin crates at $commit"
+plugins="$WORK/plugins.txt"
+: >"$plugins"
+while IFS= read -r crate; do
+  [[ -n "$crate" ]] || continue
+  git show "$commit:crates/$crate/tasty-plugin.toml" >"$tree/manifest.toml" ||
+    fail "check 7: cannot read crates/$crate/tasty-plugin.toml at $commit"
+  id=$(manifest_value id "$tree/manifest.toml")
+  version=$(manifest_value version "$tree/manifest.toml")
+  [[ "$id" =~ ^[^[:space:]/]+$ && "$version" =~ ^[^[:space:]/]+$ ]] ||
+    fail "check 7: cannot read the id and version of crates/$crate/tasty-plugin.toml at $commit"
+  echo "$id $version" >>"$plugins"
+done <<<"$bins"
+[[ -s "$plugins" ]] || fail "check 7: the tag commit packages no plugins"
+
+# release-meta.toml lists exactly these plugins.
+if ! diff <(awk '
+    function val(s) { sub(/^[^=]*=[[:space:]]*"/, "", s); sub(/"[[:space:]]*$/, "", s); return s }
+    function flush() { if (inplug) print id " " ver; inplug = 0; id = ""; ver = "" }
+    /^[[:space:]]*\[/ { flush(); if ($0 ~ /^[[:space:]]*\[\[plugin\]\][[:space:]]*$/) inplug = 1; next }
+    inplug && $1 == "id" { id = val($0) }
+    inplug && $1 == "version" { ver = val($0) }
+    END { flush() }' "$meta" | sort) <(sort "$plugins") >"$WORK/meta.diff"; then
+  sed 's/^/  /' "$WORK/meta.diff" >&2
+  fail "check 7: release-meta.toml lists other plugins than $commit packages (< release-meta.toml, > tag commit)"
+fi
 
 expected="$WORK/expected.txt"
 archives="$WORK/archives.txt"
@@ -244,19 +290,31 @@ for platform in "${PLATFORMS[@]}"; do
   tsv="$dl/plugins-$platform.tsv"
   [[ -f "$sums" && -f "$tsv" ]] || fail "check 7: Release $TAG lacks the lists of $platform"
   printf '%s\n' "SHA256SUMS-$platform.txt" "plugins-$platform.tsv" >>"$expected"
-  n=0
+  while read -r id version; do
+    echo "$id-$version-$platform.tar.gz" >>"$expected"
+  done <"$plugins"
+  # SHA256SUMS lists exactly the expected archives of the platform.
+  : >"$WORK/sums.txt"
   while IFS= read -r line; do
-    [[ "$line" =~ ^([0-9a-f]{64})\ \ ([^[:space:]/]+-$platform\.tar\.gz)$ ]] ||
+    [[ "$line" =~ ^([0-9a-f]{64})\ \ ([^[:space:]/]+)$ ]] ||
       fail "check 7: unexpected line in SHA256SUMS-$platform.txt: '$line'"
-    echo "${BASH_REMATCH[2]}" >>"$expected"
-    echo "${BASH_REMATCH[2]} ${BASH_REMATCH[1]}" >>"$archives"
-    n=$((n + 1))
+    echo "${BASH_REMATCH[2]} ${BASH_REMATCH[1]}" >>"$WORK/sums.txt"
   done <"$sums"
-  ((n == plugins)) || fail "check 7: SHA256SUMS-$platform.txt lists $n archives, release-meta.toml $plugins plugins"
-  # The TSV lists the same archives and hashes (columns: id, version, platform, file, sha256).
-  if ! diff <(awk -F'\t' 'NR > 1 { print $4 " " $5 }' "$tsv" | sort) \
-    <(awk '{ print $2 " " $1 }' "$sums" | sort) >/dev/null; then
-    fail "check 7: plugins-$platform.tsv and SHA256SUMS-$platform.txt list different archives"
+  if ! diff <(cut -d' ' -f1 "$WORK/sums.txt" | sort) \
+    <(while read -r id version; do echo "$id-$version-$platform.tar.gz"; done <"$plugins" | sort) \
+    >"$WORK/sums.diff"; then
+    sed 's/^/  /' "$WORK/sums.diff" >&2
+    fail "check 7: SHA256SUMS-$platform.txt lists other archives than $commit packages (< list, > tag commit)"
+  fi
+  cat "$WORK/sums.txt" >>"$archives"
+  # The TSV has one row per expected archive (columns: id, version, platform, file, sha256),
+  # with the hash of SHA256SUMS.
+  if ! diff <(awk -F'\t' 'NR > 1 { print $1 " " $2 " " $3 " " $4 " " $5 }' "$tsv" | sort) \
+    <(while read -r id version; do
+      file="$id-$version-$platform.tar.gz"
+      echo "$id $version $platform $file $(awk -v n="$file" '$1 == n { print $2 }' "$WORK/sums.txt")"
+    done <"$plugins" | sort) >/dev/null; then
+    fail "check 7: plugins-$platform.tsv does not list the archives of SHA256SUMS-$platform.txt"
   fi
 done
 

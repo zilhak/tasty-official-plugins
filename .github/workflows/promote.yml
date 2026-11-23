@@ -58,7 +58,10 @@ jobs:
             exit 1
           fi
 
+      # The history of main holds the tag commit, whose tree check 7 reads.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Promote the Release
         env:

@@ -3,21 +3,25 @@
 //! from a table of exact argument lists, copies files for `release download`, and records
 //! `release edit`. A call the table does not hold fails the run, so the tests also pin
 //! which reads the script makes. Each refusal must leave the Release unedited.
+//!
+//! Check 7 reads the plugin set of the tag commit with git, so each test runs the script
+//! from a throwaway repository whose one commit is the tag commit: it holds this
+//! repository's scripts/check.sh and the tasty-plugin.toml of every crate that
+//! `scripts/check.sh list-bins` names, so the good world publishes the files of a real
+//! release (8 plugins on 5 platforms, 51 files).
 
 #![cfg(unix)]
 
 mod support;
 
 use std::collections::BTreeMap;
-use std::io::Write;
-use std::process::Stdio;
+use std::path::Path;
 
 use support::gate_env::GateRun;
 
 const REPO: &str = "zilhak/tasty-official-plugins";
 const TASTY: &str = "zilhak/tasty";
 const TAG: &str = "v1.2.3";
-const COMMIT: &str = "1111111111111111111111111111111111111111";
 const TAG_OBJECT: &str = "5555555555555555555555555555555555555555";
 const OTHER_COMMIT: &str = "2222222222222222222222222222222222222222";
 const TASTY_REV: &str = "3333333333333333333333333333333333333333";
@@ -32,30 +36,115 @@ const PLATFORMS: [&str; 5] = [
     "linux-x64",
     "linux-arm64",
 ];
-const PLUGINS: [(&str, &str); 2] = [("com.tasty.a", "0.1.0"), ("com.tasty.b", "0.2.0")];
 
 const STATE_JQ: &str = r#""\(.draft) \(.prerelease)""#;
 const OBJECT_JQ: &str = r#""\(.object.type) \(.object.sha)""#;
 const ASSETS_JQ: &str = r#".assets[] | "\(.name) \(.digest)""#;
 
+/// A plugin as an archive names it: id and version.
+type Plugin = (String, String);
+
 fn pending(rev: &str) -> String {
     format!("Requires Tasty: pending (a Tasty release that includes tasty commit {rev})")
 }
 
-fn sha256(data: &[u8]) -> String {
-    let mut child = std::process::Command::new("sha256sum")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
+/// The SHA-256 of each file, from one sha256sum run.
+fn sha256_all(files: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, String> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for (name, data) in files {
+        std::fs::write(dir.path().join(name), data).expect("write");
+    }
+    let out = std::process::Command::new("sha256sum")
+        .args(files.keys())
+        .current_dir(dir.path())
+        .output()
         .expect("run sha256sum");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(data)
-        .expect("write");
-    let out = child.wait_with_output().expect("sha256sum output");
-    String::from_utf8_lossy(&out.stdout)[..64].to_string()
+    assert!(out.status.success(), "sha256sum failed");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| {
+            let (hash, name) = l.split_once("  ").expect("sha256sum line");
+            (name.to_string(), hash.to_string())
+        })
+        .collect()
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = support::git_env::command("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("run git {args:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The first `key = "value"` line of a tasty-plugin.toml.
+fn manifest_value(text: &str, key: &str) -> String {
+    text.lines()
+        .find(|l| {
+            l.strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        })
+        .and_then(|l| l.split('"').nth(1))
+        .unwrap_or_else(|| panic!("no {key} in manifest"))
+        .to_string()
+}
+
+/// The tag commit: a throwaway repository with the release scripts to run.
+struct Tree {
+    dir: tempfile::TempDir,
+    commit: String,
+    /// The plugins the tag commit packages.
+    plugins: Vec<Plugin>,
+}
+
+fn tree() -> Tree {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let d = dir.path();
+    git(d, &["init", "--quiet", "-b", "main"]);
+    git(d, &["config", "user.email", "fixture@example.invalid"]);
+    git(d, &["config", "user.name", "fixture"]);
+    // Keep the user's git hooks out of the commit of the synthetic repository.
+    git(d, &["config", "core.hooksPath", "/dev/null"]);
+    for script in [
+        "scripts/check.sh",
+        "scripts/release-check.sh",
+        "scripts/release-promote.sh",
+    ] {
+        let body = std::fs::read(support::repo_file(script)).expect("read script");
+        support::write_executable(&d.join(script), body).expect("copy script");
+    }
+    let bins = support::git_env::command("bash")
+        .arg(support::repo_file("scripts/check.sh"))
+        .arg("list-bins")
+        .output()
+        .expect("run check.sh list-bins");
+    assert!(bins.status.success(), "check.sh list-bins failed");
+    let mut plugins = Vec::new();
+    for crate_name in String::from_utf8_lossy(&bins.stdout).lines() {
+        let rel = format!("crates/{crate_name}/tasty-plugin.toml");
+        let text = std::fs::read_to_string(support::repo_file(&rel)).expect("read manifest");
+        std::fs::create_dir_all(d.join(format!("crates/{crate_name}"))).expect("crate dir");
+        std::fs::write(d.join(&rel), &text).expect("write manifest");
+        plugins.push((
+            manifest_value(&text, "id"),
+            manifest_value(&text, "version"),
+        ));
+    }
+    assert!(plugins.len() > 1, "list-bins names {plugins:?}");
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "--quiet", "-m", "tag commit"]);
+    let commit = git(d, &["rev-parse", "HEAD"]);
+    Tree {
+        dir,
+        commit,
+        plugins,
+    }
 }
 
 /// One answer of the fake gh.
@@ -92,6 +181,7 @@ fn server_error() -> Reply {
 
 /// The GitHub state the fake gh shows. `World::good()` passes every check.
 struct World {
+    tree: Tree,
     latest: Reply,
     latest_after_edit: Reply,
     state: Reply,
@@ -100,27 +190,18 @@ struct World {
     notes: String,
     tasty: BTreeMap<String, Reply>,
     lock: Reply,
+    /// The plugins whose archives, list rows, and lock entries are published.
+    archived: Vec<Plugin>,
+    /// The plugins the published release-meta.toml lists.
+    meta_plugins: Vec<Plugin>,
     /// The published files by name.
     assets: BTreeMap<String, Vec<u8>>,
     /// Digests that differ from the file content, by name.
     digests: BTreeMap<String, String>,
 }
 
-fn archive_name(id: &str, version: &str, platform: &str) -> String {
-    format!("{id}-{version}-{platform}.tar.gz")
-}
-
-fn meta_text(commit: &str, rev: &str) -> String {
-    let mut s = format!(
-        "schema = 1\n\n[release]\nrepository = \"{REPO}\"\ntag = \"{TAG}\"\ncommit = \"{commit}\"\n\
-         tasty_rev = \"{rev}\"\n"
-    );
-    for (id, version) in PLUGINS {
-        s.push_str(&format!(
-            "\n[[plugin]]\nid = \"{id}\"\nversion = \"{version}\"\nbundle = true\n"
-        ));
-    }
-    s
+fn archive_name(plugin: &Plugin, platform: &str) -> String {
+    format!("{}-{}-{platform}.tar.gz", plugin.0, plugin.1)
 }
 
 fn notes_with(block: &[String]) -> String {
@@ -130,67 +211,110 @@ fn notes_with(block: &[String]) -> String {
     )
 }
 
-fn good_block() -> Vec<String> {
-    vec![
-        format!("Commit: {COMMIT}"),
-        format!("tasty rev: {TASTY_REV}"),
-        pending(TASTY_REV),
-    ]
-}
-
 impl World {
+    /// Publishes the release of the tag commit as a tag run uploads it.
     fn good() -> Self {
-        let mut assets = BTreeMap::new();
-        for platform in PLATFORMS {
-            let mut sums = String::new();
-            let mut tsv = String::from("id\tversion\tplatform\tfile\tsha256\n");
-            for (id, version) in PLUGINS {
-                let name = archive_name(id, version, platform);
-                let data = format!("archive {name}").into_bytes();
-                let hash = sha256(&data);
-                sums.push_str(&format!("{hash}  {name}\n"));
-                tsv.push_str(&format!("{id}\t{version}\t{platform}\t{name}\t{hash}\n"));
-                assets.insert(name, data);
-            }
-            assets.insert(format!("SHA256SUMS-{platform}.txt"), sums.into_bytes());
-            assets.insert(format!("plugins-{platform}.tsv"), tsv.into_bytes());
-        }
-        assets.insert(
-            "release-meta.toml".into(),
-            meta_text(COMMIT, TASTY_REV).into_bytes(),
-        );
+        let tree = tree();
+        let plugins = tree.plugins.clone();
+        Self::publishing(tree, plugins.clone(), plugins)
+    }
+
+    /// Publishes archives, lists, and lock entries for `archived`, and a release-meta.toml
+    /// that lists `meta_plugins`. All of them agree on names and hashes.
+    fn publishing(tree: Tree, archived: Vec<Plugin>, meta_plugins: Vec<Plugin>) -> Self {
         let mut tasty = BTreeMap::new();
         tasty.insert(NEW.to_string(), ok("false false\n"));
         tasty.insert("0.14.0".to_string(), ok("false false\n"));
+        let commit = tree.commit.clone();
         let mut w = Self {
+            tree,
             latest: ok("v1.2.2\n"),
             latest_after_edit: ok(format!("{TAG}\n")),
             state: ok("false true\n"),
             tag_ref: ok(format!("tag {TAG_OBJECT}\n")),
-            tag_object: ok(format!("commit {COMMIT}\n")),
-            notes: notes_with(&good_block()),
+            tag_object: ok(format!("commit {commit}\n")),
+            notes: String::new(),
             tasty,
             lock: ok(String::new()),
-            assets,
+            archived,
+            meta_plugins,
+            assets: BTreeMap::new(),
             digests: BTreeMap::new(),
         };
-        w.lock = ok(w.lock_text(REPO, TAG, COMMIT, TASTY_REV));
+        w.notes = notes_with(&w.good_block());
+        let mut archives = BTreeMap::new();
+        for platform in PLATFORMS {
+            for plugin in &w.archived {
+                let name = archive_name(plugin, platform);
+                archives.insert(name.clone(), format!("archive {name}").into_bytes());
+            }
+        }
+        let hashes = sha256_all(&archives);
+        for platform in PLATFORMS {
+            let mut sums = String::new();
+            let mut tsv = String::from("id\tversion\tplatform\tfile\tsha256\n");
+            for plugin in &w.archived {
+                let name = archive_name(plugin, platform);
+                let hash = &hashes[&name];
+                sums.push_str(&format!("{hash}  {name}\n"));
+                tsv.push_str(&format!(
+                    "{}\t{}\t{platform}\t{name}\t{hash}\n",
+                    plugin.0, plugin.1
+                ));
+            }
+            w.assets
+                .insert(format!("SHA256SUMS-{platform}.txt"), sums.into_bytes());
+            w.assets
+                .insert(format!("plugins-{platform}.tsv"), tsv.into_bytes());
+        }
+        w.assets.extend(archives);
+        let meta = w.meta_text(TAG, &commit, TASTY_REV);
+        w.assets
+            .insert("release-meta.toml".into(), meta.into_bytes());
+        w.lock = ok(w.lock_text(REPO, TAG, &commit, TASTY_REV));
         w
     }
 
-    /// The tasty lock file that bundles the archives of this world.
+    fn commit(&self) -> &str {
+        &self.tree.commit
+    }
+
+    fn good_block(&self) -> Vec<String> {
+        vec![
+            format!("Commit: {}", self.commit()),
+            format!("tasty rev: {TASTY_REV}"),
+            pending(TASTY_REV),
+        ]
+    }
+
+    fn meta_text(&self, tag: &str, commit: &str, rev: &str) -> String {
+        let mut s = format!(
+            "schema = 1\n\n[release]\nrepository = \"{REPO}\"\ntag = \"{tag}\"\n\
+             commit = \"{commit}\"\ntasty_rev = \"{rev}\"\n"
+        );
+        for (id, version) in &self.meta_plugins {
+            s.push_str(&format!(
+                "\n[[plugin]]\nid = \"{id}\"\nversion = \"{version}\"\nbundle = true\n"
+            ));
+        }
+        s
+    }
+
+    /// The tasty lock file that bundles the published archives.
     fn lock_text(&self, repo: &str, tag: &str, commit: &str, rev: &str) -> String {
+        let hashes = sha256_all(&self.assets);
         let mut s = format!(
             "schema = 1\n\n[release]\nrepository = \"{repo}\"\ntag = \"{tag}\"\n\
              commit = \"{commit}\"\ntasty_rev = \"{rev}\"\nmanifest_version = 1\n"
         );
-        for (id, version) in PLUGINS {
+        for plugin in &self.archived {
             s.push_str(&format!(
-                "\n[[plugin]]\nid = \"{id}\"\nversion = \"{version}\"\nbundle = true\n"
+                "\n[[plugin]]\nid = \"{}\"\nversion = \"{}\"\nbundle = true\n",
+                plugin.0, plugin.1
             ));
             for platform in PLATFORMS {
-                let name = archive_name(id, version, platform);
-                let hash = sha256(&self.assets[&name]);
+                let name = archive_name(plugin, platform);
+                let hash = &hashes[&name];
                 s.push_str(&format!(
                     "\n  [[plugin.artifact]]\n  platform = \"{platform}\"\n  file = \"{name}\"\n  \
                      url = \"https://github.com/{repo}/releases/download/{tag}/{name}\"\n  \
@@ -203,7 +327,7 @@ impl World {
 
     fn promoted_notes(&self) -> String {
         notes_with(&[
-            format!("Commit: {COMMIT}"),
+            format!("Commit: {}", self.commit()),
             format!("tasty rev: {TASTY_REV}"),
             format!("Requires Tasty: {MIN} or later"),
             format!("Verified with Tasty: {MIN} (minimum), {NEW} (bundled) on {ON}"),
@@ -212,13 +336,10 @@ impl World {
 
     fn replies(&self) -> Vec<(String, &'static str, Reply)> {
         let release = format!("api repos/{REPO}/releases/tags/{TAG} --jq");
+        let hashes = sha256_all(&self.assets);
         let mut assets = String::new();
-        for (name, data) in &self.assets {
-            let digest = self
-                .digests
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| sha256(data));
+        for name in self.assets.keys() {
+            let digest = self.digests.get(name).unwrap_or(&hashes[name]);
             assets.push_str(&format!("{name} sha256:{digest}\n"));
         }
         let mut r = vec![
@@ -373,7 +494,7 @@ fn promote(world: &World, args: &[&str]) -> Run {
         std::env::var("PATH").unwrap_or_default()
     );
     let out = support::git_env::command("bash")
-        .arg(support::repo_file("scripts/release-promote.sh"))
+        .arg(world.tree.dir.path().join("scripts/release-promote.sh"))
         .args(args)
         .env("PATH", path)
         .env("FAKE_GH_DIR", d)
@@ -498,7 +619,7 @@ fn the_commit_line_is_compared_with_the_peeled_tag_commit() {
     run_good(&w).assert_refused("tag points at another commit");
     // A lightweight tag points at the commit directly.
     let mut w = World::good();
-    w.tag_ref = ok(format!("commit {COMMIT}\n"));
+    w.tag_ref = ok(format!("commit {}\n", w.commit()));
     assert_eq!(run_good(&w).result, 0);
 }
 
@@ -522,19 +643,22 @@ fn promotion_refuses_a_release_that_no_published_tasty_bundles() {
     let mut w = World::good();
     w.lock = not_found();
     run_good(&w).assert_refused("no lock file");
-    for (what, lock) in [
-        (
-            "other repository",
-            w.lock_text("someone/tasty-official-plugins", TAG, COMMIT, TASTY_REV),
-        ),
-        ("other tag", w.lock_text(REPO, "v1.2.2", COMMIT, TASTY_REV)),
-        (
-            "other commit",
-            w.lock_text(REPO, TAG, OTHER_COMMIT, TASTY_REV),
-        ),
-        ("tag object", w.lock_text(REPO, TAG, TAG_OBJECT, TASTY_REV)),
+    for what in [
+        "other repository",
+        "other tag",
+        "other commit",
+        "tag object",
     ] {
         let mut w = World::good();
+        let commit = w.commit().to_string();
+        let lock = match what {
+            "other repository" => {
+                w.lock_text("someone/tasty-official-plugins", TAG, &commit, TASTY_REV)
+            }
+            "other tag" => w.lock_text(REPO, "v1.2.2", &commit, TASTY_REV),
+            "other commit" => w.lock_text(REPO, TAG, OTHER_COMMIT, TASTY_REV),
+            _ => w.lock_text(REPO, TAG, TAG_OBJECT, TASTY_REV),
+        };
         w.lock = ok(lock);
         run_good(&w).assert_refused(what);
     }
@@ -567,21 +691,18 @@ fn an_older_tag_is_never_made_latest_again() {
 
 #[test]
 fn the_marker_block_must_hold_one_pending_line() {
-    let cases = [
-        ("no Requires line", good_block()[..2].to_vec()),
-        ("settled Requires line", {
-            let mut b = good_block()[..2].to_vec();
-            b.push("Requires Tasty: 0.14.0 or later".into());
-            b
-        }),
-        ("two pending lines", {
-            let mut b = good_block();
-            b.push(pending(TASTY_REV));
-            b
-        }),
-    ];
-    for (what, block) in cases {
+    for what in [
+        "no Requires line",
+        "settled Requires line",
+        "two pending lines",
+    ] {
         let mut w = World::good();
+        let mut block = w.good_block();
+        match what {
+            "no Requires line" => block.truncate(2),
+            "settled Requires line" => block[2] = "Requires Tasty: 0.14.0 or later".into(),
+            _ => block.push(pending(TASTY_REV)),
+        }
         w.notes = notes_with(&block);
         run_good(&w).assert_refused(what);
     }
@@ -594,8 +715,8 @@ fn the_published_files_must_be_the_set_a_tag_release_uploads() {
     run_good(&w).assert_refused("extra file");
 
     let mut w = World::good();
-    w.assets
-        .remove(&archive_name("com.tasty.a", "0.1.0", "linux-x64"));
+    let name = archive_name(&w.archived[0], "linux-x64");
+    w.assets.remove(&name);
     run_good(&w).assert_refused("missing archive");
 
     let mut w = World::good();
@@ -607,10 +728,8 @@ fn the_published_files_must_be_the_set_a_tag_release_uploads() {
 fn the_published_hashes_must_agree() {
     // An archive whose GitHub digest is not its SHA256SUMS hash.
     let mut w = World::good();
-    w.digests.insert(
-        archive_name("com.tasty.b", "0.2.0", "windows-arm64"),
-        "0".repeat(64),
-    );
+    let name = archive_name(&w.archived[1], "windows-arm64");
+    w.digests.insert(name, "0".repeat(64));
     run_good(&w).assert_refused("archive digest");
 
     // A downloaded list whose GitHub digest differs from its content.
@@ -637,8 +756,9 @@ fn the_published_hashes_must_agree() {
     // The lock file pins another hash.
     let mut w = World::good();
     let lock = w.lock.out.clone();
-    let name = archive_name("com.tasty.a", "0.1.0", "macos-arm64");
-    let hash = sha256(&w.assets[&name]);
+    let name = archive_name(&w.archived[0], "macos-arm64");
+    let hash = sha256_all(&w.assets)[&name].clone();
+    assert!(lock.contains(&hash));
     w.lock = ok(lock.replacen(&hash, &"e".repeat(64), 1));
     run_good(&w).assert_refused("lock hash");
 }
@@ -647,34 +767,70 @@ fn the_published_hashes_must_agree() {
 fn the_marker_block_and_the_lock_must_match_the_published_release_meta() {
     // release-meta.toml for another commit.
     let mut w = World::good();
-    w.assets.insert(
-        "release-meta.toml".into(),
-        meta_text(OTHER_COMMIT, TASTY_REV).into_bytes(),
-    );
+    let meta = w.meta_text(TAG, OTHER_COMMIT, TASTY_REV);
+    w.assets
+        .insert("release-meta.toml".into(), meta.into_bytes());
     run_good(&w).assert_refused("release-meta commit");
 
     // Only the tasty rev line changed.
     let mut w = World::good();
-    w.notes = notes_with(&[
-        format!("Commit: {COMMIT}"),
-        format!("tasty rev: {OTHER_REV}"),
-        pending(TASTY_REV),
-    ]);
+    let mut block = w.good_block();
+    block[1] = format!("tasty rev: {OTHER_REV}");
+    w.notes = notes_with(&block);
     run_good(&w).assert_refused("tasty rev line");
 
     // Only the pending pin changed.
     let mut w = World::good();
-    w.notes = notes_with(&[
-        format!("Commit: {COMMIT}"),
-        format!("tasty rev: {TASTY_REV}"),
-        pending(OTHER_REV),
-    ]);
+    let mut block = w.good_block();
+    block[2] = pending(OTHER_REV);
+    w.notes = notes_with(&block);
     run_good(&w).assert_refused("pending pin");
 
     // The lock file was made from another tasty rev.
     let mut w = World::good();
-    w.lock = ok(w.lock_text(REPO, TAG, COMMIT, OTHER_REV));
+    let commit = w.commit().to_string();
+    w.lock = ok(w.lock_text(REPO, TAG, &commit, OTHER_REV));
     run_good(&w).assert_refused("lock tasty_rev");
+}
+
+#[test]
+fn a_plugin_left_out_of_every_list_is_still_missing() {
+    // The published files, lists, release-meta.toml, and lock agree with each other, but
+    // the tag commit packages one plugin more.
+    let t = tree();
+    let mut published = t.plugins.clone();
+    published.remove(0);
+    let w = World::publishing(t, published.clone(), published);
+    run_good(&w).assert_refused("one plugin left out everywhere");
+}
+
+#[test]
+fn archives_named_unlike_the_tag_commit_are_refused() {
+    // release-meta.toml lists the plugins of the tag commit, but the archives of one plugin
+    // carry another name on all five platforms, and the lists, lock, and hashes follow it.
+    let t = tree();
+    let meta_plugins = t.plugins.clone();
+    let mut archived = t.plugins.clone();
+    archived[1].0 = format!("{}-renamed", archived[1].0);
+    let w = World::publishing(t, archived, meta_plugins);
+    run_good(&w).assert_refused("renamed archives");
+}
+
+#[test]
+fn the_good_world_publishes_the_files_of_a_real_release() {
+    let w = World::good();
+    // Each list-bins crate on each platform, the two lists per platform, release-meta.toml.
+    assert_eq!(
+        w.assets.len(),
+        w.tree.plugins.len() * PLATFORMS.len() + 2 * PLATFORMS.len() + 1
+    );
+    // As many plugins as a tag run of release.yml checks for.
+    let release = read(".github/workflows/release.yml");
+    let count: usize = line_value(&release, "  PLUGIN_COUNT: ", "release.yml")
+        .trim_matches('"')
+        .parse()
+        .expect("PLUGIN_COUNT");
+    assert_eq!(w.tree.plugins.len(), count, "{:?}", w.tree.plugins);
 }
 
 #[test]
