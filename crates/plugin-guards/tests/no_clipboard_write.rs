@@ -463,9 +463,12 @@ impl<'a> Code<'a> {
     }
 
     /// The token after a pattern that ends at token `end`: past the alternatives after it.
+    /// A `|` followed by what cannot start a pattern, such as `if`, is a bitwise or.
     fn after_pattern(&self, end: usize) -> usize {
         let mut k = end + 1;
-        while self.is_single_bar(k) {
+        while self.is_single_bar(k)
+            && (self.is_pattern_tok(k + 1) || matches!(self.tok(k + 1), "(" | "["))
+        {
             k += 1;
             loop {
                 if matches!(self.tok(k), "(" | "[") {
@@ -1898,4 +1901,35 @@ fn a_copy_command_passed_to_a_raw_let_call_is_a_write() {
 #[test]
 fn a_copy_command_passed_to_a_raw_let_function_is_a_write() {
     assert_writes(&[("r#let(OutputCommand::CopyText(x));", 1)]);
+}
+
+/// Given an egui copy command built and joined by a bitwise or to an `if` expression,
+/// as a statement, when the file is read, then it is reported: that `|` does not start
+/// an alternative and the `if` is not a guard.
+#[test]
+fn a_copy_command_joined_by_a_bitwise_or_to_an_if_is_a_write() {
+    assert_writes(&[(
+        "OutputCommand::CopyText(text) | if ready { Route(out) } else { Route(out) };",
+        1,
+    )]);
+}
+
+/// Given egui copy commands built by closures in a tuple or an array and joined by a
+/// bitwise or to an `if` expression, when the file is read, then each is reported.
+#[test]
+fn copy_commands_in_closures_joined_by_a_bitwise_or_to_an_if_are_writes() {
+    assert_writes(&[
+        (
+            "let make = (|_: u8, _| OutputCommand::CopyText(text) | if ready { Route(out) } else { Route(out) },);",
+            1,
+        ),
+        (
+            "let [make] = [|_: u8, _| OutputCommand::CopyText(text) | if ready { Route(out) } else { Route(out) }];",
+            1,
+        ),
+        (
+            "let mut make = (async |_, _| OutputCommand::CopyText(text.clone()) | if ready { Route(out) } else { Route(out) },);",
+            1,
+        ),
+    ]);
 }
