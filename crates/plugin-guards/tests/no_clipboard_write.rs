@@ -9,8 +9,11 @@
 //! `SHAPES` lists the write calls of the clipboard APIs a plugin can depend on: arboard,
 //! Wayland and X11 selections, the macOS pasteboard, the Windows clipboard, egui and
 //! egui-winit copies, and the names tasty used for its own copy paths. A write function
-//! renamed by `use ... as` is followed. `offenders_in` and the tests below hold the exact
-//! rules. Copies done by an eframe widget, a WebView, or a
+//! renamed by `use ... as` is followed, and clearing an arboard clipboard (bound to a
+//! name or created in the same statement) counts as a write. The reading is syntax only:
+//! a write function passed as a value, an arboard clipboard reached through another
+//! binding, and calls a macro produces are not found. `offenders_in` and the tests below
+//! hold the exact rules. Copies done by an eframe widget, a WebView, or a
 //! page script are not Rust calls and are outside this check.
 //!
 //! One exception: the test double `ScanHost::set_text` in the claude plugin's
@@ -19,7 +22,7 @@
 //! innermost function around the call is one of the listed tests. Every listed test
 //! must still use it, so a stale entry fails.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use plugin_guards::{FnSpan, fn_spans, is_ident, repo_root};
@@ -336,6 +339,130 @@ fn aliases_of(leaves: &[(Vec<String>, String)]) -> Vec<(String, &'static Shape)>
     out
 }
 
+/// The arboard clipboard of a file: the names its type goes by and the names bound to
+/// one. Clearing an arboard clipboard writes it, but `clear` is too common a name to
+/// count on its own.
+struct Arboard {
+    types: BTreeSet<String>,
+    names: BTreeSet<String>,
+}
+
+impl Arboard {
+    fn new(code: &Code, leaves: &[(Vec<String>, String)]) -> Self {
+        let mut arboard = Arboard {
+            types: BTreeSet::new(),
+            names: BTreeSet::new(),
+        };
+        for (path, bound) in leaves {
+            if path.len() >= 2 && path[path.len() - 2..] == ["arboard", "Clipboard"] {
+                arboard.types.insert(bound.clone());
+            }
+        }
+        for i in 0..code.tokens.len() {
+            if code.tok(i) == "type"
+                && code.is_ident_tok(i + 1)
+                && code.tok(i + 2) == "="
+                && arboard
+                    .type_at(code, i + 3)
+                    .is_some_and(|end| code.tok(end) == ";")
+            {
+                arboard.types.insert(code.tok(i + 1).to_string());
+            }
+        }
+        for i in 0..code.tokens.len() {
+            if let Some(name) = arboard.bound_at(code, i) {
+                arboard.names.insert(name.to_string());
+            }
+        }
+        arboard
+    }
+
+    /// The token after an arboard clipboard type named at token `i`.
+    fn type_at(&self, code: &Code, i: usize) -> Option<usize> {
+        if code.tok(i) == "arboard"
+            && code.tok(i + 1) == ":"
+            && code.tok(i + 2) == ":"
+            && code.tok(i + 3) == "Clipboard"
+        {
+            return Some(i + 4);
+        }
+        let after_path = i > 0 && code.tok(i - 1) == ":";
+        (!after_path && self.types.contains(code.tok(i))).then_some(i + 1)
+    }
+
+    /// Whether an arboard clipboard is created (`<type>::new`) at token `i`.
+    fn created_at(&self, code: &Code, i: usize) -> bool {
+        self.type_at(code, i).is_some_and(|end| {
+            code.tok(end) == ":" && code.tok(end + 1) == ":" && code.tok(end + 2) == "new"
+        })
+    }
+
+    /// The name bound to an arboard clipboard at token `i`: `let [mut] N = ...;` whose
+    /// value creates one, or `N: [&] [mut] <type>`.
+    fn bound_at<'c>(&self, code: &'c Code, i: usize) -> Option<&'c str> {
+        if code.tok(i) == "let" {
+            let mut j = i + 1;
+            if code.tok(j) == "mut" {
+                j += 1;
+            }
+            if !code.is_ident_tok(j) {
+                return None;
+            }
+            let name = code.tok(j);
+            let mut depth = 0usize;
+            for k in j + 1..code.tokens.len() {
+                match code.tok(k) {
+                    "(" | "[" | "{" => depth += 1,
+                    ")" | "]" | "}" => depth = depth.saturating_sub(1),
+                    ";" if depth == 0 => break,
+                    _ if self.created_at(code, k) => return Some(name),
+                    _ => {}
+                }
+            }
+            return None;
+        }
+        if !code.is_ident_tok(i)
+            || code.tok(i + 1) != ":"
+            || code.tok(i + 2) == ":"
+            || (i > 0 && code.tok(i - 1) == ":")
+        {
+            return None;
+        }
+        let mut j = i + 2;
+        if code.tok(j) == "&" {
+            j += 1;
+        }
+        if code.tok(j) == "mut" {
+            j += 1;
+        }
+        self.type_at(code, j).map(|_| code.tok(i))
+    }
+
+    /// The clear call at token `i` when it clears an arboard clipboard: its receiver is a
+    /// bound name, or the same statement creates the clipboard.
+    fn clear_at(&self, code: &Code, i: usize) -> Option<&'static str> {
+        if code.tok(i) != "." || code.tok(i + 2) != "(" {
+            return None;
+        }
+        let call = match code.tok(i + 1) {
+            "clear" => ".clear(",
+            "clear_with" => ".clear_with(",
+            _ => return None,
+        };
+        if i > 0 && self.names.contains(code.tok(i - 1)) {
+            return Some(call);
+        }
+        let mut k = i;
+        while k > 0 && !matches!(code.tok(k - 1), ";" | "{" | "}") {
+            k -= 1;
+            if self.created_at(code, k) {
+                return Some(call);
+            }
+        }
+        None
+    }
+}
+
 /// Whether any shape is used in `src`.
 fn writes(src: &str) -> bool {
     !offenders_in("crates/tasty-plugin-x/src/lib.rs", src)
@@ -375,9 +502,24 @@ fn offenders_in(rel: &str, raw: &str) -> (Vec<String>, BTreeMap<String, usize>) 
                 .map(|(alias, shape)| (Some(alias), shape)),
         )
         .collect();
+    let arboard = Arboard::new(&code, &leaves);
     let mut offenders = Vec::new();
     let mut double_uses = BTreeMap::new();
+    let report = |offenders: &mut Vec<String>, i: usize, call: &str| {
+        let pos = code.start(i);
+        let line = code.line_of(pos);
+        offenders.push(format!(
+            "  {rel}:{} (fn {})  {}  {}",
+            line + 1,
+            enclosing_fn(&spans, pos).unwrap_or("-"),
+            call,
+            raw_lines.get(line).map_or("", |l| l.trim())
+        ));
+    };
     for i in 0..code.tokens.len() {
+        if let Some(call) = arboard.clear_at(&code, i) {
+            report(&mut offenders, i, call);
+        }
         for (alias, shape) in &calls {
             if !shape_at(&code, shape, alias.as_deref(), i) {
                 continue;
@@ -395,14 +537,7 @@ fn offenders_in(rel: &str, raw: &str) -> (Vec<String>, BTreeMap<String, usize>) 
                     .or_insert(0) += 1;
                 continue;
             }
-            let line = code.line_of(pos);
-            offenders.push(format!(
-                "  {rel}:{} (fn {})  {}  {}",
-                line + 1,
-                function.unwrap_or("-"),
-                shape.call,
-                raw_lines.get(line).map_or("", |l| l.trim())
-            ));
+            report(&mut offenders, i, shape.call);
         }
     }
     (offenders, double_uses)
@@ -678,4 +813,41 @@ fn a_write_function_renamed_by_use_is_found() {
 fn a_write_function_taken_as_a_value_is_not_a_call() {
     let offenders = found("fn f() {\n    let f = set_clipboard;\n}\n");
     assert!(offenders.is_empty(), "{offenders:?}");
+}
+
+/// Given an arboard clipboard bound to a name, typed through an import or an alias, or
+/// created in the statement, when it is cleared, then that clear is reported alone.
+#[test]
+fn clearing_an_arboard_clipboard_is_a_write() {
+    let cases = [
+        "fn f() {\n    let mut cb = arboard::Clipboard::new()?;\n    cb.clear()?;\n}\n",
+        "fn f(clip: &mut arboard::Clipboard) {\n    let _ = 1;\n    clip.clear_with().default();\n}\n",
+        "use arboard::Clipboard as Cb;\nfn f() {\n    let mut c = Cb::new()?; c.clear()?;\n}\n",
+        "type Board = arboard::Clipboard;\nfn f(b: &mut Board) {\n    b.clear();\n}\n",
+        "fn f() {\n    let _ = 1;\n    arboard::Clipboard::new()?.clear()?;\n}\n",
+        "use arboard::Clipboard;\nfn f(c: &mut Clipboard) {\n    c.clear();\n}\n",
+        "use arboard::{Clipboard};\nfn f(c: &mut Clipboard) {\n    c.clear();\n}\n",
+    ];
+    for src in cases {
+        let offenders = found(src);
+        assert_eq!(offenders.len(), 1, "{src}: {offenders:?}");
+        assert!(
+            offenders[0].contains(":3 (fn f)") && offenders[0].contains(".clear"),
+            "{src}: {offenders:?}"
+        );
+    }
+}
+
+/// Given a clear on something that is not an arboard clipboard, when the file is read,
+/// then nothing is reported.
+#[test]
+fn clearing_other_values_passes() {
+    let cases = [
+        "fn f() {\n    let mut v = Vec::new();\n    v.clear();\n}\n",
+        "fn f() {\n    cb.clear();\n}\n",
+    ];
+    for src in cases {
+        let offenders = found(src);
+        assert!(offenders.is_empty(), "{src}: {offenders:?}");
+    }
 }
