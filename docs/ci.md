@@ -259,18 +259,22 @@ the index.
   numbered conductor ticket, a path into the local work folder, a date joined to a word
   by hyphens, a TODO number in an anchor, a mention of the local agent folders (a home
   path is allowed), TODO in prose (not in Markdown, and not the task markers `TODO:` and
-  `TODO(scope):`), two digits in brackets starting with zero, dotted plan coordinates,
-  and an upper case R with two or more digits. `.gitignore` may name the local folders,
-  and the test file holds the shapes it describes; both are listed with the patterns
-  they may hold. In a Git checkout the files come from Git: tracked paths wherever they
-  sit, read from the index and from the work tree when it differs, a tracked link as its
-  target text, and untracked paths that Git does not ignore, except the local agent
-  files and build caches. Without Git the tree is walked with the pruning of
-  `no_emoji_in_source`. Binary extensions and the vendored minified bundles of the
-  markdown plugin are not read; the plugin's `assets/NOTICE.md` is. A file that is not
-  UTF-8 or cannot be read fails the check. The vendored list is checked as well: each
-  listed bundle is a file, and no unlisted minified file sits directly in the markdown
-  `assets/` folder or anywhere the scan starts from.
+  `TODO(scope):`), a zero followed by one digit from 1 to 9 in round brackets, dotted
+  plan coordinates, and an upper case R with two or more digits. `.gitignore` may name
+  the local folders, and the test file holds the shapes it describes; both are listed
+  with the patterns they may hold. In a Git checkout the files come from Git: tracked
+  paths wherever they sit, read from the index and from the work tree when it differs, a
+  tracked link as its target text, and untracked paths that Git does not ignore. An
+  untracked path is left out when any part of it is one of the pruned names of this
+  check (build, dependency, editor and tool folders, and the local agent files and
+  folders) or when it sits under a folder marked as a build cache. Without Git the tree
+  is walked and skips the same names, whether a file or a folder carries them, and the
+  folders marked as build caches. Binary extensions and the vendored minified bundles of
+  the markdown plugin are not read; the plugin's `assets/NOTICE.md` is. A file that is
+  not UTF-8 is listed and fails the check, and a file that cannot be read fails it with
+  the error. The vendored list is checked as well: each listed bundle is a file, and no
+  unlisted minified file sits directly in the markdown `assets/` folder or anywhere the
+  scan starts from.
 
 The checks that walk the sources fail when they find fewer files or plugins than a floor
 measured in this repository, so an empty walk does not pass.
