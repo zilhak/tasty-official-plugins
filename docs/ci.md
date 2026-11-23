@@ -272,8 +272,8 @@ the index.
     such as `~` or `$HOME`, or with a home word shortly before it. An absolute home path
     such as one under `/Users` is not a home prefix.
   - `prose-todo`: upper case TODO that is not a task marker such as `TODO:` or
-    `TODO(scope):`, in files other than Markdown. It matches the string, so an
-    identifier that holds it counts too.
+    `TODO(scope):`, in files whose name does not end in `.md` (in any case). It matches
+    the string, so an identifier that holds it counts too.
   - `split-number`: a zero-padded split number, a zero and a nonzero digit in round
     brackets.
   - `plan-coordinate`: a plan coordinate of upper case letters and a number joined by
@@ -288,7 +288,8 @@ the index.
   left out; files without an extension and the plugin's `assets/NOTICE.md` are read. A
   tracked path is read from the index, a tracked link as its target text, and a
   submodule entry is not read. A tracked regular file is also read from the work tree
-  when its lines differ from the index copy and its path passes through no link. An
+  when its text, with line endings made the same, differs from the index copy and its
+  path passes through no link. An
   untracked path is read only when it is a regular file, and it is left out when a part
   of it has one of the pruned names of this check (build, dependency, editor and tool
   folders, and the local agent files and folders) or when it sits under a folder marked
