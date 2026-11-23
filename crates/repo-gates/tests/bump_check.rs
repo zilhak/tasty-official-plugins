@@ -1936,6 +1936,289 @@ fn an_unreadable_workspace_dependency_line_changed_after_a_tab_is_undecidable() 
     }
 }
 
+impl PinFixture {
+    /// The file:// url of the tasty repository.
+    fn tasty_url(&self) -> String {
+        format!("file://{}", self.tasty.display())
+    }
+
+    /// The commit the tasty entries of the root Cargo.toml point at.
+    fn pinned_rev(&self) -> String {
+        let toml = fs::read_to_string(self.repo.join("Cargo.toml")).expect("read");
+        let line = toml
+            .lines()
+            .find(|l| l.starts_with("tasty-b = "))
+            .expect("tasty-b entry");
+        let tail = line.split_once("rev = \"").expect("rev").1;
+        tail.split_once('"').expect("closing quote").0.to_string()
+    }
+
+    /// Puts `entry` on its own line after the tasty-i18n entry of the root Cargo.toml.
+    fn add_entry(&self, entry: &str) {
+        let toml = fs::read_to_string(self.repo.join("Cargo.toml")).expect("read");
+        let line = toml
+            .lines()
+            .find(|l| l.starts_with("tasty-i18n = "))
+            .expect("tasty-i18n entry")
+            .to_string();
+        write(
+            &self.repo,
+            "Cargo.toml",
+            &toml.replacen(&format!("{line}\n"), &format!("{line}\n{entry}\n"), 1),
+        );
+    }
+
+    /// Replaces the one occurrence of `from` in the file `rel` of the plugins repository.
+    fn edit_file(&self, rel: &str, from: &str, to: &str) {
+        let body = fs::read_to_string(self.repo.join(rel)).expect("read");
+        assert_eq!(body.matches(from).count(), 1, "{from:?} in {rel}");
+        write(&self.repo, rel, &body.replacen(from, to, 1));
+    }
+}
+
+/// Whether the violation block of `plugin` carries the [workspace.dependencies] reason of
+/// `key`.
+fn has_entry_reason(text: &str, plugin: &str, key: &str) -> bool {
+    let head = format!("crates/tasty-plugin-{plugin}: shipped content changed");
+    text.contains(&head)
+        && reasons_of(text, plugin)
+            .iter()
+            .any(|r| r.starts_with(&format!("Cargo.toml [workspace.dependencies] {key}:")))
+}
+
+/// Removing `package` from an entry points it at another package. Both the package before
+/// and the package after are judged: beta, which links the new package, and alpha, which
+/// links the old one, both carry the entry reason. Without alpha linking the old package,
+/// beta still does.
+#[test]
+fn removing_a_package_rename_judges_the_new_package() {
+    for alpha_links_tasty_b in [true, false] {
+        let what = format!("alpha links tasty-b: {alpha_links_tasty_b}");
+        let f = PinFixture::new();
+        f.tasty_write(
+            "crates/alias/Cargo.toml",
+            "[package]\nname = \"alias\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        f.tasty_write("crates/alias/src/lib.rs", "pub fn z() {}\n");
+        let t2 = f.tasty_commit("add the crate alias");
+        f.move_pin(&t2);
+        f.add_entry(&format!(
+            "alias = {{ package = \"tasty-b\", git = \"{}\", rev = \"{t2}\" }}",
+            f.tasty_url()
+        ));
+        f.edit_file(
+            "crates/tasty-plugin-beta/Cargo.toml",
+            "tasty-b.workspace = true",
+            "alias.workspace = true",
+        );
+        if alpha_links_tasty_b {
+            f.edit_file(
+                "crates/tasty-plugin-alpha/Cargo.toml",
+                "tasty-a.workspace = true\n",
+                "tasty-a.workspace = true\ntasty-b.workspace = true\n",
+            );
+        }
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("let beta use tasty-b under the name alias");
+        f.edit_root("alias = { package = \"tasty-b\", ", "alias = { ");
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("point alias at the crate alias");
+
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 1, "{what}:\n{text}");
+        assert!(has_entry_reason(&text, "beta", "alias"), "{what}:\n{text}");
+        assert_eq!(
+            has_entry_reason(&text, "alpha", "alias"),
+            alpha_links_tasty_b,
+            "{what}:\n{text}"
+        );
+    }
+}
+
+/// A removed entry is judged by the package it named.
+#[test]
+fn removing_a_workspace_dependency_judges_the_old_package() {
+    let f = PinFixture::new();
+    f.add_entry(&format!(
+        "alias2 = {{ package = \"tasty-b\", git = \"{}\", rev = \"{}\" }}",
+        f.tasty_url(),
+        f.pinned_rev()
+    ));
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("declare an unused rename of tasty-b");
+    let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+    let line = toml
+        .lines()
+        .find(|l| l.starts_with("alias2 = "))
+        .expect("alias2 entry")
+        .to_string();
+    f.edit_root(&format!("{line}\n"), "");
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("remove it");
+
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(has_entry_reason(&text, "beta", "alias2"), "{text}");
+}
+
+/// Adds the entry `alias = { <fields> }` (alias is no package, tasty-b is), commits, then
+/// turns off its default features and commits again.
+fn change_an_alias_entry(fields: &str) -> (i32, String) {
+    let f = PinFixture::new();
+    let fields = fields
+        .replace("URL", &f.tasty_url())
+        .replace("REV", &f.pinned_rev());
+    f.add_entry(&format!("alias = {{ {fields} }}"));
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("declare an unused rename of tasty-b");
+    f.edit_root(
+        &format!("alias = {{ {fields} }}"),
+        &format!("alias = {{ {fields}, default-features = false }}"),
+    );
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("turn off its default features");
+    f.check(&HEAD_RANGE)
+}
+
+/// The `package` field is read with a quoted key, with single quotes, and when `rev` comes
+/// first: the entry is judged by tasty-b, which beta links, not by its key.
+#[test]
+fn a_package_field_written_with_a_quoted_key_or_single_quotes_is_read() {
+    for fields in [
+        "\"package\" = \"tasty-b\", git = \"URL\", rev = \"REV\"",
+        "package = 'tasty-b', git = \"URL\", rev = \"REV\"",
+        "rev = \"REV\", git = \"URL\", package = \"tasty-b\"",
+    ] {
+        let (code, text) = change_an_alias_entry(fields);
+        assert_eq!(code, 1, "{fields}:\n{text}");
+        assert!(
+            has_entry_reason(&text, "beta", "alias"),
+            "{fields}:\n{text}"
+        );
+        assert!(
+            !text.contains("crates/tasty-plugin-alpha:"),
+            "{fields}:\n{text}"
+        );
+    }
+}
+
+/// Only a field whose key is exactly `package` names the package: not a longer key that
+/// ends in it, and not `package = ` inside a string.
+#[test]
+fn a_field_that_only_looks_like_package_is_not_the_package() {
+    for extra in [
+        "not-package = \"tasty-b\"",
+        "'package' = 'tasty-a', note = 'package = \"tasty-b\"'",
+    ] {
+        let f = PinFixture::new();
+        f.edit_tasty_a_entry(|l| l.replacen(" }", &format!(", {extra} }}"), 1));
+        f.commit("add a field to tasty-a");
+        f.edit_tasty_a_entry(|l| l.replacen(" }", ", default-features = false }", 1));
+        f.commit("turn off the default features of tasty-a");
+
+        f.assert_only_alpha_flagged(extra);
+    }
+}
+
+/// `package` written as a dotted key or as a line of the entry table names the package.
+#[test]
+fn a_package_field_written_as_a_dotted_key_or_in_a_subtable_is_read() {
+    for dotted in [true, false] {
+        let f = PinFixture::new();
+        let (url, rev) = (f.tasty_url(), f.pinned_rev());
+        if dotted {
+            f.add_entry(&format!(
+                "alias.git = \"{url}\"\nalias.rev = \"{rev}\"\nalias.package = \"tasty-b\""
+            ));
+        } else {
+            f.edit_root(
+                "[profile.release]",
+                &format!(
+                    "[workspace.dependencies.alias]\ngit = \"{url}\"\nrev = \"{rev}\"\n\
+                     package = \"tasty-b\"\n\n[profile.release]"
+                ),
+            );
+        }
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("declare an unused rename of tasty-b");
+        if dotted {
+            f.edit_root(
+                "alias.package = \"tasty-b\"\n",
+                "alias.package = \"tasty-b\"\nalias.default-features = false\n",
+            );
+        } else {
+            f.edit_root(
+                "package = \"tasty-b\"\n",
+                "package = \"tasty-b\"\ndefault-features = false\n",
+            );
+        }
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("turn off its default features");
+
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 1, "dotted: {dotted}:\n{text}");
+        assert!(
+            has_entry_reason(&text, "beta", "alias"),
+            "dotted: {dotted}:\n{text}"
+        );
+    }
+}
+
+/// The name is read apart from the compared value: moving only the rev of a renamed entry
+/// is no entry change.
+#[test]
+fn a_rev_only_change_of_a_renamed_entry_is_not_an_entry_change() {
+    let f = PinFixture::new();
+    f.add_entry(&format!(
+        "alias = {{ git = \"{}\", package = \"tasty-b\", rev = \"{}\" }}",
+        f.tasty_url(),
+        f.pinned_rev()
+    ));
+    f.cargo(&["metadata", "--format-version", "1"]);
+    f.commit("declare an unused rename of tasty-b");
+    f.tasty_write("README.md", "tasty\n");
+    let t2 = f.tasty_commit("add a readme");
+    f.move_pin(&t2);
+    f.commit("move the pin");
+
+    let (_, text) = f.check(&HEAD_RANGE);
+    assert!(
+        !text.contains("Cargo.toml [workspace.dependencies] alias:"),
+        "{text}"
+    );
+}
+
+/// A `package` that is there but cannot be read (an escape in its value or in its key)
+/// stops the check; the key is not used in its place.
+#[test]
+fn an_unreadable_package_field_is_undecidable_not_the_key() {
+    for (from, to) in [
+        (" }", ", package = \"tasty\\u002db\" }"),
+        (
+            "tasty-b = { ",
+            "tasty-b = { \"pack\\u0061ge\" = \"tasty-b\", ",
+        ),
+    ] {
+        let f = PinFixture::new();
+        let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+        let line = toml
+            .lines()
+            .find(|l| l.starts_with("tasty-b = "))
+            .expect("tasty-b entry")
+            .to_string();
+        f.edit_root(&line, &line.replacen(from, to, 1));
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("name the package of tasty-b with an escape");
+
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 2, "{to}:\n{text}");
+        assert!(
+            text.contains("the package name of the entry cannot be read on the after side"),
+            "{to}:\n{text}"
+        );
+    }
+}
+
 /// Puts `block` in front of [workspace.dependencies], commits, then turns on feature `x` of
 /// tasty-a and commits again.
 fn multi_line_string_then_feature(block: &str) -> (i32, String) {

@@ -870,13 +870,41 @@ toml_lines() {
 # dots do not matter. A line whose key cannot be read, and a line of a table that
 # judge_root_manifest hands over as [workspace.dependencies] but that is neither of the two
 # shapes, comes out under the key <unparsed>.
-dep_entries() {  # <toml_lines file>
-    awk -F '\t' "$TOML_KEY_AWK"'
+# The package name of each entry goes to <names file> as "key<TAB>name", read from the
+# value as written (before rev is removed): a field "package" of an inline table, a dotted
+# key name.package, or a line package = ... of the entry table. Without one the name is
+# the key; one that cannot be read (an escape, a value that is not a string, an inline
+# table whose fields cannot be split) is <unreadable>.
+dep_entries() {  # <toml_lines file> <names file>
+    : > "$2" || return 1
+    NAMES="$2" awk -F '\t' "$TOML_KEY_AWK"'
         function add(k, sub_key, v) {
             if (sub_key == "rev") return
             seen[k] = 1
             if (sub_key == "") plain[k] = v
             else tab[k] = tab[k] " " sub_key " = " v ","
+        }
+        # A package name written as a string: single quotes as they are, double quotes
+        # only without a backslash (escapes are not decoded).
+        function set_name(k, v) {
+            if (k in pkg) { badname[k] = 1; return }
+            pkg[k] = ""
+            if (v ~ /^\047[^\047]*\047$/ || v ~ /^"[^"\\]*"$/) pkg[k] = substr(v, 2, length(v) - 2)
+            else badname[k] = 1
+        }
+        function note_name(k, sub_key, raw,    items, n, j, e, f, np, kq) {
+            raw = trim(raw)
+            if (sub_key == "package") { set_name(k, raw); return }
+            if (sub_key != "" || substr(raw, 1, 1) != "{") return
+            n = inline_items(raw, items)
+            if (n < 0) { badname[k] = 1; return }
+            for (j = 1; j <= n; j++) {
+                e = eq_at(items[j]); if (!e) { badname[k] = 1; return }
+                f = substr(items[j], 1, e - 1)
+                if (index(f, "\\")) { badname[k] = 1; return }
+                np = split_key(f, kq)
+                if (np == 1 && kq[1] == "package") set_name(k, trim(substr(items[j], e + 1)))
+            }
         }
         {
             # The name judge_root_manifest reads: quotes and spaces dropped.
@@ -899,8 +927,9 @@ dep_entries() {  # <toml_lines file>
             }
             lhs = substr(line, 1, RLENGTH - 1); val = substr(line, RLENGTH + 1)
             sub(/^[[:space:]]+/, "", val); gsub(/[[:space:]]/, "", lhs)
-            gsub(/,?[[:space:]]*rev[[:space:]]*=[[:space:]]*"[^"]*"/, "", val)
             key = lhs; sub(/\..*/, "", key)
+            note_name(key, substr(lhs, length(key) + 2), val)
+            gsub(/,?[[:space:]]*rev[[:space:]]*=[[:space:]]*"[^"]*"/, "", val)
             add(key, substr(lhs, length(key) + 2), val); next
         }
         shape == 2 {
@@ -911,6 +940,7 @@ dep_entries() {  # <toml_lines file>
             }
             lhs = substr(body, 1, RLENGTH - 1); val = substr(body, RLENGTH + 1)
             sub(/^[[:space:]]+/, "", val); gsub(/[[:space:]]/, "", lhs)
+            note_name(key, lhs, val)
             add(key, lhs, val); next
         }
         END {
@@ -918,6 +948,7 @@ dep_entries() {  # <toml_lines file>
                 v = plain[k]
                 if (k in tab) v = v (v == "" ? "" : " + ") "{" tab[k] " }"
                 print k "\t" v
+                print k "\t" ((k in badname) ? "<unreadable>" : (k in pkg) ? pkg[k] : k) > ENVIRON["NAMES"]
             }
         }' "$1" | sort
 }
@@ -976,13 +1007,10 @@ function join_parts(parts, from, to,    i, out) {
     return out
 }
 function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
-# An inline table with its keys written bare, so { "path" = "x" } reads as { path = "x" };
-# any other value as it is. <bad> for a key with a backslash (escapes are not decoded) or a
-# table that cannot be read.
-function norm_inline(v,    body, i, c, q, depth, item, items, n, j, e, k, np, kq, out) {
-    v = trim(v)
-    if (substr(v, 1, 1) != "{") return v
-    if (substr(v, length(v), 1) != "}") return "<bad>"
+# The fields of an inline table <v> (trimmed, starting with "{") into items[1..n], each
+# field as written ("key = value"); returns n, or -1 when the table cannot be read.
+function inline_items(v, items,    body, i, c, q, depth, item, n) {
+    if (substr(v, length(v), 1) != "}") return -1
     body = substr(v, 2, length(v) - 2); n = 0; item = ""; q = ""; depth = 0
     for (i = 1; i <= length(body); i++) {
         c = substr(body, i, 1)
@@ -998,8 +1026,18 @@ function norm_inline(v,    body, i, c, q, depth, item, items, n, j, e, k, np, kq
         if (c == "," && depth == 0) { items[++n] = item; item = ""; continue }
         item = item c
     }
-    if (q != "" || depth != 0) return "<bad>"
+    if (q != "" || depth != 0) return -1
     if (trim(item) != "") items[++n] = item
+    return n
+}
+# An inline table with its keys written bare, so { "path" = "x" } reads as { path = "x" };
+# any other value as it is. <bad> for a key with a backslash (escapes are not decoded) or a
+# table that cannot be read.
+function norm_inline(v,    items, n, j, e, k, np, kq, out) {
+    v = trim(v)
+    if (substr(v, 1, 1) != "{") return v
+    n = inline_items(v, items)
+    if (n < 0) return "<bad>"
     out = ""
     for (j = 1; j <= n; j++) {
         e = eq_at(items[j]); if (!e) return "<bad>"
@@ -1417,7 +1455,7 @@ $name"
 }
 
 judge_root_manifest() {
-    local before="$BEFORE_REV:Cargo.toml" after sec key pkg val_b val_a p
+    local before="$BEFORE_REV:Cargo.toml" after sec key pkg val_b val_a p pb pa linked side
     after=$(after_ref Cargo.toml)
     if ! exists_at "$before" || ! exists_at "$after"; then
         die "the root Cargo.toml is missing on one side of the range."
@@ -1449,8 +1487,10 @@ $(cut -f1 "$WORK/root.before" "$WORK/root.after" | sort -u)
 EOF2
     [ "$profiles_changed" = 0 ] || judge_profiles
     judge_patch_entries
-    dep_entries "$WORK/root.before" > "$WORK/deps.before"
-    dep_entries "$WORK/root.after" > "$WORK/deps.after"
+    dep_entries "$WORK/root.before" "$WORK/depnames.before" > "$WORK/deps.before" \
+        || die "cannot read [workspace.dependencies] at $BEFORE_REV."
+    dep_entries "$WORK/root.after" "$WORK/depnames.after" > "$WORK/deps.after" \
+        || die "cannot read [workspace.dependencies] at ${AFTER_PREFIX:-the index}."
     while IFS= read -r key; do
         [ -n "$key" ] || continue
         if [ "$key" = "<unparsed>" ]; then
@@ -1460,12 +1500,28 @@ $(awk -F '\t' '$1 == "<unparsed>"' "$WORK/deps.before" "$WORK/deps.after" | sort
         # The value is everything after the first tab: it may hold tabs.
         val_b=$(K="$key" awk -F '\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2) }' "$WORK/deps.before")
         val_a=$(K="$key" awk -F '\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2) }' "$WORK/deps.after")
-        pkg=$(printf '%s\n%s\n' "$val_a" "$val_b" | sed -n 's/.*package[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | sed -n '1p')
-        [ -n "$pkg" ] || pkg="$key"
-        plugins_linking "$pkg"
+        # The package of each side, empty on a side without the entry. Both are judged, as
+        # for [patch]: a removed rename points at another package than before.
+        pb=$(K="$key" awk -F '\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2) }' "$WORK/depnames.before")
+        pa=$(K="$key" awk -F '\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2) }' "$WORK/depnames.after")
+        for side in before after; do
+            if [ "$side" = before ]; then pkg="$pb"; else pkg="$pa"; fi
+            [ "$pkg" != "<unreadable>" ] \
+                || die "[workspace.dependencies] $key changed in the root Cargo.toml, but the package name of the entry cannot be read on the $side side (escapes are not decoded); judge the plugin versions by hand."
+        done
+        # plugins_linking resets LINKED, and is called outside command substitution so
+        # that die ends the check; the result of each call is kept.
+        linked=""
+        if [ -n "$pb" ]; then plugins_linking "$pb"; linked="$LINKED"; fi
+        if [ -n "$pa" ] && [ "$pa" != "$pb" ]; then plugins_linking "$pa"; linked="$linked $LINKED"; fi
+        # Plugin directories have no spaces, so word splitting is intended.
+        # shellcheck disable=SC2086
+        LINKED=$(printf '%s\n' $linked | sed -n '/./p' | sort -u | sed 's/^/ /' | tr -d '\n')
+        pkg="${pa:-$pb}"
         if [ -z "$LINKED" ]; then
             # A crate that is locked but outside every plugin closure cannot change a plugin.
-            in_either_lock "$pkg" && continue
+            { [ -n "$pb" ] && in_either_lock "$pb"; } && continue
+            { [ -n "$pa" ] && in_either_lock "$pa"; } && continue
             die "[workspace.dependencies] $key changed in the root Cargo.toml, but no package $pkg is in Cargo.lock; judge the plugin versions by hand."
         fi
         for p in $LINKED; do
