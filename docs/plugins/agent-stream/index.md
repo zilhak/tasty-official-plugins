@@ -286,7 +286,7 @@ FE 가 요청마다 **자기가 만든 `request_id`** 를 웹훅 페이로드에
 
 > **웹훅 JSON 입력 body 상한은 본체 리스너가 적용한다.** 요청당 기본 1 MiB이며 `TASTY_WEBHOOK_MAX_BODY_BYTES`로 조정한다. 선언된 `Content-Length`가 상한을 넘거나 chunked body가 상한을 넘으면 `413 payload too large`로 거부하고 시퀀스를 실행하지 않는다. `request_id`의 512바이트 상한은 그 다음 단계에서 이벤트마다 복제되는 값을 제한한다.
 >
-> body 크기는 경로 매칭·인증보다 먼저 검사한다. 따라서 인증은 이 크기 제한을 대신하지 않으며, 토큰 없는 작은 요청은 `401 unauthorized`, 상한을 넘는 요청은 인증 전에 `413`을 받는다. 남용차단은 `401`·`413` 반복도 집계한다. 이 상한은 JSON 입력에 적용된다. 413 응답은 `Connection: close`를 싣고 잔여 body를 읽지 않은 채 연결을 닫는다([웹훅 (Inbound webhook listener)](https://github.com/zilhak/tasty/blob/develop/docs/features/webhook/index.md)). 입력 상한은 총 메모리의 보장이 아니다. 요청당 상한이 동시 요청 수나 연결 수를 제한하지는 않으므로, 외부 노출 시 프록시에서 연결 제한·타임아웃·TLS를 설정한다. 현재 보장은 [웹훅 body 상한](https://github.com/zilhak/tasty/blob/develop/docs/features/webhook/index.md#body-상한-요청당)에 있다. 본체와 같은 `tiny_http` 사본으로 빌드되지만 SSE 서버의 응답 경로는 상류 동작 그대로다.
+> body 크기는 경로 매칭·인증보다 먼저 검사한다. 따라서 인증은 이 크기 제한을 대신하지 않으며, 인증을 건 등록에서 토큰 없는 작은 요청은 `401 unauthorized`, 상한을 넘는 요청은 인증 전에 `413`을 받는다. 남용차단은 `401`·`413` 반복도 집계한다. 이 상한은 JSON 입력에 적용된다. 413 응답은 `Connection: close`를 싣고 잔여 body를 읽지 않은 채 연결을 닫는다([웹훅 (Inbound webhook listener)](https://github.com/zilhak/tasty/blob/develop/docs/features/webhook/index.md)). 입력 상한은 총 메모리의 보장이 아니다. 요청당 상한이 동시 요청 수나 연결 수를 제한하지는 않으므로, 외부 노출 시 프록시에서 연결 제한·타임아웃·TLS를 설정한다. 현재 보장은 [웹훅 body 상한](https://github.com/zilhak/tasty/blob/develop/docs/features/webhook/index.md#body-상한-요청당)에 있다. 본체와 같은 `tiny_http` 사본으로 빌드되지만 SSE 서버의 응답 경로는 상류 동작 그대로다.
 
 ### 정책 — 겹침 · 중복 · 막힌 턴 · 턴 밖 이벤트
 
@@ -330,7 +330,7 @@ curl -X POST "$WEBHOOK_URL" \
 
 그러면 surface 42 의 claude 가 그 프롬프트를 받아 실행하고, 그 실행이 만든 SSE 이벤트에 `"request_id":"req-8f3a"` 가 실린다. 그 요청의 `turn_end` 도 같은 값으로 실려 종료를 알린다.
 
-> **인증을 거는 이유**([웹훅 인증 규칙](#웹훅-인증-규칙)): 이 구성은 외부 발신자가 claude 에게 임의 자연어를 주입하게 하고 claude 는 셸에 닿는다. docs/features/webhook/index.md 은 이 경우를 이미 다룬다 — owner 가 값 슬롯에 민감한 IPC 를 열면 그 트리거 책임은 owner 몫이고, **대응책은 인증으로 트리거 주체를 좁히는 것**이다. 무인증 구성을 예시로 쓰지 않는다. 토큰 없는/틀린 호출은 본체 웹훅 리스너가 `401 unauthorized`로 거부하고 시퀀스를 실행하지 않는다. 웹훅의 거부 바디는 고정 문자열이며, SSE 구독의 빈 `401` 바디와 다르다. body 상한 초과나 남용차단 중인 요청은 각각 `413`·`429`가 먼저 적용된다. 웹훅 토큰은 SSE 토큰과 같은 신뢰 수준·같은 저장(설정 파일 평문, unix `0600`)이다.
+> **인증을 거는 이유**([웹훅 인증 규칙](#웹훅-인증-규칙)): 이 구성은 외부 발신자가 claude 에게 임의 자연어를 주입하게 하고 claude 는 셸에 닿는다. docs/features/webhook/index.md 은 이 경우를 이미 다룬다 — owner 가 값 슬롯에 민감한 IPC 를 열면 그 트리거 책임은 owner 몫이고, **대응책은 인증으로 트리거 주체를 좁히는 것**이다. 무인증 구성을 예시로 쓰지 않는다. 토큰 없는/틀린 호출은 본체 웹훅 리스너가 `401 unauthorized`로 거부하고 시퀀스를 실행하지 않는다. 웹훅의 거부 바디는 고정 문자열이며, SSE 구독의 빈 `401` 바디와 다르다. body 상한 초과나 남용차단 중인 요청은 각각 `413`·`429`가 먼저 적용된다. 웹훅 토큰은 SSE 토큰과 같은 신뢰 수준이고 둘 다 평문으로 저장한다. 웹훅 토큰 파일의 권한은 본체 [선택적 인증](https://github.com/zilhak/tasty/blob/develop/docs/features/webhook/index.md#선택적-인증-가벼운-발신자-확인)에 있다.
 
 ### FE 계약 요약
 
@@ -369,7 +369,7 @@ curl -X POST "$WEBHOOK_URL" \
 - Given 같은 surface 에 턴이 열린 채 `turn_start` 재호출 Then `turn_already_open` 으로 거부된다.
 - Given watch 중이 아닌 surface 에 `turn_start` Then `turn_not_watched` 로 거부된다.
 - Given `turn_start` 뒤 `claude.tell` 이 실패해 이벤트가 오지 않음 Then 타임아웃 후 `turn_end{reason=stream:turn_timeout}` 로 그 턴이 정리된다.
-- Given 토큰 없는 웹훅 호출 Then 본체 리스너가 `401` 로 거부하고 claude 가 실행되지 않는다.
+- Given 인증을 건 등록에 토큰 없는 웹훅 호출 Then 본체 리스너가 `401` 로 거부하고 claude 가 실행되지 않는다.
 
 ## 관련
 
