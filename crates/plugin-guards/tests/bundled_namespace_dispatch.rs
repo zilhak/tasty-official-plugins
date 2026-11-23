@@ -9,23 +9,18 @@
 //! masked source. Strings in `host.call`, logs, or comments are not evidence that the
 //! plugin handles a method. The check sees that an arm exists, not what the arm does.
 //!
-//! Each file may define `handle_ipc_method` at most once. The shared parser does not
-//! evaluate `#[cfg(...)]` and returns every definition it recognizes, so reading only
-//! the first could miss an arm that lives in the second, and merging them could let one
-//! definition hide a gap in the other. The parser looks for the literal `fn ` with one
-//! space: when a tab follows `fn` directly (`fn\thandle_ipc_method`), the definition is
-//! not recognized (`fn \thandle_ipc_method` is). It skips a definition only when a `;`
-//! comes before the first `{` after the name (as in `[u8; 1]`). When that first `{` sits
-//! inside the signature (`fn handle_ipc_method(_: [Slot<{ 1 }>; 1]) { real_body() }`),
-//! it can return the signature block as the body. All six dispatch functions today use
-//! the SDK trait signature `(&mut self, ctx: IpcMethodCtx) -> Result<Value,
-//! IpcMethodError>`, one per file.
+//! Each file may define `handle_ipc_method` at most once. The reader does not evaluate
+//! `#[cfg(...)]` and counts every definition it finds, so reading only the first could
+//! miss an arm that lives in the second, and merging them could let one definition hide a
+//! gap in the other. The dispatch body is found with the function span reader of this
+//! crate (`plugin_guards::fn_spans`); the fixture tests below show the signatures it
+//! reads.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use plugin_guards::{MANIFEST_NAME, plugin_crates, repo_root};
+use plugin_guards::{MANIFEST_NAME, fn_spans, plugin_crates, repo_root};
 use tasty_doc_guards::match_arms::Source;
 
 const DISPATCH_FN: &str = "handle_ipc_method";
@@ -108,7 +103,11 @@ fn host_methods_by_prefix() -> (usize, BTreeMap<String, BTreeSet<String>>) {
 
 /// The one dispatch body of a file, `Ok(None)` without one, `Err(count)` with more.
 fn dispatch_body(source: &Source) -> Result<Option<Range<usize>>, usize> {
-    let mut bodies = source.fn_bodies(DISPATCH_FN);
+    let mut bodies: Vec<Range<usize>> = fn_spans(&source.code)
+        .into_iter()
+        .filter(|span| span.name == DISPATCH_FN)
+        .map(|span| span.open..span.close + 1)
+        .collect();
     match bodies.len() {
         0 => Ok(None),
         1 => Ok(bodies.pop()),
@@ -472,4 +471,63 @@ fn a_second_definition_in_the_only_dispatch_file_names_that_file() {
         !scan.no_body,
         "the doubled file was reported as a missing body"
     );
+}
+
+/// Given a dispatch whose signature the reader must step over, when the body is read,
+/// then it is the function body and its arm is handled.
+#[test]
+fn the_dispatch_body_is_found_past_its_signature() {
+    let body = "{ match m { \"ns.inside\" => ok(), other => not_found(other) } }";
+    let cases = [
+        // A tab right after `fn`.
+        format!("fn\thandle_ipc_method(&mut self, ctx: IpcMethodCtx) -> R {body}\n"),
+        // A block inside an argument type.
+        format!("fn handle_ipc_method(_: [Slot<{{ 1 }}>; 1]) {body}\n"),
+        // A `;` inside an argument type.
+        format!("fn handle_ipc_method(_: [u8; 1]) {body}\n"),
+        // A block and a `;` inside an array return type, outside the argument list.
+        format!("fn handle_ipc_method() -> [Slot<{{ 1 }}>; 1] {body}\n"),
+    ];
+    let want: BTreeSet<String> = ["ns.inside".to_string()].into();
+    for src in cases {
+        let (found, text) = handled_in(&src, "ns");
+        assert_eq!(text, body, "{src}");
+        assert_eq!(found, want, "{src}");
+    }
+}
+
+/// Given one definition with a tab after `fn` and one with a space, when the definitions
+/// are counted, then both count.
+#[test]
+fn a_definition_after_a_tab_counts_as_a_second_definition() {
+    let src = "\
+fn\thandle_ipc_method(&mut self, ctx: IpcMethodCtx) -> R { match m { \"ns.a\" => ok() } }
+#[cfg(any())]
+fn handle_ipc_method(&mut self, ctx: IpcMethodCtx) -> R { match m { \"ns.a\" => ok() } }
+";
+    assert_eq!(dispatch_body(&Source::new(src)), Err(2));
+}
+
+/// Given a plugin crate whose only dispatch has a tab after `fn`, when the crate is
+/// scanned against a host method under its prefix, then the body is found and the
+/// method is handled.
+#[test]
+fn a_plugin_with_a_tab_after_fn_has_its_dispatch_read() {
+    let scratch = tasty_doc_guards::temp_scratch::Scratch::new("namespace-dispatch-plugin");
+    let root = scratch.path();
+    let src = "\
+fn\thandle_ipc_method(&mut self, ctx: IpcMethodCtx) -> R {
+    match ctx.method.as_str() {
+        \"ns.inside\" => ok(),
+        other => not_found(other),
+    }
+}
+";
+    let dir = write_plugin(root, "ns", &[("main.rs", src)]);
+    let scan = scan_plugin("tasty-plugin-x", &dir, root, &host_of(&["ns.inside"]));
+    assert!(!scan.no_body, "the dispatch body was not found");
+    let want: BTreeSet<String> = ["ns.inside".to_string()].into();
+    assert_eq!(scan.joined.get("ns"), Some(&want));
+    assert!(scan.missing.is_empty(), "{:?}", scan.missing);
+    assert!(scan.doubled.is_empty(), "{:?}", scan.doubled);
 }
