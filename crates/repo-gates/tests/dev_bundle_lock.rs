@@ -1,0 +1,350 @@
+//! scripts/dev-bundle.sh lets one run at a time replace the plugins in its output folder.
+//! The lock is the folder DIR/.dev-bundle.lock with the file owner in it: mkdir makes the
+//! folder and bash noclobber makes the owner file, which decides the holder. These tests run
+//! a copy of the script in a synthetic repository with a stub cargo, so a run goes as far as
+//! the lock and then fails with "cargo reported no executable", which here means it took the
+//! lock. Nothing is built.
+//!
+//! A run is held after the lock by a grep in front of PATH: the script first calls grep after
+//! taking the lock. A mkdir in front of PATH plays a run that lost a race to create the lock
+//! folder, as uutils mkdir before 0.11.0 does: it finds the folder made by the other run and
+//! exits 0 all the same.
+
+#![cfg(unix)]
+
+mod support;
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+/// Words of the message for a lock that is held or left.
+const REFUSED: &str = "another dev-bundle.sh is writing";
+/// The failure the stub cargo leads to after the lock: the run took the lock.
+const PASSED: &str = "cargo reported no executable for tasty-plugin-x";
+/// Words the cleanup adds when it cannot remove the lock.
+const RELEASE_FAILED: &str = "remove the lock";
+const CLEANUP_FAILED: &str = "cleanup could not";
+
+const STUB_CHECK_SH: &str =
+    "#!/usr/bin/env bash\ncase \"$1\" in list-bins) echo tasty-plugin-x ;; *) exit 2 ;; esac\n";
+const STUB_CARGO: &str = "#!/bin/sh\nexit 0\n";
+
+/// The first `name` on PATH.
+fn real_tool(name: &str) -> PathBuf {
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .map(|d| Path::new(d).join(name))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| panic!("{name} on PATH"))
+}
+
+/// What is at `p`, in a form two snapshots can be compared by.
+fn describe(p: &Path) -> String {
+    let Ok(meta) = fs::symlink_metadata(p) else {
+        return "missing".to_owned();
+    };
+    if meta.file_type().is_symlink() {
+        format!("link to {}", fs::read_link(p).expect("read link").display())
+    } else if meta.is_dir() {
+        let mut names: Vec<String> = fs::read_dir(p)
+            .expect("read dir")
+            .map(|e| {
+                let e = e.expect("entry");
+                let name = e.file_name().to_string_lossy().into_owned();
+                format!("{name}: {}", describe(&e.path()))
+            })
+            .collect();
+        names.sort();
+        format!("folder [{}]", names.join(", "))
+    } else {
+        format!("file {:?}", fs::read_to_string(p).expect("read file"))
+    }
+}
+
+fn wait_for(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {}",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// A repository with copies of dev-bundle.sh and the library it sources, a stub check.sh
+/// that lists the crate tasty-plugin-x, its manifest, a stub cargo in front of PATH, and an
+/// output folder that already holds x/keep.
+struct Fixture {
+    tmp: tempfile::TempDir,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let t = tmp.path();
+        for rel in ["scripts/dev-bundle.sh", "scripts/lib/plugin-build.sh"] {
+            let body = fs::read(support::repo_file(rel)).expect("read script");
+            support::write_executable(&t.join("repo").join(rel), body).expect("copy script");
+        }
+        support::write_executable(&t.join("repo/scripts/check.sh"), STUB_CHECK_SH)
+            .expect("stub check.sh");
+        let manifest = t.join("repo/crates/tasty-plugin-x/tasty-plugin.toml");
+        fs::create_dir_all(manifest.parent().expect("parent")).expect("crate dir");
+        fs::write(&manifest, "id = \"x\"\n").expect("manifest");
+        support::write_executable(&t.join("bin/cargo"), STUB_CARGO).expect("stub cargo");
+        support::write_executable(
+            &t.join("bin/grep"),
+            format!(
+                "#!/bin/sh\nif [ -n \"$HOLD_DIR\" ]; then\n  : > \"$HOLD_DIR/held\"\n  while [ ! -e \"$HOLD_DIR/go\" ]; do sleep 0.05; done\nfi\nexec \"{}\" \"$@\"\n",
+                real_tool("grep").display()
+            ),
+        )
+        .expect("holding grep");
+        fs::create_dir_all(t.join("out/x")).expect("out dir");
+        fs::write(t.join("out/x/keep"), "kept\n").expect("keep");
+        Fixture { tmp }
+    }
+
+    /// Puts the mkdir of a run that lost the race in front of PATH. A mkdir of one folder
+    /// without options makes the folder as the other run would have, and with
+    /// STUB_MKDIR_MODE=owned also that run's owner file, then exits 0.
+    fn use_mkdir_that_lost_the_race(&self) {
+        let real = real_tool("mkdir");
+        support::write_executable(
+            &self.tmp.path().join("bin/mkdir"),
+            format!(
+                "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"${{1#-}}\" = \"$1\" ] && [ ! -e \"$1\" ] && [ ! -h \"$1\" ]; then\n  \"{real}\" \"$1\" || exit 1\n  if [ \"$STUB_MKDIR_MODE\" = owned ]; then printf 'other run\\n' > \"$1/owner\"; fi\n  exit 0\nfi\nexec \"{real}\" \"$@\"\n",
+                real = real.display()
+            ),
+        )
+        .expect("stub mkdir");
+    }
+
+    fn out(&self) -> PathBuf {
+        self.tmp.path().join("out")
+    }
+
+    fn lock(&self) -> PathBuf {
+        self.out().join(".dev-bundle.lock")
+    }
+
+    fn command(&self) -> Command {
+        let t = self.tmp.path();
+        let mut cmd = Command::new("bash");
+        cmd.arg(t.join("repo/scripts/dev-bundle.sh"))
+            .arg("--out")
+            .arg(self.out())
+            .current_dir(t)
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("HOLD_DIR")
+            .env_remove("STUB_MKDIR_MODE")
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    t.join("bin").display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .stdin(Stdio::null());
+        cmd
+    }
+
+    fn run(&self) -> Output {
+        self.command().output().expect("run dev-bundle.sh")
+    }
+
+    fn run_with_mkdir_mode(&self, mode: &str) -> Output {
+        self.command()
+            .env("STUB_MKDIR_MODE", mode)
+            .output()
+            .expect("run dev-bundle.sh")
+    }
+
+    /// Starts a run and returns once it holds the lock. It stays after the lock until the
+    /// returned value is released or dropped.
+    fn hold(&self) -> Held {
+        let dir = self.tmp.path().join("hold");
+        fs::create_dir_all(&dir).expect("hold dir");
+        let child = self
+            .command()
+            .env("HOLD_DIR", &dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start dev-bundle.sh");
+        let held = Held {
+            child: Some(child),
+            go: dir.join("go"),
+        };
+        wait_for(&dir.join("held"));
+        held
+    }
+
+    fn assert_out_untouched(&self) {
+        assert_eq!(
+            describe(&self.out().join("x")),
+            "folder [keep: file \"kept\\n\"]"
+        );
+    }
+}
+
+/// A run held after the lock. Dropping it lets the run go on, so a failed test does not
+/// leave it waiting.
+struct Held {
+    child: Option<Child>,
+    go: PathBuf,
+}
+
+impl Held {
+    fn release(mut self) -> Output {
+        fs::write(&self.go, "").expect("go");
+        self.child
+            .take()
+            .expect("child")
+            .wait_with_output()
+            .expect("wait")
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = fs::write(&self.go, "");
+            let _ = child.wait();
+        }
+    }
+}
+
+fn assert_refused(out: &Output) {
+    let err = stderr(out);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains(REFUSED), "{err}");
+    assert!(err.contains("cannot create the lock"), "{err}");
+    assert!(!err.contains(PASSED), "the run went past the lock: {err}");
+    assert!(!err.contains(CLEANUP_FAILED), "{err}");
+}
+
+fn assert_passed_and_released(f: &Fixture, out: &Output) {
+    let err = stderr(out);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains(PASSED), "the run did not take the lock: {err}");
+    assert!(!err.contains(CLEANUP_FAILED), "{err}");
+    assert_eq!(describe(&f.lock()), "missing", "{err}");
+}
+
+// ── A lock that is there ────────────────────────────────────────────────────
+
+/// Each kind of entry a run can find at the lock path: one left or held by this version, by
+/// an earlier version (an empty folder), or something else.
+fn place(f: &Fixture, kind: &str) {
+    let lock = f.lock();
+    match kind {
+        "file" => fs::write(&lock, "a file\n").expect("file"),
+        "earlier folder" => fs::create_dir(&lock).expect("folder"),
+        "link" => std::os::unix::fs::symlink("/dev/null", &lock).expect("link"),
+        "held folder" => {
+            fs::create_dir(&lock).expect("folder");
+            fs::write(lock.join("owner"), "holder\n").expect("owner");
+        }
+        _ => unreachable!("{kind}"),
+    }
+}
+
+const KINDS: [&str; 4] = ["file", "earlier folder", "link", "held folder"];
+
+#[test]
+fn a_run_refuses_whatever_is_at_the_lock_path_and_leaves_it() {
+    for kind in KINDS {
+        let f = Fixture::new();
+        place(&f, kind);
+        let before = describe(&f.lock());
+        let out = f.run();
+        assert_refused(&out);
+        assert_eq!(describe(&f.lock()), before, "{kind}");
+        f.assert_out_untouched();
+    }
+}
+
+#[test]
+fn a_run_refused_by_an_earlier_version_lock_leaves_nothing_behind() {
+    let f = Fixture::new();
+    place(&f, "earlier folder");
+    assert_refused(&f.run());
+    // The earlier version removes its lock with rmdir, which works only on an empty folder.
+    fs::remove_dir(f.lock()).expect("the earlier version's rmdir");
+    assert_passed_and_released(&f, &f.run());
+}
+
+// ── A mkdir that lost the race ──────────────────────────────────────────────
+
+#[test]
+fn a_run_whose_mkdir_lost_the_race_does_not_take_a_lock_the_other_run_owns() {
+    let f = Fixture::new();
+    f.use_mkdir_that_lost_the_race();
+    let out = f.run_with_mkdir_mode("owned");
+    assert_refused(&out);
+    assert_eq!(
+        describe(&f.lock()),
+        "folder [owner: file \"other run\\n\"]",
+        "{}",
+        stderr(&out)
+    );
+    f.assert_out_untouched();
+}
+
+#[test]
+fn a_run_whose_mkdir_lost_the_race_takes_a_folder_nobody_owns_yet() {
+    let f = Fixture::new();
+    f.use_mkdir_that_lost_the_race();
+    let out = f.run_with_mkdir_mode("folder");
+    assert_passed_and_released(&f, &out);
+}
+
+// ── Two runs ────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_second_run_is_refused_while_the_first_holds_the_lock() {
+    let f = Fixture::new();
+    let first = f.hold();
+    let owner = describe(&f.lock());
+    assert_eq!(owner, "folder [owner: file \"\"]");
+    let second = f.run();
+    assert_refused(&second);
+    assert_eq!(describe(&f.lock()), owner);
+    let first = first.release();
+    assert_passed_and_released(&f, &first);
+    f.assert_out_untouched();
+}
+
+// ── Release ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_run_removes_its_lock_when_it_ends() {
+    let f = Fixture::new();
+    let out = f.run();
+    assert_passed_and_released(&f, &out);
+    f.assert_out_untouched();
+}
+
+#[test]
+fn a_run_whose_owner_file_vanished_reports_the_lock() {
+    let f = Fixture::new();
+    let held = f.hold();
+    fs::remove_file(f.lock().join("owner")).expect("remove owner");
+    let out = held.release();
+    let err = stderr(&out);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains(PASSED), "{err}");
+    assert!(err.contains(CLEANUP_FAILED), "{err}");
+    assert!(err.contains(RELEASE_FAILED), "{err}");
+}
