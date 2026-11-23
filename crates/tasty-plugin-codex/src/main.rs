@@ -200,8 +200,33 @@ impl Plugin for CodexPlugin {
     }
 }
 
+/// 실행 이름 뒤 인자들을 UTF-8 문자열로 바꾼다. UTF-8이 아닌 첫 인자의 위치를 실행 이름 다음부터
+/// 1로 세어 돌려준다. 손실 변환(U+FFFD 치환)은 하지 않는다. 바뀐 ID·경로·옵션 값이 다른 대상에
+/// 작용할 수 있다.
+fn utf8_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Vec<String>, usize> {
+    args.into_iter()
+        .enumerate()
+        .map(|(i, arg)| arg.into_string().map_err(|_| i + 1))
+        .collect()
+}
+
+/// 프로세스 인자를 읽는다. UTF-8이 아닌 인자가 있으면 그 위치만 stderr에 알리고 사용 오류(종료
+/// 코드 2)로 끝낸다. 인자 원문은 메시지 본문이나 토큰일 수 있어 쓰지 않는다. 실행 이름은 지금까지
+/// 쓰지 않았으므로 검사하지 않는다.
+fn process_args_or_exit() -> Vec<String> {
+    match utf8_args(std::env::args_os().skip(1)) {
+        Ok(args) => args,
+        Err(position) => {
+            eprintln!(
+                "Error: argument {position} is not valid UTF-8. Arguments are counted from 1 after the program name. Nothing was run or sent."
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args = process_args_or_exit();
     if matches!(
         args.first().map(String::as_str),
         Some("session" | "terminal")
