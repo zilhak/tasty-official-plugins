@@ -120,6 +120,8 @@ struct Code<'a> {
     line_starts: Vec<usize>,
     /// The `<` of each turbofish, keyed by the token of its closing `>`.
     turbofish: BTreeMap<usize, usize>,
+    /// The closing `>` of each turbofish, keyed by the token of its `<`.
+    turbofish_close: BTreeMap<usize, usize>,
 }
 
 impl<'a> Code<'a> {
@@ -151,8 +153,10 @@ impl<'a> Code<'a> {
             tokens,
             line_starts,
             turbofish: BTreeMap::new(),
+            turbofish_close: BTreeMap::new(),
         };
         code.turbofish = code.turbofish_opens();
+        code.turbofish_close = code.turbofish.iter().map(|(&gt, &lt)| (lt, gt)).collect();
         code
     }
 
@@ -283,27 +287,12 @@ impl<'a> Code<'a> {
         &self.source.code[self.start(from)..end]
     }
 
-    /// The token after a name at token `i`: past a turbofish `::<...>`, if any.
+    /// The token after a name at token `i`: past the turbofish `::<...>` right after it,
+    /// if `turbofish_opens` paired one there.
     fn after_name(&self, i: usize) -> usize {
-        let mut j = i + 1;
-        if self.tok(j) == ":" && self.tok(j + 1) == ":" && self.tok(j + 2) == "<" {
-            let mut depth = 0usize;
-            j += 2;
-            while j < self.tokens.len() {
-                match self.tok(j) {
-                    "<" => depth += 1,
-                    ">" => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return j + 1;
-                        }
-                    }
-                    _ => {}
-                }
-                j += 1;
-            }
-        }
-        j
+        self.turbofish_close
+            .get(&(i + 3))
+            .map_or(i + 1, |&gt| gt + 1)
     }
 
     /// Whether the `(` at token `i` is followed by `)` with nothing but whitespace and
@@ -1123,6 +1112,117 @@ fn an_unclosed_turbofish_does_not_pair_with_a_later_comparison() {
         "fn f() {\n    macro_tokens!([tag::<A], clipboard_data, 2 > port\n        .write_text(t));\n}\n",
         "fn f() {\n    macro_tokens!({tag::<A}, clipboard_data, 2 > port\n        .write_text(t));\n}\n",
         "fn f() {\n    macro_tokens!(tag::<A; clipboard_data, 2 > port\n        .write_text(t));\n}\n",
+    ];
+    for src in passes {
+        let offenders = found(src);
+        assert!(offenders.is_empty(), "{src}: {offenders:?}");
+    }
+}
+
+/// Given a write call whose name is followed by a turbofish with a const block holding a
+/// comparison or a function type with `->`, when the file is read, then the call is
+/// reported on its first line, its arguments read from their own `(`; the same calls with
+/// an argument the shape does not take, or with the receiver word only in an earlier
+/// statement, pass, and so does a function type whose return type opens with `(`.
+#[test]
+fn a_call_name_turbofish_ends_where_the_receiver_reader_ends_it() {
+    let writes = [
+        ("fn f() {\n    clip.set_text::<{ 1 < 2 }>(\"x\");\n}\n", 2),
+        ("fn f() {\n    clip.set_text::<fn(u8) -> u8>(f);\n}\n", 2),
+        // The arguments on later lines hold the receiver word.
+        (
+            "fn f() {\n    port.write_text::<fn(u8) -> u8>(\n        clipboard_data\n    );\n}\n",
+            2,
+        ),
+        (
+            "fn f() {\n    port.write_text::<fn() -> (u8, u8)>(\n        clipboard_data\n    );\n}\n",
+            2,
+        ),
+        // The empty argument list is the call's own.
+        ("fn f() {\n    clip.set::<{ 1 < 2 }>( /*empty*/ );\n}\n", 2),
+        // A statement end inside the receiver block and a turbofish after the call name.
+        (
+            "fn f() {\n    ({ let c = core.clipboard_arc(); c })\n        .write_text::<fn(u8) -> u8>(t);\n}\n",
+            3,
+        ),
+    ];
+    for (src, line) in writes {
+        let offenders = found(src);
+        assert_eq!(offenders.len(), 1, "{src}: {offenders:?}");
+        assert!(
+            offenders[0].contains(&format!(":{line} (fn f)")),
+            "{src}: {offenders:?}"
+        );
+    }
+    let passes = [
+        "fn f() {\n    let clipboard = 1;\n    port.write_text::<fn(u8) -> u8>(t);\n}\n",
+        "fn f() {\n    clip.set::<{ 1 < 2 }>(\"x\");\n}\n",
+        "fn f() {\n    flag.set::<fn() -> ()>(true);\n}\n",
+    ];
+    for src in passes {
+        let offenders = found(src);
+        assert!(offenders.is_empty(), "{src}: {offenders:?}");
+    }
+}
+
+/// Given the double called with a turbofish after its name, when the file is read, then
+/// a listed test with a listed receiver counts as a use, and another receiver or another
+/// function is reported.
+#[test]
+fn the_double_is_read_past_a_call_name_turbofish() {
+    let (offenders, uses) = offenders_in(
+        DOUBLE_PATH,
+        "fn a_background_wait_is_noticed_once() {\n    host.set_text::<fn(u8) -> u8>(f);\n}\n",
+    );
+    assert!(offenders.is_empty(), "{offenders:?}");
+    assert_eq!(
+        uses.get("a_background_wait_is_noticed_once"),
+        Some(&1),
+        "{uses:?}"
+    );
+    let cases = [
+        (
+            "fn a_background_wait_is_noticed_once() {\n    clip.set_text::<fn(u8) -> u8>(f);\n}\n",
+            "fn a_background_wait_is_noticed_once",
+        ),
+        (
+            "fn other() {\n    host.set_text::<fn(u8) -> u8>(f);\n}\n",
+            "fn other",
+        ),
+    ];
+    for (src, function) in cases {
+        let (offenders, _) = offenders_in(DOUBLE_PATH, src);
+        assert_eq!(offenders.len(), 1, "{src}: {offenders:?}");
+        assert!(
+            offenders[0].contains(&format!(":2 ({function})")),
+            "{src}: {offenders:?}"
+        );
+    }
+}
+
+/// Given a write function renamed by `use ... as` and named with a turbofish, when the
+/// file calls it, then the call is reported; taking it as a value passes.
+#[test]
+fn a_renamed_write_function_with_a_turbofish_is_found() {
+    let use_put = "use clipboard_win::set_clipboard_string as put;\n";
+    let offenders = found(&format!(
+        "{use_put}fn f() {{\n    put::<fn(u8) -> u8>(f);\n}}\n"
+    ));
+    assert_eq!(offenders.len(), 1, "{offenders:?}");
+    assert!(offenders[0].contains(":3 (fn f)"), "{offenders:?}");
+    let offenders = found(&format!(
+        "{use_put}fn f() {{\n    let write_fn = put::<fn() -> (u8, u8)>;\n}}\n"
+    ));
+    assert!(offenders.is_empty(), "{offenders:?}");
+}
+
+/// Given a `::<` after a call name in macro tokens that a statement end or an unmatched
+/// closing bracket cuts off, when the file is read, then the name is not read as a call.
+#[test]
+fn a_call_name_turbofish_left_unclosed_is_not_a_call() {
+    let passes = [
+        "fn f() {\n    emit!(clip.set_text::<A; B>(\"x\"));\n}\n",
+        "fn f() {\n    emit!((clip.set_text::<A), 2 > (\"x\"));\n}\n",
     ];
     for src in passes {
         let offenders = found(src);
