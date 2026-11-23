@@ -495,9 +495,9 @@ impl<'a> Code<'a> {
         })
     }
 
-    /// Whether the `,` at token `comma` ends an arm: an `=>` comes before it in the same
-    /// match body. Inside other brackets, macro arguments among them, the comma is read
-    /// locally as before.
+    /// Whether the `,` at token `comma` ends an arm: the `=>` of the arm before it comes
+    /// first when read back, with no guard or other comma of the same arm between. Inside
+    /// other brackets, macro arguments among them, the comma is read locally as before.
     fn ends_arm(&self, comma: usize) -> bool {
         let mut k = comma;
         while k > 0 {
@@ -509,6 +509,7 @@ impl<'a> Code<'a> {
                 "{" => return self.back(k - 1, 1) == "!",
                 "(" | "[" => return true,
                 ">" if self.back(k - 1, 1) == "=" => return true,
+                "," | "if" => return false,
                 _ => k -= 1,
             }
         }
@@ -1756,6 +1757,10 @@ fn copy_command_patterns_outside_the_read_places_stay_reported() {
             "if let OpenUrl { .. } | OutputCommand::CopyText(_) = cmd {}",
             1,
         ),
+        (
+            "match c { A => if a { x } else { y }, OutputCommand::CopyText(_) => {} _ => {} }",
+            1,
+        ),
     ]);
     let offenders = found(
         "macro_rules! matches { ($a:expr, $b:expr) => {}; }\n\
@@ -1816,5 +1821,47 @@ fn a_copy_command_pattern_after_an_arm_ending_in_a_comma_is_not_a_write() {
         "match c { A => x, OutputCommand::CopyText(_) => {} _ => {} }",
         "match c { A => f(a, b), OutputCommand::CopyText(_) if ready => {} _ => {} }",
         "match c { OutputCommand::CopyText(_) => {}, OutputCommand::CopyImage(_) => {} }",
+    ]);
+}
+
+/// Given an egui copy command built by a closure in the guard of an arm that follows
+/// other arms, when the file is read, then it is reported: the comma between the closure
+/// parameters does not end the arm before.
+#[test]
+fn a_copy_command_built_by_a_closure_in_a_later_guard_is_a_write() {
+    let offenders = found(
+        "fn f() {\n    \
+         match x {\n        \
+         0 => {}\n        \
+         _ if G & |_, _| OutputCommand::CopyText(t.clone()) => (),\n        \
+         _ => (),\n    \
+         }\n\
+         }\n",
+    );
+    assert_eq!(offenders.len(), 1, "{offenders:?}");
+    assert!(offenders[0].contains(":4 (fn f)"), "{offenders:?}");
+}
+
+/// Given egui copy commands built by closures in the guards of arms after other arms,
+/// when the file is read, then each is reported.
+#[test]
+fn copy_commands_built_by_closures_in_later_guards_are_writes() {
+    assert_writes(&[
+        (
+            "match () { () if false => (), _ if return move |_, _| OutputCommand::CopyText(t.clone()) => (), _ => () }",
+            1,
+        ),
+        (
+            "match x { 1 | 2 => drop(x), _ if G & |a: u8, b| OutputCommand::CopyText(t.clone()) => (), _ => () }",
+            1,
+        ),
+        (
+            "match true { false => (), _ if Send(out) & |_, _| OutputCommand::CopyText(text.to_owned()) => (), _ => () }",
+            1,
+        ),
+        (
+            "match true { false => {} _ if Send(out) & |_, _| OutputCommand::CopyText(text.to_owned()) => (), _ => () }",
+            1,
+        ),
     ]);
 }
