@@ -1712,23 +1712,27 @@ fn a_shipped_file_with_a_non_ascii_name_is_compared_by_its_name() {
 /// with a multi-line string the manifest is compared whole.
 #[test]
 fn a_version_line_inside_a_multi_line_string_is_content() {
-    let manifest = "[package]\nname = \"ext\"\nedition = \"2021\"\ndescription = '''\n\
-                    version = \"2.1.0\"\n'''\nversion = \"1.0.0\"\n";
-    let f = PinFixture::new();
-    f.root_crate_source(manifest, &[]);
-    f.ext_write(
-        "Cargo.toml",
-        &manifest.replacen("version = \"2.1.0\"", "version = \"2.2.0\"", 1),
-    );
-    f.move_ext_pin();
-    let (code, text) = f.check(&HEAD_RANGE);
-    assert_eq!(code, 1, "{text}");
-    assert!(
-        reasons_of(&text, "beta")
-            .iter()
-            .any(|r| r.contains("changed: Cargo.toml")),
-        "{text}"
-    );
+    for quote in ["'''", "\"\"\""] {
+        let manifest = format!(
+            "[package]\nname = \"ext\"\nedition = \"2021\"\ndescription = {quote}\n\
+             version = \"2.1.0\"\n{quote}\nversion = \"1.0.0\"\n"
+        );
+        let f = PinFixture::new();
+        f.root_crate_source(&manifest, &[]);
+        f.ext_write(
+            "Cargo.toml",
+            &manifest.replacen("version = \"2.1.0\"", "version = \"2.2.0\"", 1),
+        );
+        f.move_ext_pin();
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 1, "{quote}:\n{text}");
+        assert!(
+            reasons_of(&text, "beta")
+                .iter()
+                .any(|r| r.contains("changed: Cargo.toml")),
+            "{quote}:\n{text}"
+        );
+    }
 }
 
 /// version.workspace = true in [package] takes the version of [workspace.package] in the
