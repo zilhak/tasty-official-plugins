@@ -182,11 +182,42 @@ impl<'a> Code<'a> {
         &self.source.code[self.line_starts[line]..end]
     }
 
-    /// The masked code from the last `;`, `{`, or `}` before byte `pos` up to `pos`.
-    fn statement_before(&self, pos: usize) -> &str {
-        let code = &self.source.code[..pos];
-        let from = code.rfind([';', '{', '}']).map_or(0, |at| at + 1);
-        &code[from..]
+    /// The masked code of the call whose first token is `first` and whose argument list
+    /// opens at token `open`: back to the start of its statement, skipping blocks and
+    /// brackets of the receiver, and on to the `)` that closes the arguments.
+    fn call_statement(&self, first: usize, open: usize) -> &str {
+        let mut depth = 0usize;
+        let mut from = first;
+        while from > 0 {
+            match self.tok(from - 1) {
+                ")" | "]" => depth += 1,
+                "}" if depth > 0 => depth += 1,
+                "(" | "[" | "{" if depth > 0 => depth -= 1,
+                ";" | "{" | "}" | "(" | "[" => break,
+                _ => {}
+            }
+            from -= 1;
+        }
+        let mut depth = 0usize;
+        let mut close = open;
+        while close < self.tokens.len() {
+            match self.tok(close) {
+                "(" => depth += 1,
+                ")" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            close += 1;
+        }
+        let end = self
+            .tokens
+            .get(close)
+            .map_or(self.source.code.len(), |r| r.end);
+        &self.source.code[self.start(from)..end]
     }
 
     /// The token after a name at token `i`: past a turbofish `::<...>`, if any.
@@ -260,7 +291,7 @@ fn shape_at(code: &Code, shape: &Shape, alias: Option<&str>, i: usize) -> bool {
         let pos = code.start(i);
         code.line_text(pos).to_ascii_lowercase().contains(word)
             || code
-                .statement_before(pos)
+                .call_statement(i, open)
                 .to_ascii_lowercase()
                 .contains(word)
     })
@@ -847,6 +878,41 @@ fn clearing_other_values_passes() {
         "fn f() {\n    cb.clear();\n}\n",
     ];
     for src in cases {
+        let offenders = found(src);
+        assert!(offenders.is_empty(), "{src}: {offenders:?}");
+    }
+}
+
+/// Given the Core port call with its receiver word only in the arguments on a later line,
+/// or only inside a receiver block on an earlier line, when the file is read, then the
+/// call is reported; a port call without the word, or with it only in an earlier
+/// statement, passes.
+#[test]
+fn the_receiver_word_is_read_over_the_whole_call() {
+    let writes = [
+        (
+            "fn f() {\n    port.write_text(\n        clipboard_data\n    );\n}\n",
+            2,
+        ),
+        (
+            "fn f() {\n    ({ core.clipboard_arc() })\n        .write_text(text);\n}\n",
+            3,
+        ),
+    ];
+    for (src, line) in writes {
+        let offenders = found(src);
+        assert_eq!(offenders.len(), 1, "{src}: {offenders:?}");
+        assert!(
+            offenders[0].contains(&format!(":{line} (fn f)")),
+            "{src}: {offenders:?}"
+        );
+    }
+    let passes = [
+        "fn f() {\n    self.write_text(surface_id, &text);\n}\n",
+        "fn f() {\n    self.write_text(\n        surface_id,\n        &text,\n    );\n}\n",
+        "fn f() {\n    let clipboard = 1;\n    port.write_text(t);\n}\n",
+    ];
+    for src in passes {
         let offenders = found(src);
         assert!(offenders.is_empty(), "{src}: {offenders:?}");
     }
