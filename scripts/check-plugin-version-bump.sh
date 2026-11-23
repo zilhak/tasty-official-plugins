@@ -615,16 +615,15 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
     PIN_FILES=""
     for e in $(extra_inputs_of "$name" use); do paths+=("${e%/}"); done
     local diffs=()
-    while IFS= read -r f; do
+    # NUL separated: the paths as they are, not quoted as git prints names outside ASCII.
+    while IFS= read -r -d '' f; do
         [ -n "$f" ] || continue
         case "$f" in
             "$(repo_path "$dir" tests)"/*|"$(repo_path "$dir" benches)"/*|"$(repo_path "$dir" examples)"/*|*.md) continue ;;
         esac
         diffs+=("$f")
         case "$f" in *.rs) has_rs=1 ;; esac
-    done <<EOF2
-$(xgit -C "$src" diff --name-only "$old" "$new" -- "${paths[@]}")
-EOF2
+    done < <(xgit -C "$src" diff -z --name-only "$old" "$new" -- "${paths[@]}")
     [ "${#diffs[@]}" -gt 0 ] || return 1
     PIN_SEQ=$((PIN_SEQ + 1))
     k="pin.$PIN_SEQ"

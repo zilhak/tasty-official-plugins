@@ -1659,6 +1659,55 @@ fn a_pin_move_of_a_root_crate_that_changes_only_its_version_line() {
     }
 }
 
+/// git prints a path outside ASCII quoted; the pin comparison reads it as it is, so a test
+/// file with such a name is still left out.
+#[test]
+fn a_test_file_with_a_non_ascii_name_is_still_left_out() {
+    let f = PinFixture::new();
+    f.root_crate_source(EXT_MANIFEST, &[("tests/실험.rs", "#[test]\nfn a() {}\n")]);
+    f.ext_write("tests/실험.rs", "#[test]\nfn b() {}\n");
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}
+
+/// The same for a Markdown file.
+#[test]
+fn a_markdown_file_with_a_non_ascii_name_is_still_left_out() {
+    let f = PinFixture::new();
+    f.root_crate_source(EXT_MANIFEST, &[("안내.md", "하나\n")]);
+    f.ext_write("안내.md", "둘\n");
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}
+
+/// A shipped input with a name outside ASCII is compared and named as it is.
+#[test]
+fn a_shipped_file_with_a_non_ascii_name_is_compared_by_its_name() {
+    let f = PinFixture::new();
+    f.root_crate_source(
+        EXT_MANIFEST,
+        &[
+            (
+                "src/lib.rs",
+                &format!("{EXT_LIB}pub const D: &str = include_str!(\"데이터.txt\");\n"),
+            ),
+            ("src/데이터.txt", "1\n"),
+        ],
+    );
+    f.ext_write("src/데이터.txt", "2\n");
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.contains("changed: src/데이터.txt")),
+        "{text}"
+    );
+}
+
 /// A line that only looks like the version line, inside a multi-line string, is content:
 /// with a multi-line string the manifest is compared whole.
 #[test]
