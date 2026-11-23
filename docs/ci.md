@@ -255,60 +255,50 @@ the index.
   plugin manifest has its translation key, the English catalog value equals the manifest
   text, and the catalog of every built-in language loads a non-blank value.
 - `no_local_doc_citation`: no text file of the repository cites a document other
-  developers cannot open. Every line is checked with the ten patterns of `PATTERNS` in
-  the test file, whose find functions state the exact shapes. They match strings and
-  do not read the sentence; the only boundaries they check are the ones named below.
-  - `todo-number`: the string `todo` in any case, followed by spaces, tabs, or slashes,
-    at most one hyphen, and digits, or by a number (with blanks and the Korean ordinal
-    suffix `번` allowed) in a closed pair of round or square brackets; or digits, `번`,
-    and blanks right before that string.
-  - `conductor-ticket`: `todo-conductor` in any case, followed by spaces, tabs,
-    slashes, underscores, or hyphens and digits.
-  - `workspace-subdir`: the local work folder name in any case, one or more slashes or
-    backslashes, and a name that starts with one of its TODO, plan, or conductor sub
-    folder names.
-  - `dated-slug`: a date `YYYY-MM-DD`, a hyphen, and a letter, with no digit right
-    before the date.
-  - `anchor-number`: a `#` followed by text up to whitespace, a closing round bracket,
-    a backtick, a comma, or a quote, where that text holds `todo-` (in any case) at its
-    start or after a hyphen, then hyphens and digits.
-  - `local-folder`: the local work folder name, or the shorter local agent folder name
-    with its leading dot, in any case, with no letter, digit, underscore, or hyphen
-    right before it (before its dot when it has one) or right after it. Only the
-    shorter name has a home exemption, because a user setting folder of that name sits
-    in the home folder: it is allowed when `~`, `$HOME`, or `%USERPROFILE%` (in any
-    case, with any slashes or backslashes after it) stands right before its dot, or
-    when a home word of `HOME_NEARBY`, with no ASCII letter or digit right next to it,
-    stands in the 32 characters before its dot. An absolute home path such as one under
-    `/Users` or `C:\Users` is not a home prefix.
-  - `prose-todo`: the upper case string `TODO` when it is not followed by `:` or by a
-    bracketed scope and `:`, in a file whose path does not end in `.md`.
-  - `split-number`: an opening round bracket, `0`, one digit from 1 to 9, and a closing
-    round bracket.
-  - `plan-coordinate`: an upper case letter, digits, and two upper case letters joined
-    by dots, with no letter, digit, or dot right before it.
-  - `round-number`: an upper case `R` and two or more digits, with no letter, digit, or
-    underscore right before or after.
+  developers cannot open. What follows is a summary. The exact shapes, with their
+  separators, boundaries, character ranges, and case, are defined by `PATTERNS` and the
+  find functions in the test file. The letters, digits, and case they check are ASCII.
+  The ten patterns look for:
+  - `todo-number`: a TODO followed by a number, in any case, or a number with the
+    Korean ordinal suffix `번` before the TODO.
+  - `conductor-ticket`: a numbered ticket of the local conductor list.
+  - `workspace-subdir`: a path from the local work folder into its TODO, plan, or
+    conductor sub folders.
+  - `dated-slug`: a design changelog slug, a date and a word joined by hyphens.
+  - `anchor-number`: a TODO number inside a `#` anchor.
+  - `local-folder`: a mention of the local agent folders. The shorter name counts only
+    with its leading dot, and only it has a home exemption, because a user setting
+    folder of that name sits in the home folder: it is allowed right after a home prefix
+    such as `~` or `$HOME`, or with a home word shortly before it. An absolute home path
+    such as one under `/Users` is not a home prefix.
+  - `prose-todo`: upper case TODO that is not a task marker such as `TODO:` or
+    `TODO(scope):`, in files other than Markdown. It matches the string, so an
+    identifier that holds it counts too.
+  - `split-number`: a zero-padded split number, a zero and a nonzero digit in round
+    brackets.
+  - `plan-coordinate`: a plan coordinate of upper case letters and a number joined by
+    dots.
+  - `round-number`: a review round, an upper case R followed by two or more digits.
 
-  `.gitignore` may hold `local-folder`, and the test file may hold `prose-todo`,
-  `split-number`, `plan-coordinate`, and `round-number`; each exemption is for that
-  exact path. In a Git checkout (a `.git` folder or file at the root) the files come
-  from Git. Every tracked path but a submodule entry is read from the index wherever it
-  sits (one stage of a conflicted path), a tracked link as its target text there. A
-  tracked regular file is also read from the work tree when that copy differs and its
-  path passes through no link. Untracked regular files that Git does not ignore are
-  read too; untracked links and folders are not. An untracked path is left out when any
-  part of it is one of the pruned names of this check (build, dependency, editor and
-  tool folders, and the local agent files and folders) or when it sits under a folder
-  marked as a build cache. Without Git the tree is walked, following links, and skips
-  the same names, whether a file or a folder carries them, and the folders marked as
-  build caches. Files with a binary extension and the vendored minified bundles of the
-  markdown plugin are not read; files without an extension and the plugin's
-  `assets/NOTICE.md` are. A file that is not UTF-8 is listed and fails the check, and a
-  file that cannot be read fails it with the error. The vendored list is checked as
-  well: each listed bundle is a file, no unlisted `.min.js` or `.min.css` file sits
-  directly in the markdown `assets/` folder, and no unlisted path with such a name is
-  among the paths the scan starts from.
+  `.gitignore` may hold the local folder pattern, and the test file may hold the prose,
+  split number, plan coordinate, and round number patterns; each exemption is for that
+  exact path. In a Git checkout (a `.git` folder or file at the root) the paths come
+  from Git: the tracked paths and the untracked paths that Git does not ignore. Files
+  with a binary extension and the vendored minified bundles of the markdown plugin are
+  left out; files without an extension and the plugin's `assets/NOTICE.md` are read. A
+  tracked path is read from the index, a tracked link as its target text, and a
+  submodule entry is not read. A tracked regular file is also read from the work tree
+  when its lines differ from the index copy and its path passes through no link. An
+  untracked path is read only when it is a regular file, and it is left out when a part
+  of it has one of the pruned names of this check (build, dependency, editor and tool
+  folders, and the local agent files and folders) or when it sits under a folder marked
+  as a build cache. Without Git the tree is walked, skipping the same names and the
+  folders marked as build caches. A file that is not UTF-8 is listed and fails the
+  check, and a file that cannot be read fails it with the error. The vendored list is
+  checked as well: each listed bundle is a file, the markdown `assets/` folder holds no
+  unlisted `.min.js` or `.min.css` file, and no other unlisted path with such a name is
+  tracked, or untracked and not left out by the pruned names and cache markers above
+  (without Git, found by the walk).
 
 The checks that walk the sources fail when they find fewer files or plugins than a floor
 measured in this repository, so an empty walk does not pass.
