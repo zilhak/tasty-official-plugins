@@ -496,8 +496,8 @@ impl<'a> Code<'a> {
     }
 
     /// Whether the `,` at token `comma` ends an arm: the `=>` of the arm before it comes
-    /// first when read back, with no guard or other comma of the same arm between. Inside
-    /// other brackets, macro arguments among them, the comma is read locally as before.
+    /// first when read back, with no guard of the same arm between. Inside other brackets,
+    /// macro arguments among them, the comma is read locally as before.
     fn ends_arm(&self, comma: usize) -> bool {
         let mut k = comma;
         while k > 0 {
@@ -509,7 +509,7 @@ impl<'a> Code<'a> {
                 "{" => return self.back(k - 1, 1) == "!",
                 "(" | "[" => return true,
                 ">" if self.back(k - 1, 1) == "=" => return true,
-                "," | "if" => return false,
+                "if" => return false,
                 _ => k -= 1,
             }
         }
@@ -1821,6 +1821,19 @@ fn a_copy_command_pattern_after_an_arm_ending_in_a_comma_is_not_a_write() {
         "match c { A => x, OutputCommand::CopyText(_) => {} _ => {} }",
         "match c { A => f(a, b), OutputCommand::CopyText(_) if ready => {} _ => {} }",
         "match c { OutputCommand::CopyText(_) => {}, OutputCommand::CopyImage(_) => {} }",
+    ]);
+}
+
+/// Given an egui copy command at the start of an arm after an arm body with commas in a
+/// turbofish or between closure parameters, when the file is read, then nothing is
+/// reported: those commas belong to the body before.
+#[test]
+fn a_copy_command_pattern_after_an_arm_body_with_commas_is_not_a_write() {
+    assert_no_writes(&[
+        "match c { None => discard::<u8, u16>(), Some(OutputCommand::CopyText(_)) => (), _ => () }",
+        "match c { A => it.collect::<Result<Vec<u8>, E>>(), OutputCommand::CopyText(_) => {} _ => {} }",
+        "match c { A => HashMap::<u8, u8>::new(), OutputCommand::CopyText(_) => {} _ => {} }",
+        "match c { A => |a, b| a, OutputCommand::CopyText(_) => {} _ => {} }",
     ]);
 }
 
