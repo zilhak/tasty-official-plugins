@@ -183,8 +183,9 @@ impl<'a> Code<'a> {
     }
 
     /// The masked code of the call whose first token is `first` and whose argument list
-    /// opens at token `open`: back to the start of its statement, skipping blocks and
-    /// brackets of the receiver, and on to the `)` that closes the arguments.
+    /// opens at token `open`: back to the start of its statement or of its argument in an
+    /// outer call, skipping blocks and brackets of the receiver, and on to the `)` that
+    /// closes the arguments.
     fn call_statement(&self, first: usize, open: usize) -> &str {
         let mut depth = 0usize;
         let mut from = first;
@@ -193,7 +194,7 @@ impl<'a> Code<'a> {
                 ")" | "]" => depth += 1,
                 "}" if depth > 0 => depth += 1,
                 "(" | "[" | "{" if depth > 0 => depth -= 1,
-                ";" | "{" | "}" | "(" | "[" => break,
+                ";" | "{" | "}" | "(" | "[" | "," => break,
                 _ => {}
             }
             from -= 1;
@@ -916,4 +917,13 @@ fn the_receiver_word_is_read_over_the_whole_call() {
         let offenders = found(src);
         assert!(offenders.is_empty(), "{src}: {offenders:?}");
     }
+}
+
+/// Given a port call that is one argument of an outer call, with the receiver word only
+/// in an earlier argument, when the file is read, then nothing is reported.
+#[test]
+fn an_earlier_argument_of_an_outer_call_is_not_the_receiver() {
+    let src = "fn f() {\n    let clipboard_data = String::from(\"payload\");\n    consume(\n        ({ clipboard_data }),\n        self.write_text(surface_id, &text),\n    );\n}\n";
+    let offenders = found(src);
+    assert!(offenders.is_empty(), "{offenders:?}");
 }
