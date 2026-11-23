@@ -562,7 +562,8 @@ pin_edition() {  # <src> <commit> <dir> <name>
 }
 
 # The shipped content of one file of an extracted tree: Rust after the judge and rustfmt
-# without blank lines, the crate manifest without its version line, anything else as is.
+# without blank lines, the crate manifest without its version line (whole when it has a
+# multi-line string), anything else as is.
 pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
     local f="$1/$3" out fmt vline man
     man=$(repo_path "$4" Cargo.toml)
