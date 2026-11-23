@@ -8,8 +8,9 @@
 //! code is read as tokens, so a call spaced out or split over lines is still found.
 //! `SHAPES` lists the write calls of the clipboard APIs a plugin can depend on: arboard,
 //! Wayland and X11 selections, the macOS pasteboard, the Windows clipboard, egui and
-//! egui-winit copies, and the names tasty used for its own copy paths. `offenders_in` and
-//! the tests below hold the exact rules. Copies done by an eframe widget, a WebView, or a
+//! egui-winit copies, and the names tasty used for its own copy paths. A write function
+//! renamed by `use ... as` is followed. `offenders_in` and the tests below hold the exact
+//! rules. Copies done by an eframe widget, a WebView, or a
 //! page script are not Rust calls and are outside this check.
 //!
 //! One exception: the test double `ScanHost::set_text` in the claude plugin's
@@ -230,9 +231,10 @@ fn parts(call: &str) -> (bool, &str, bool) {
     }
 }
 
-/// Whether `shape` is used at token `i`.
-fn shape_at(code: &Code, shape: &Shape, i: usize) -> bool {
+/// Whether `shape` is used at token `i`, called by `alias` when the file renamed it.
+fn shape_at(code: &Code, shape: &Shape, alias: Option<&str>, i: usize) -> bool {
     let (dot, name, empty) = parts(shape.call);
+    let name = alias.unwrap_or(name);
     let name_at = if dot {
         if code.tok(i) != "." {
             return false;
@@ -259,6 +261,79 @@ fn shape_at(code: &Code, shape: &Shape, i: usize) -> bool {
                 .to_ascii_lowercase()
                 .contains(word)
     })
+}
+
+/// The paths a `use` tree starting at token `i` brings in, each with the name it binds,
+/// appended to `out`. Returns the token after the tree.
+fn use_tree(
+    code: &Code,
+    mut i: usize,
+    prefix: &[String],
+    out: &mut Vec<(Vec<String>, String)>,
+) -> usize {
+    let mut path = prefix.to_vec();
+    while i < code.tokens.len() {
+        match code.tok(i) {
+            ":" if code.tok(i + 1) == ":" => i += 2,
+            "{" => {
+                i += 1;
+                while i < code.tokens.len() && code.tok(i) != "}" {
+                    let next = use_tree(code, i, &path, out);
+                    i = if code.tok(next) == "," {
+                        next + 1
+                    } else {
+                        next.max(i + 1)
+                    };
+                }
+                return i + 1;
+            }
+            "*" => return i + 1,
+            "as" => {
+                out.push((path, code.tok(i + 1).to_string()));
+                return i + 2;
+            }
+            t if code.is_ident_tok(i) => {
+                path.push(t.to_string());
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+    if path.len() > prefix.len()
+        && let Some(last) = path.last().cloned()
+    {
+        out.push((path, last));
+    }
+    i
+}
+
+/// The paths every `use` item of the file brings in, each with the name it binds.
+fn use_leaves(code: &Code) -> Vec<(Vec<String>, String)> {
+    let mut out = Vec::new();
+    for i in 0..code.tokens.len() {
+        if code.tok(i) == "use" && (i == 0 || code.tok(i - 1) != ".") {
+            use_tree(code, i + 1, &[], &mut out);
+        }
+    }
+    out
+}
+
+/// The names a `use ... as` gives the write functions of `SHAPES` in this file.
+fn aliases_of(leaves: &[(Vec<String>, String)]) -> Vec<(String, &'static Shape)> {
+    let mut out = Vec::new();
+    for (path, bound) in leaves {
+        let Some(last) = path.last() else { continue };
+        if last == bound {
+            continue;
+        }
+        for shape in SHAPES {
+            let (dot, name, _) = parts(shape.call);
+            if !dot && name == last {
+                out.push((bound.clone(), shape));
+            }
+        }
+    }
+    out
 }
 
 /// Whether any shape is used in `src`.
@@ -290,11 +365,21 @@ fn offenders_in(rel: &str, raw: &str) -> (Vec<String>, BTreeMap<String, usize>) 
     let code = Code::new(raw);
     let spans = fn_spans(&code.source.code);
     let raw_lines: Vec<&str> = raw.split('\n').collect();
+    let leaves = use_leaves(&code);
+    let calls: Vec<(Option<String>, &Shape)> = SHAPES
+        .iter()
+        .map(|shape| (None, shape))
+        .chain(
+            aliases_of(&leaves)
+                .into_iter()
+                .map(|(alias, shape)| (Some(alias), shape)),
+        )
+        .collect();
     let mut offenders = Vec::new();
     let mut double_uses = BTreeMap::new();
     for i in 0..code.tokens.len() {
-        for shape in SHAPES {
-            if !shape_at(&code, shape, i) {
+        for (alias, shape) in &calls {
+            if !shape_at(&code, shape, alias.as_deref(), i) {
                 continue;
             }
             let pos = code.start(i);
@@ -570,4 +655,27 @@ fn calls_that_only_share_a_write_name_pass() {
         let offenders = found(src);
         assert!(offenders.is_empty(), "{src}: {offenders:?}");
     }
+}
+
+/// Given a write function renamed by `use ... as`, alone or in a group, when the file
+/// calls the new name, then the call is reported and the `use` item is not.
+#[test]
+fn a_write_function_renamed_by_use_is_found() {
+    let cases = [
+        "use clipboard_win::set_clipboard_string as put;\nfn f() {\n    put(t);\n}\n",
+        "pub use clipboard_win::{set_clipboard as put_all, other};\nfn f() {\n    put_all(f, t);\n}\n",
+    ];
+    for src in cases {
+        let offenders = found(src);
+        assert_eq!(offenders.len(), 1, "{src}: {offenders:?}");
+        assert!(offenders[0].contains(":3 (fn f)"), "{src}: {offenders:?}");
+    }
+}
+
+/// Given a write function taken as a value, when the file is read, then nothing is
+/// reported: the check reads calls only.
+#[test]
+fn a_write_function_taken_as_a_value_is_not_a_call() {
+    let offenders = found("fn f() {\n    let f = set_clipboard;\n}\n");
+    assert!(offenders.is_empty(), "{offenders:?}");
 }
