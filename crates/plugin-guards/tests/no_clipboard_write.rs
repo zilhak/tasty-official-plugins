@@ -182,14 +182,46 @@ impl<'a> Code<'a> {
         &self.source.code[self.line_starts[line]..end]
     }
 
+    /// The `<` of each turbofish `::<...>` in the file, keyed by the token of its closing
+    /// `>`. The `>` of `->` and `=>` inside does not close it.
+    fn turbofish_opens(&self) -> BTreeMap<usize, usize> {
+        let mut out = BTreeMap::new();
+        for lt in 2..self.tokens.len() {
+            if self.tok(lt) != "<" || self.tok(lt - 1) != ":" || self.tok(lt - 2) != ":" {
+                continue;
+            }
+            let mut depth = 0usize;
+            for j in lt..self.tokens.len() {
+                match self.tok(j) {
+                    "<" => depth += 1,
+                    ">" if matches!(self.tok(j - 1), "-" | "=") => {}
+                    ">" => {
+                        depth -= 1;
+                        if depth == 0 {
+                            out.insert(j, lt);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
     /// The masked code of the call whose first token is `first` and whose argument list
     /// opens at token `open`: back to the start of its statement or of its argument in an
-    /// outer call, skipping blocks and brackets of the receiver, and on to the `)` that
-    /// closes the arguments.
+    /// outer call, skipping blocks, brackets, and turbofish generics of the receiver, and
+    /// on to the `)` that closes the arguments.
     fn call_statement(&self, first: usize, open: usize) -> &str {
+        let turbofish = self.turbofish_opens();
         let mut depth = 0usize;
         let mut from = first;
         while from > 0 {
+            if let Some(&lt) = turbofish.get(&(from - 1)) {
+                from = lt;
+                continue;
+            }
             match self.tok(from - 1) {
                 ")" | "]" => depth += 1,
                 "}" if depth > 0 => depth += 1,
@@ -964,4 +996,44 @@ fn commas_inside_the_receiver_do_not_end_the_call() {
             "{src}: {offenders:?}"
         );
     }
+}
+
+/// Given a multi-line Core port call whose receiver holds a turbofish with commas, when
+/// the file is read, then the receiver word before the turbofish counts and the call is
+/// reported; a generic outer call whose earlier argument alone holds the word passes.
+#[test]
+fn commas_inside_a_turbofish_of_the_receiver_do_not_end_the_call() {
+    let cases = [
+        (
+            "fn f() {\n    self.core\n        .port::<ClipboardPort, Id>()\n        .write_text(t);\n}\n",
+            4,
+        ),
+        (
+            "fn f() {\n    Ports::<ClipboardPort, Id>::get(core)\n        .write_text(t);\n}\n",
+            3,
+        ),
+        (
+            "fn f() {\n    core.clipboard_for::<u8, u16>()\n        .write_text(text);\n}\n",
+            3,
+        ),
+        (
+            "fn f() {\n    ClipboardPair::<u8, u16>::PORT\n        .write_text(text);\n}\n",
+            3,
+        ),
+        (
+            "fn f() {\n    core.clipboard_for::<Vec<(u8, u16)>, Option<u32>>()\n        .write_text(text);\n}\n",
+            3,
+        ),
+    ];
+    for (src, line) in cases {
+        let offenders = found(src);
+        assert_eq!(offenders.len(), 1, "{src}: {offenders:?}");
+        assert!(
+            offenders[0].contains(&format!(":{line} (fn f)")),
+            "{src}: {offenders:?}"
+        );
+    }
+    let src = "fn f() {\n    consume::<u8, u16>(\n        ({ clipboard_data }),\n        self.write_text(surface_id, &text),\n    );\n}\n";
+    let offenders = found(src);
+    assert!(offenders.is_empty(), "{src}: {offenders:?}");
 }
