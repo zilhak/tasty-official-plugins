@@ -4,22 +4,13 @@
 //!
 //! Every Rust file under `crates/` is read through the shared reader, tests and build
 //! scripts included, and this file too: the shapes below and the synthetic inputs are
-//! string literals, which the mask hides. Comments and strings are masked, and each
-//! masked line is searched for the write call shapes of the clipboard APIs a plugin can
-//! depend on: arboard text, html, and image writes, Wayland and X11 selection ownership,
-//! macOS pasteboard writes, Windows clipboard writes (`SetClipboardData` and
-//! clipboard-win), egui and egui-winit output copies, and the names tasty used for its
-//! own copy paths. A shape that starts with a dot counts wherever it appears. A shape
-//! that starts with a name does not count after another identifier character
-//! (`my_handle_platform_output(`) or right after `fn` (a definition). The Core port
-//! shape `.write_text(` counts only when the lowercased masked line contains
-//! `clipboard`.
-//!
-//! Not found: writes under common names such as arboard `clear()`, renamed aliases, and
-//! calls split over several lines (`.set()` is found on its own line, not the `.text(`
-//! after it). Copying selected text in an eframe widget (Ctrl+C) is handled inside
-//! eframe and is not a call in this code. Copies done by a WebView or a page script are
-//! not Rust calls and are outside this check.
+//! string literals, which the mask hides. Comments and strings are masked, and the masked
+//! code is read as tokens, so a call spaced out or split over lines is still found.
+//! `SHAPES` lists the write calls of the clipboard APIs a plugin can depend on: arboard,
+//! Wayland and X11 selections, the macOS pasteboard, the Windows clipboard, egui and
+//! egui-winit copies, and the names tasty used for its own copy paths. `offenders_in` and
+//! the tests below hold the exact rules. Copies done by an eframe widget, a WebView, or a
+//! page script are not Rust calls and are outside this check.
 //!
 //! One exception: the test double `ScanHost::set_text` in the claude plugin's
 //! `error_scan.rs` shares the arboard name and only sets the text of a fake screen. Its
@@ -28,13 +19,14 @@
 //! must still use it, so a stale entry fails.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use plugin_guards::{FnSpan, fn_spans, is_ident, repo_root};
 use tasty_doc_guards::match_arms::Source;
 use tasty_doc_guards::source_text::rust_sources;
 
 /// A write call shape and, for a name shared with non-clipboard methods, a word the
-/// lowercased masked line must also contain.
+/// masked code around the call must also contain.
 struct Shape {
     call: &'static str,
     receiver: Option<&'static str>,
@@ -116,52 +108,164 @@ const DOUBLE_FNS: &[&str] = &[
 /// markdown (21) fails, losing one of the smaller crates does not.
 const MIN_RUST_FILES: usize = 165;
 
-/// Every position of `call` in `line`. A shape that starts with a name does not count
-/// after another identifier character or right after `fn`.
-fn uses_at(line: &str, call: &str) -> Vec<usize> {
-    let mut found: Vec<usize> = line.match_indices(call).map(|(at, _)| at).collect();
-    found.retain(|&at| {
-        if call.starts_with('.') {
-            return true;
+/// The masked code of one file read as tokens: identifier runs and single other
+/// characters, by byte range. Whitespace and line breaks only separate tokens.
+struct Code<'a> {
+    source: Source<'a>,
+    tokens: Vec<Range<usize>>,
+    line_starts: Vec<usize>,
+}
+
+impl<'a> Code<'a> {
+    fn new(raw: &'a str) -> Self {
+        let source = Source::new(raw);
+        let mut tokens = Vec::new();
+        let mut chars = source.code.char_indices().peekable();
+        while let Some((at, c)) = chars.next() {
+            if c.is_whitespace() {
+                continue;
+            }
+            let mut end = at + c.len_utf8();
+            if is_ident(c) {
+                while let Some(&(next, d)) = chars.peek() {
+                    if !is_ident(d) {
+                        break;
+                    }
+                    end = next + d.len_utf8();
+                    chars.next();
+                }
+            }
+            tokens.push(at..end);
         }
-        let before = &line[..at];
-        let defines = before
-            .trim_end()
-            .strip_suffix("fn")
-            .is_some_and(|rest| !rest.chars().next_back().is_some_and(is_ident));
-        !defines && !before.chars().next_back().is_some_and(is_ident)
-    });
-    found
-}
-
-/// Every position in `line` where `shape` is used.
-fn shape_uses_at(shape: &Shape, line: &str) -> Vec<usize> {
-    if shape
-        .receiver
-        .is_some_and(|word| !line.to_ascii_lowercase().contains(word))
-    {
-        return Vec::new();
+        let line_starts = std::iter::once(0)
+            .chain(source.code.match_indices('\n').map(|(at, _)| at + 1))
+            .collect();
+        Code {
+            source,
+            tokens,
+            line_starts,
+        }
     }
-    let mut found = uses_at(line, shape.call);
-    found.sort_unstable();
-    found.dedup();
-    found
+
+    /// The text of token `i`, or "" past either end.
+    fn tok(&self, i: usize) -> &str {
+        self.tokens
+            .get(i)
+            .map_or("", |r| &self.source.code[r.clone()])
+    }
+
+    fn start(&self, i: usize) -> usize {
+        self.tokens[i].start
+    }
+
+    fn is_ident_tok(&self, i: usize) -> bool {
+        self.tok(i).chars().next().is_some_and(is_ident)
+    }
+
+    /// The zero-based line that holds byte `pos`.
+    fn line_of(&self, pos: usize) -> usize {
+        self.line_starts.partition_point(|&s| s <= pos) - 1
+    }
+
+    /// The masked line that holds byte `pos`.
+    fn line_text(&self, pos: usize) -> &str {
+        let line = self.line_of(pos);
+        let end = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.source.code.len());
+        &self.source.code[self.line_starts[line]..end]
+    }
+
+    /// The masked code from the last `;`, `{`, or `}` before byte `pos` up to `pos`.
+    fn statement_before(&self, pos: usize) -> &str {
+        let code = &self.source.code[..pos];
+        let from = code.rfind([';', '{', '}']).map_or(0, |at| at + 1);
+        &code[from..]
+    }
+
+    /// The token after a name at token `i`: past a turbofish `::<...>`, if any.
+    fn after_name(&self, i: usize) -> usize {
+        let mut j = i + 1;
+        if self.tok(j) == ":" && self.tok(j + 1) == ":" && self.tok(j + 2) == "<" {
+            let mut depth = 0usize;
+            j += 2;
+            while j < self.tokens.len() {
+                match self.tok(j) {
+                    "<" => depth += 1,
+                    ">" => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return j + 1;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+        }
+        j
+    }
+
+    /// Whether the `(` at token `i` is followed by `)` with nothing but whitespace and
+    /// comments between them.
+    fn empty_args(&self, i: usize) -> bool {
+        self.tok(i + 1) == ")"
+            && self
+                .source
+                .trim(self.tokens[i].end..self.tokens[i + 1].start)
+                .is_empty()
+    }
 }
 
-/// Whether any shape is used in `line`.
-fn writes(line: &str) -> bool {
-    SHAPES.iter().any(|s| !shape_uses_at(s, line).is_empty())
+/// A shape split into its parts: whether it starts with a dot, the name, and whether it
+/// takes no arguments.
+fn parts(call: &str) -> (bool, &str, bool) {
+    let dot = call.starts_with('.');
+    let rest = call.trim_start_matches('.');
+    match rest.strip_suffix("()") {
+        Some(name) => (dot, name, true),
+        None => (dot, rest.trim_end_matches('('), false),
+    }
 }
 
-/// The identifier right before byte `at` of `line`.
-fn receiver_before(line: &str, at: usize) -> String {
-    let mut name: Vec<char> = line[..at]
-        .chars()
-        .rev()
-        .take_while(|c| is_ident(*c))
-        .collect();
-    name.reverse();
-    name.into_iter().collect()
+/// Whether `shape` is used at token `i`.
+fn shape_at(code: &Code, shape: &Shape, i: usize) -> bool {
+    let (dot, name, empty) = parts(shape.call);
+    let name_at = if dot {
+        if code.tok(i) != "." {
+            return false;
+        }
+        i + 1
+    } else {
+        if i > 0 && code.tok(i - 1) == "fn" {
+            return false; // A definition.
+        }
+        i
+    };
+    if code.tok(name_at) != name {
+        return false;
+    }
+    let open = code.after_name(name_at);
+    if code.tok(open) != "(" || (empty && !code.empty_args(open)) {
+        return false;
+    }
+    shape.receiver.is_none_or(|word| {
+        let pos = code.start(i);
+        code.line_text(pos).to_ascii_lowercase().contains(word)
+            || code
+                .statement_before(pos)
+                .to_ascii_lowercase()
+                .contains(word)
+    })
+}
+
+/// Whether any shape is used in `src`.
+fn writes(src: &str) -> bool {
+    !offenders_in("crates/tasty-plugin-x/src/lib.rs", src)
+        .0
+        .is_empty()
 }
 
 /// The innermost function whose body holds `pos`.
@@ -183,33 +287,38 @@ fn is_double(rel: &str, call: &str, receiver: &str, function: Option<&str>) -> b
 /// The writes of one file, and how often each listed test uses the double.
 fn offenders_in(rel: &str, raw: &str) -> (Vec<String>, BTreeMap<String, usize>) {
     // Call positions and function spans both come from this one byte-aligned mask.
-    let source = Source::new(raw);
-    let spans = fn_spans(&source.code);
+    let code = Code::new(raw);
+    let spans = fn_spans(&code.source.code);
     let raw_lines: Vec<&str> = raw.split('\n').collect();
     let mut offenders = Vec::new();
     let mut double_uses = BTreeMap::new();
-    let mut start = 0usize;
-    for (i, line) in source.code.split_inclusive('\n').enumerate() {
+    for i in 0..code.tokens.len() {
         for shape in SHAPES {
-            for at in shape_uses_at(shape, line) {
-                let function = enclosing_fn(&spans, start + at);
-                let receiver = receiver_before(line, at);
-                if is_double(rel, shape.call, &receiver, function) {
-                    *double_uses
-                        .entry(function.unwrap_or_default().to_string())
-                        .or_insert(0) += 1;
-                    continue;
-                }
-                offenders.push(format!(
-                    "  {rel}:{} (fn {})  {}  {}",
-                    i + 1,
-                    function.unwrap_or("-"),
-                    shape.call,
-                    raw_lines.get(i).map_or("", |l| l.trim())
-                ));
+            if !shape_at(&code, shape, i) {
+                continue;
             }
+            let pos = code.start(i);
+            let function = enclosing_fn(&spans, pos);
+            let receiver = if i > 0 && code.is_ident_tok(i - 1) {
+                code.tok(i - 1)
+            } else {
+                ""
+            };
+            if is_double(rel, shape.call, receiver, function) {
+                *double_uses
+                    .entry(function.unwrap_or_default().to_string())
+                    .or_insert(0) += 1;
+                continue;
+            }
+            let line = code.line_of(pos);
+            offenders.push(format!(
+                "  {rel}:{} (fn {})  {}  {}",
+                line + 1,
+                function.unwrap_or("-"),
+                shape.call,
+                raw_lines.get(line).map_or("", |l| l.trim())
+            ));
         }
-        start += line.len();
     }
     (offenders, double_uses)
 }
@@ -407,4 +516,58 @@ fn non_ascii_text_before_a_test_keeps_the_calls_in_their_functions() {
     );
     assert_eq!(offenders.len(), 1, "{offenders:?}");
     assert!(offenders[0].contains(":9 (fn other)"), "{offenders:?}");
+}
+
+/// The writes `offenders_in` reports for `src` in a plugin file.
+fn found(src: &str) -> Vec<String> {
+    offenders_in("crates/tasty-plugin-x/src/lib.rs", src).0
+}
+
+/// Given a write call spaced out, split over lines, or with a turbofish, when the file is
+/// read, then the call is reported once, on the line of its first token.
+#[test]
+fn a_write_call_split_over_lines_is_found() {
+    let cases = [
+        ("fn f() {\n    clip.set_text\n        (\"x\");\n}\n", 2),
+        ("fn f() {\n    clip.set_text (\"x\");\n}\n", 2),
+        ("fn f() {\n    clip.set_text::<&str>(\"x\");\n}\n", 2),
+        // The receiver word on an earlier line of the same statement.
+        (
+            "fn f() {\n    core\n        .clipboard_arc()\n        .write_text(t);\n}\n",
+            4,
+        ),
+        // The receiver word after the call or in a block before it, on the same line.
+        ("fn f() {\n    port.write_text(clipboard_data);\n}\n", 2),
+        (
+            "fn f() {\n    ({ core.clipboard_arc() }).write_text(text);\n}\n",
+            2,
+        ),
+        // A comment is not an argument.
+        ("fn f() {\n    cb.set( /* none */ );\n}\n", 2),
+    ];
+    for (src, line) in cases {
+        let offenders = found(src);
+        assert_eq!(offenders.len(), 1, "{src}: {offenders:?}");
+        assert!(
+            offenders[0].contains(&format!(":{line} (fn f)")),
+            "{src}: {offenders:?}"
+        );
+    }
+}
+
+/// Given calls that share a write name but are not writes, when the file is read, then
+/// nothing is reported.
+#[test]
+fn calls_that_only_share_a_write_name_pass() {
+    let cases = [
+        // The method of the same name that sends text to a PTY.
+        "fn f() {\n    self.write_text(surface_id, &text);\n}\n",
+        // A setter with an argument is not the arboard builder.
+        "fn f() {\n    flag.set(\"value\");\n}\n",
+        "fn f() {\n    flag.set('x');\n}\n",
+    ];
+    for src in cases {
+        let offenders = found(src);
+        assert!(offenders.is_empty(), "{src}: {offenders:?}");
+    }
 }
