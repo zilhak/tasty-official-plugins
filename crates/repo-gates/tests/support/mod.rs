@@ -3,6 +3,7 @@
 // Each test file compiles this module on its own and uses only part of it.
 #![allow(dead_code)]
 
+pub mod fake_gh;
 pub mod gate_env;
 pub mod git_env;
 

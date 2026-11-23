@@ -1,8 +1,7 @@
 //! scripts/release-promote.sh marks a plugin pre-release Latest only after every check
-//! passes. These tests run it with a fake gh first on PATH: the fake answers each call
-//! from a table of exact argument lists, copies files for `release download`, and records
-//! `release edit`. A call the table does not hold fails the run, so the tests also pin
-//! which reads the script makes. Each refusal must leave the Release unedited.
+//! passes. These tests run it with the fake gh of support/fake_gh.rs first on PATH. A call
+//! its table does not hold fails the run, so the tests also pin which reads the script
+//! makes. Each refusal must leave the Release unedited.
 //!
 //! Check 7 reads the plugin set of the tag commit with git, so each test runs the script
 //! from a throwaway repository whose one commit is the tag commit: it holds this
@@ -17,6 +16,7 @@ mod support;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use support::fake_gh::{Entry, Fake, Reply, entry, not_found, ok, server_error};
 use support::gate_env::GateRun;
 
 const REPO: &str = "zilhak/tasty-official-plugins";
@@ -147,42 +147,13 @@ fn tree() -> Tree {
     }
 }
 
-/// One answer of the fake gh.
-#[derive(Clone)]
-struct Reply {
-    out: String,
-    err: String,
-    code: i32,
-}
-
-fn ok(out: impl Into<String>) -> Reply {
-    Reply {
-        out: out.into(),
-        err: String::new(),
-        code: 0,
-    }
-}
-
-fn not_found() -> Reply {
-    Reply {
-        out: String::new(),
-        err: "gh: Not Found (HTTP 404)\n".into(),
-        code: 1,
-    }
-}
-
-fn server_error() -> Reply {
-    Reply {
-        out: String::new(),
-        err: "gh: HTTP 502: Bad Gateway\n".into(),
-        code: 1,
-    }
-}
-
 /// The GitHub state the fake gh shows. `World::good()` passes every check.
 struct World {
     tree: Tree,
     latest: Reply,
+    /// The answer to the third Latest lookup, the one right before the edit (the first two
+    /// are checks 0 and 5). None: the same as `latest`.
+    latest_recheck: Option<Reply>,
     latest_after_edit: Reply,
     state: Reply,
     tag_ref: Reply,
@@ -229,6 +200,7 @@ impl World {
         let mut w = Self {
             tree,
             latest: ok("v1.2.2\n"),
+            latest_recheck: None,
             latest_after_edit: ok(format!("{TAG}\n")),
             state: ok("false true\n"),
             tag_ref: ok(format!("tag {TAG_OBJECT}\n")),
@@ -334,60 +306,63 @@ impl World {
         ])
     }
 
-    fn replies(&self) -> Vec<(String, &'static str, Reply)> {
+    fn entries(&self) -> Vec<Entry> {
         let release = format!("api repos/{REPO}/releases/tags/{TAG} --jq");
+        let latest = format!("api repos/{REPO}/releases/latest --jq .tag_name");
         let hashes = sha256_all(&self.assets);
         let mut assets = String::new();
         for name in self.assets.keys() {
             let digest = self.digests.get(name).unwrap_or(&hashes[name]);
             assets.push_str(&format!("{name} sha256:{digest}\n"));
         }
-        let mut r = vec![
-            (
-                format!("api repos/{REPO}/releases/latest --jq .tag_name"),
-                "before",
-                self.latest.clone(),
-            ),
-            (
-                format!("api repos/{REPO}/releases/latest --jq .tag_name"),
-                "after",
-                self.latest_after_edit.clone(),
-            ),
-            (
+        let mut r = Vec::new();
+        if let Some(reply) = &self.latest_recheck {
+            r.push(Entry {
+                args: latest.clone(),
+                phase: "before",
+                nth: 3,
+                reply: reply.clone(),
+            });
+        }
+        r.push(Entry {
+            args: latest.clone(),
+            phase: "before",
+            nth: 0,
+            reply: self.latest.clone(),
+        });
+        r.push(Entry {
+            args: latest,
+            phase: "after",
+            nth: 0,
+            reply: self.latest_after_edit.clone(),
+        });
+        r.extend([
+            entry(
                 format!("api repos/{REPO} --jq .full_name"),
-                "any",
                 ok(format!("{REPO}\n")),
             ),
-            (format!("{release} {STATE_JQ}"), "any", self.state.clone()),
-            (
-                format!("{release} .body"),
-                "any",
-                ok(format!("{}\n", self.notes)),
-            ),
-            (format!("{release} {ASSETS_JQ}"), "any", ok(assets)),
-            (
+            entry(format!("{release} {STATE_JQ}"), self.state.clone()),
+            entry(format!("{release} .body"), ok(format!("{}\n", self.notes))),
+            entry(format!("{release} {ASSETS_JQ}"), ok(assets)),
+            entry(
                 format!("api repos/{REPO}/git/ref/tags/{TAG} --jq {OBJECT_JQ}"),
-                "any",
                 self.tag_ref.clone(),
             ),
-            (
+            entry(
                 format!("api repos/{REPO}/git/tags/{TAG_OBJECT} --jq {OBJECT_JQ}"),
-                "any",
                 self.tag_object.clone(),
             ),
-            (
+            entry(
                 format!(
                     "api -H Accept: application/vnd.github.raw+json \
                      repos/{TASTY}/contents/official-plugins.lock.toml?ref=v{NEW}"
                 ),
-                "any",
                 self.lock.clone(),
             ),
-        ];
+        ]);
         for (version, reply) in &self.tasty {
-            r.push((
+            r.push(entry(
                 format!("api repos/{TASTY}/releases/tags/v{version} --jq {STATE_JQ}"),
-                "any",
                 reply.clone(),
             ));
         }
@@ -395,70 +370,22 @@ impl World {
     }
 }
 
-const FAKE_GH: &str = r#"#!/usr/bin/env bash
-d="$FAKE_GH_DIR"
-printf '%s\n' "$*" >>"$d/calls.log"
-if [[ "$1 ${2:-}" == "release download" ]]; then
-  shift 3
-  out="" pats=()
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --dir) out=$2 ;;
-      --pattern) pats+=("$2") ;;
-      *) echo "fake gh: unknown download option $1" >&2; exit 97 ;;
-    esac
-    shift 2
-  done
-  for f in "$d/assets"/*; do
-    n=$(basename "$f")
-    for p in "${pats[@]}"; do
-      # shellcheck disable=SC2053
-      if [[ "$n" == $p ]]; then cp "$f" "$out/"; fi
-    done
-  done
-  exit 0
-fi
-if [[ "$1 ${2:-}" == "release edit" ]]; then
-  prev=""
-  for a in "$@"; do
-    [[ "$prev" == --notes-file ]] && cp "$a" "$d/edited-notes.md"
-    prev=$a
-  done
-  touch "$d/edited"
-  exit 0
-fi
-phase=before
-[[ -e "$d/edited" ]] && phase=after
-for r in "$d"/replies/*; do
-  [[ "$(cat "$r/args")" == "$*" ]] || continue
-  p=$(cat "$r/phase")
-  [[ "$p" == any || "$p" == "$phase" ]] || continue
-  cat "$r/out"
-  cat "$r/err" >&2
-  exit "$(cat "$r/code")"
-done
-echo "fake gh: no reply for: $*" >&2
-exit 97
-"#;
-
 struct Run {
     result: GateRun,
     calls: String,
+    edits: Vec<String>,
     edited_notes: Option<String>,
 }
 
 impl Run {
-    fn edits(&self) -> Vec<&str> {
-        self.calls
-            .lines()
-            .filter(|l| l.starts_with("release edit"))
-            .collect()
+    fn edits(&self) -> &[String] {
+        &self.edits
     }
 
     fn assert_refused(&self, what: &str) {
         assert_eq!(self.result, 1, "{what}");
         assert!(
-            self.edits().is_empty(),
+            self.edits.is_empty(),
             "{what}: refused run edited the Release\n{}",
             self.calls
         );
@@ -471,44 +398,20 @@ impl Run {
 }
 
 fn promote(world: &World, args: &[&str]) -> Run {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let d = dir.path();
-    let bin = d.join("bin");
-    support::write_executable(&bin.join("gh"), FAKE_GH).expect("write fake gh");
-    std::fs::create_dir_all(d.join("assets")).expect("assets");
-    for (name, data) in &world.assets {
-        std::fs::write(d.join("assets").join(name), data).expect("asset");
-    }
-    for (i, (args, phase, reply)) in world.replies().into_iter().enumerate() {
-        let r = d.join("replies").join(i.to_string());
-        std::fs::create_dir_all(&r).expect("reply dir");
-        std::fs::write(r.join("args"), args).expect("args");
-        std::fs::write(r.join("phase"), phase).expect("phase");
-        std::fs::write(r.join("out"), &reply.out).expect("out");
-        std::fs::write(r.join("err"), &reply.err).expect("err");
-        std::fs::write(r.join("code"), reply.code.to_string()).expect("code");
-    }
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let out = support::git_env::command("bash")
-        .arg(world.tree.dir.path().join("scripts/release-promote.sh"))
+    let fake = Fake::new(&world.entries(), &world.assets);
+    let mut cmd = support::git_env::command("bash");
+    cmd.arg(world.tree.dir.path().join("scripts/release-promote.sh"))
         .args(args)
-        .env("PATH", path)
-        .env("FAKE_GH_DIR", d)
-        .env("GH_REPO", REPO)
-        // The real gh, if it were ever reached, has no account to act with.
-        .env("GH_TOKEN", "fake")
-        .env("GH_CONFIG_DIR", d.join("gh-config"))
-        .env_remove("GITHUB_ACTIONS")
+        .env("GH_REPO", REPO);
+    let out = fake
+        .apply(&mut cmd)
         .output()
         .expect("run scripts/release-promote.sh");
     Run {
         result: GateRun::from_output(&out),
-        calls: std::fs::read_to_string(d.join("calls.log")).unwrap_or_default(),
-        edited_notes: std::fs::read_to_string(d.join("edited-notes.md")).ok(),
+        calls: fake.calls(),
+        edits: fake.edits(),
+        edited_notes: fake.edited_notes(),
     }
 }
 
@@ -678,6 +581,26 @@ fn the_minimum_tasty_may_not_be_newer_than_the_bundling_tasty() {
 }
 
 #[test]
+fn the_latest_release_is_compared_again_right_before_the_edit() {
+    // A newer Release becomes Latest while the checks run: check 5 passed with v1.2.2, the
+    // lookup right before the edit sees v1.3.0.
+    let mut w = World::good();
+    w.latest_recheck = Some(ok("v1.3.0\n"));
+    let run = run_good(&w);
+    run.assert_refused("newer Latest right before the edit");
+    assert!(run.result.output.contains("check 5"), "{:?}", run.result);
+    assert_eq!(
+        run.calls
+            .lines()
+            .filter(|l| l.ends_with("releases/latest --jq .tag_name"))
+            .count(),
+        3,
+        "{}",
+        run.calls
+    );
+}
+
+#[test]
 fn an_older_tag_is_never_made_latest_again() {
     for latest in ["v1.3.0\n", "v1.2.10\n", "v2.0.0\n"] {
         let mut w = World::good();
@@ -791,6 +714,24 @@ fn the_marker_block_and_the_lock_must_match_the_published_release_meta() {
     let commit = w.commit().to_string();
     w.lock = ok(w.lock_text(REPO, TAG, &commit, OTHER_REV));
     run_good(&w).assert_refused("lock tasty_rev");
+}
+
+#[test]
+fn release_meta_for_another_tag_is_refused() {
+    let mut w = World::good();
+    let commit = w.commit().to_string();
+    let meta = w.meta_text("v1.2.4", &commit, TASTY_REV);
+    w.assets
+        .insert("release-meta.toml".into(), meta.into_bytes());
+    let run = run_good(&w);
+    run.assert_refused("release-meta tag");
+    assert!(
+        run.result
+            .output
+            .contains("release-meta.toml is not for v1.2.3"),
+        "{:?}",
+        run.result
+    );
 }
 
 #[test]
