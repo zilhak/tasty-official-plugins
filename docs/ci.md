@@ -255,16 +255,20 @@ the index.
   plugin manifest has its translation key, the English catalog value equals the manifest
   text, and the catalog of every built-in language loads a non-blank value.
 - `no_local_doc_citation`: no text file of the repository cites a document other
-  developers cannot open. It looks for ten shapes: a TODO word followed by a number, a
-  numbered conductor ticket, a path into the local work folder, a date joined to a word
-  by hyphens, a TODO number in an anchor, a mention of the local agent folders (a home
-  path is allowed), TODO in prose (not in Markdown, and not the task markers `TODO:` and
-  `TODO(scope):`), a zero followed by one digit from 1 to 9 in round brackets, dotted
-  plan coordinates, and an upper case R with two or more digits. `.gitignore` may name
-  the local folders, and the test file holds the shapes it describes; both are listed
-  with the patterns they may hold. In a Git checkout the files come from Git: tracked
-  paths wherever they sit, read from the index and from the work tree when it differs, a
-  tracked link as its target text, and untracked paths that Git does not ignore. An
+  developers cannot open. It looks for ten shapes: a TODO word followed by a number, or
+  a number with the Korean ordinal suffix `번` before the TODO word, in any case; a
+  numbered conductor ticket; a path from the local work folder into its TODO, plan, or
+  conductor folders; a date joined to a word by hyphens; a TODO number in a Markdown
+  anchor; a mention of the local agent folders (a home path is allowed); upper case
+  TODO in prose (not in Markdown, and not the task markers `TODO:` and
+  `TODO(scope):`); a zero followed by one digit from 1 to 9 in round brackets; a plan
+  coordinate of an upper case letter, a number, and two upper case letters joined by
+  dots; and an upper case R with two or more digits outside an identifier. `.gitignore`
+  may name the local folders, and the test file holds the shapes it describes; both are
+  listed with the patterns they may hold. In a Git checkout the files come from Git:
+  tracked paths wherever they sit, read from the index and from the work tree when it
+  differs, a tracked link as its target text, and untracked paths that Git does not
+  ignore. An
   untracked path is left out when any part of it is one of the pruned names of this
   check (build, dependency, editor and tool folders, and the local agent files and
   folders) or when it sits under a folder marked as a build cache. Without Git the tree
