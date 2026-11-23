@@ -245,11 +245,17 @@ done <<<"$bins"
 [[ ${#pkg_args[@]} -gt 0 ]] || die "no plugin crates to build"
 
 cd "$build_dir"
-echo "+ cargo build ${cargo_opts[*]} ${pkg_args[*]} ${build_args[*]}" >&2
-cargo build "${cargo_opts[@]}" "${pkg_args[@]}" "${build_args[@]}"
+# Each array is expanded as ${a[@]+"${a[@]}"}: bash before 4.4, such as the /bin/bash of
+# macOS, stops on an empty "${a[@]}" under set -u, and build_args is empty for the
+# default profile.
+echo "+ cargo build ${cargo_opts[*]+${cargo_opts[*]}} ${pkg_args[*]+${pkg_args[*]}}" \
+  "${build_args[*]+${build_args[*]}}" >&2
+cargo build ${cargo_opts[@]+"${cargo_opts[@]}"} ${pkg_args[@]+"${pkg_args[@]}"} \
+  ${build_args[@]+"${build_args[@]}"}
 # A second, fresh build prints the artifact messages without rebuilding.
 artifacts=$(
-  cargo build "${cargo_opts[@]}" "${pkg_args[@]}" "${build_args[@]}" \
+  cargo build ${cargo_opts[@]+"${cargo_opts[@]}"} ${pkg_args[@]+"${pkg_args[@]}"} \
+    ${build_args[@]+"${build_args[@]}"} \
     --message-format=json-render-diagnostics | cargo_executables
 )
 
