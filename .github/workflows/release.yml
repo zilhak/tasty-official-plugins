@@ -1,12 +1,13 @@
 name: Release
 
-# A v* tag push releases the plugins: create-release checks the tag and opens a
-# draft GitHub Release, release-meta and package build the release files on
-# every platform as workflow artifacts, and publish uploads them to the draft
-# and publishes it. If create-release fails, no Release is created; if a later
-# job fails, the Release stays a draft. A manual run
-# (workflow_dispatch) builds the same files as workflow artifacts and creates no
-# Release. The packages are not signed. See docs/ci.md.
+# A v* tag push releases the plugins as a pre-release: create-release checks the
+# tag and opens a draft pre-release, release-meta and package build the release
+# files on every platform as workflow artifacts, and publish uploads them to the
+# draft and publishes it as a pre-release, never as Latest. If create-release
+# fails, no Release is created; if a later job fails, the Release stays a draft.
+# Only promote.yml marks a Release as Latest, after a published Tasty release
+# bundles it. A manual run (workflow_dispatch) builds the same files as workflow
+# artifacts and creates no Release. The packages are not signed. See docs/ci.md.
 
 on:
   push:
@@ -69,21 +70,17 @@ jobs:
           fi
           echo "commit=$tag_commit" >> "$GITHUB_OUTPUT"
 
+      # VERSION must be a SemVer core version without leading zeros, the same
+      # versions that promotion compares.
       - name: Check the tag against VERSION
         run: |
           version=$(tr -d '\r\n' < VERSION)
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::VERSION must be MAJOR.MINOR.PATCH, found '$version'"
-            exit 1
-          fi
-          if [[ "$TAG" != "v$version" ]]; then
-            echo "::error::Tag $TAG does not match VERSION $version (expected v$version)"
-            exit 1
-          fi
+          scripts/release-check.sh tag "$TAG" "$version"
 
-      # A published Release is never changed. A draft from an earlier run of the
-      # same tag is reused only if it was made for the same commit; publish then
-      # checks the files already on it.
+      # This workflow never changes a published Release; only promote.yml changes
+      # the state and notes of one. A draft from an earlier run of the same tag is
+      # reused only if the Commit line of its marker block names the same commit;
+      # publish then checks the files and the notes already on it.
       - name: Create or reuse the draft Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -95,10 +92,9 @@ jobs:
               echo "::error::Release $TAG is already published; it is never overwritten"
               exit 1
             fi
-            # Read first, then grep: with pipefail, grep -q ending early can make
-            # the pipeline fail through SIGPIPE.
-            body=$(gh release view "$TAG" --json body --jq '.body')
-            if ! grep -qxF "$marker" <<<"$body"; then
+            gh release view "$TAG" --json body --jq '.body' > "$RUNNER_TEMP/draft-notes.md"
+            if ! found=$(scripts/release-check.sh marker "$RUNNER_TEMP/draft-notes.md" Commit) ||
+              [[ "$found" != "$commit" ]]; then
               echo "::error::The draft Release $TAG was made for another commit; delete the draft and run again"
               exit 1
             fi
@@ -111,13 +107,17 @@ jobs:
           fi
           tasty_rev=$(grep -F 'https://github.com/zilhak/tasty"' Cargo.toml |
             grep -o 'rev = "[0-9a-f]\{40\}"' | sed 's/rev = "\(.*\)"/\1/' | sort -u)
+          pending=$(scripts/release-check.sh pending-line "$tasty_rev")
+          # The commit body is free text; the marker block after it is what the
+          # release checks read.
           {
             git log -1 --format=%b "$commit"
             echo
             echo "$marker"
             echo "tasty rev: $tasty_rev"
+            echo "$pending"
           } > "$RUNNER_TEMP/release-notes.md"
-          gh release create "$TAG" --draft --verify-tag --title "$TAG" \
+          gh release create "$TAG" --draft --prerelease --verify-tag --title "$TAG" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
 
   release-meta:
@@ -274,7 +274,8 @@ jobs:
 
   # Runs only when every job above succeeded. Otherwise the Release stays a
   # draft. Files are uploaded without --clobber: a file already on the draft is
-  # kept only if its hash matches, so a published file never changes.
+  # kept only if its hash matches, so a published file never changes. The
+  # Release is published as a pre-release; promote.yml marks it Latest later.
   publish:
     needs: [create-release, release-meta, package]
     if: github.event_name == 'push'
@@ -285,6 +286,9 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
     steps:
+      # For scripts/release-check.sh, which reads the release notes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: ${{ runner.temp }}/release-artifacts
@@ -368,7 +372,43 @@ jobs:
             fi
           done
 
-      - name: Publish the Release
+      # The notes are settled and checked before the Release is published: the
+      # marker block gets exactly one pending Requires Tasty line, and its Commit,
+      # tasty rev, and pending pin must match release-meta.toml. Otherwise the
+      # Release stays a draft. The checked notes go out with the publish request,
+      # so the published notes are the checked ones. --prerelease is given again
+      # in case the draft lost it.
+      - name: Publish the Release as a pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$TAG" --draft=false
+          META: ${{ runner.temp }}/release-artifacts/release-meta/release-meta.toml
+        run: |
+          is_draft=$(gh release view "$TAG" --json isDraft --jq '.isDraft')
+          if [[ "$is_draft" != "true" ]]; then
+            echo "::error::Release $TAG is not a draft; it is never changed"
+            exit 1
+          fi
+          gh release view "$TAG" --json body --jq '.body' > "$RUNNER_TEMP/draft-notes.md"
+          scripts/release-check.sh prepare "$RUNNER_TEMP/draft-notes.md" "$META" > "$RUNNER_TEMP/release-notes.md"
+          scripts/release-check.sh verify "$RUNNER_TEMP/release-notes.md" "$META"
+          gh release edit "$TAG" --draft=false --prerelease --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      # GitHub never makes a pre-release Latest. This checks it: the Release is
+      # published, a pre-release, and not the Latest Release. No Latest Release
+      # at all passes; a failed lookup fails. A failure here leaves the Release
+      # published; see docs/ci.md#failures-and-reruns.
+      - name: Check the published state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          state=$(gh release view "$TAG" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')
+          if [[ "$state" != "false true" ]]; then
+            echo "::error::Release $TAG is not a published pre-release (isDraft isPrerelease: $state)"
+            exit 1
+          fi
+          latest=$(scripts/release-check.sh latest)
+          if [[ "$latest" == "$TAG" ]]; then
+            echo "::error::Release $TAG is the Latest Release; only promote.yml marks Latest"
+            exit 1
+          fi
+          echo "Release $TAG is a pre-release; Latest is ${latest:-none}"
