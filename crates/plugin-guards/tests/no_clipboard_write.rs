@@ -194,7 +194,8 @@ impl<'a> Code<'a> {
                 ")" | "]" => depth += 1,
                 "}" if depth > 0 => depth += 1,
                 "(" | "[" | "{" if depth > 0 => depth -= 1,
-                ";" | "{" | "}" | "(" | "[" | "," => break,
+                "," if depth == 0 => break,
+                ";" | "{" | "}" | "(" | "[" => break,
                 _ => {}
             }
             from -= 1;
@@ -926,4 +927,41 @@ fn an_earlier_argument_of_an_outer_call_is_not_the_receiver() {
     let src = "fn f() {\n    let clipboard_data = String::from(\"payload\");\n    consume(\n        ({ clipboard_data }),\n        self.write_text(surface_id, &text),\n    );\n}\n";
     let offenders = found(src);
     assert!(offenders.is_empty(), "{offenders:?}");
+}
+
+/// Given a multi-line Core port call whose receiver holds commas inside its own brackets
+/// or block, when the file is read, then the receiver word before those commas counts
+/// and the call is reported.
+#[test]
+fn commas_inside_the_receiver_do_not_end_the_call() {
+    let cases = [
+        (
+            "fn f() {\n    self.core\n        .port(Port::Clipboard, id)\n        .write_text(id, &t);\n}\n",
+            4,
+        ),
+        (
+            "fn f() {\n    select(core.clipboard_arc(), enabled)\n        .write_text(text);\n}\n",
+            3,
+        ),
+        (
+            "fn f() {\n    (clipboard, id).0\n        .write_text(t);\n}\n",
+            3,
+        ),
+        (
+            "fn f() {\n    ({ pick(core.clipboard_arc(), 1) })\n        .write_text(t);\n}\n",
+            3,
+        ),
+        (
+            "fn f() {\n    [clipboard, other][0]\n        .write_text(t);\n}\n",
+            3,
+        ),
+    ];
+    for (src, line) in cases {
+        let offenders = found(src);
+        assert_eq!(offenders.len(), 1, "{src}: {offenders:?}");
+        assert!(
+            offenders[0].contains(&format!(":{line} (fn f)")),
+            "{src}: {offenders:?}"
+        );
+    }
 }
