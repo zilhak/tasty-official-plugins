@@ -29,7 +29,7 @@
 
 use std::collections::BTreeMap;
 
-use plugin_guards::repo_root;
+use plugin_guards::{FnSpan, fn_spans, is_ident, repo_root};
 use tasty_doc_guards::match_arms::Source;
 use tasty_doc_guards::source_text::rust_sources;
 
@@ -116,10 +116,6 @@ const DOUBLE_FNS: &[&str] = &[
 /// markdown (21) fails, losing one of the smaller crates does not.
 const MIN_RUST_FILES: usize = 165;
 
-fn is_ident(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
 /// Every position of `call` in `line`. A shape that starts with a name does not count
 /// after another identifier character or right after `fn`.
 fn uses_at(line: &str, call: &str) -> Vec<usize> {
@@ -168,92 +164,13 @@ fn receiver_before(line: &str, at: usize) -> String {
     name.into_iter().collect()
 }
 
-fn is_word_boundary(code: &str, pos: usize, word: &str) -> bool {
-    let before = code[..pos].chars().next_back();
-    let after = code[pos + word.len()..].chars().next();
-    !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
-}
-
-fn word_positions(code: &str, word: &str) -> Vec<usize> {
-    let mut out = Vec::new();
-    let mut from = 0usize;
-    while let Some(rel) = code[from..].find(word) {
-        let pos = from + rel;
-        if is_word_boundary(code, pos, word) {
-            out.push(pos);
-        }
-        from = pos + word.len();
-    }
-    out
-}
-
-/// The byte position of the delimiter that closes the (), {}, or [] at `open`.
-fn matching_delim(code: &str, open: usize) -> Option<usize> {
-    let opener = code[open..].chars().next()?;
-    let closer = match opener {
-        '(' => ')',
-        '{' => '}',
-        '[' => ']',
-        _ => return None,
-    };
-    let mut depth = 0usize;
-    for (offset, c) in code[open..].char_indices() {
-        if c == opener {
-            depth += 1;
-        } else if c == closer {
-            depth -= 1;
-            if depth == 0 {
-                return Some(open + offset);
-            }
-        }
-    }
-    None
-}
-
-/// The first block at the same depth after `from`. The () and [] of the signature are
-/// skipped, and a `;` met first means a declaration without a body.
-fn block_after(code: &str, from: usize) -> Option<(usize, usize)> {
-    let mut i = from;
-    while i < code.len() {
-        let c = code[i..].chars().next()?;
-        match c {
-            '{' => return matching_delim(code, i).map(|end| (i, end)),
-            '(' | '[' => i = matching_delim(code, i)? + 1,
-            ';' => return None,
-            _ => i += c.len_utf8(),
-        }
-    }
-    None
-}
-
-/// Each function with a body: name, body open, body close.
-fn fn_spans(code: &str) -> Vec<(String, usize, usize)> {
-    let mut out = Vec::new();
-    for kw in word_positions(code, "fn") {
-        let after = kw + "fn".len();
-        let name: String = code[after..]
-            .chars()
-            .skip_while(|c| c.is_whitespace())
-            .take_while(|c| is_ident(*c))
-            .collect();
-        if name.is_empty() {
-            continue; // A type such as `fn(u32) -> u32`.
-        }
-        let Some((open, close)) = block_after(code, after) else {
-            continue;
-        };
-        out.push((name, open, close));
-    }
-    out
-}
-
 /// The innermost function whose body holds `pos`.
-fn enclosing_fn(spans: &[(String, usize, usize)], pos: usize) -> Option<&str> {
+fn enclosing_fn(spans: &[FnSpan], pos: usize) -> Option<&str> {
     spans
         .iter()
-        .filter(|(_, open, close)| *open < pos && pos < *close)
-        .min_by_key(|(_, open, close)| close - open)
-        .map(|(name, _, _)| name.as_str())
+        .filter(|s| s.open < pos && pos < s.close)
+        .min_by_key(|s| s.close - s.open)
+        .map(|s| s.name.as_str())
 }
 
 fn is_double(rel: &str, call: &str, receiver: &str, function: Option<&str>) -> bool {

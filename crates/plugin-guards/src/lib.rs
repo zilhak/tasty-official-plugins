@@ -1,5 +1,6 @@
-//! Helpers shared by the source checks in `tests/`. The checks read the plugin crates of
-//! this repository; this crate builds nothing that ships.
+//! Helpers shared by the source checks in `tests/`, including the function span reader
+//! they use on masked Rust code. The checks read the plugin crates of this repository;
+//! this crate builds nothing that ships.
 
 use std::path::{Path, PathBuf};
 
@@ -43,5 +44,98 @@ pub fn plugin_crates() -> Vec<(String, PathBuf)> {
         }
     }
     out.sort();
+    out
+}
+
+/// Whether `c` can be part of a Rust identifier.
+pub fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn is_word_boundary(code: &str, pos: usize, word: &str) -> bool {
+    let before = code[..pos].chars().next_back();
+    let after = code[pos + word.len()..].chars().next();
+    !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+}
+
+fn word_positions(code: &str, word: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find(word) {
+        let pos = from + rel;
+        if is_word_boundary(code, pos, word) {
+            out.push(pos);
+        }
+        from = pos + word.len();
+    }
+    out
+}
+
+/// The byte position of the delimiter that closes the (), {}, or [] at `open`.
+pub fn matching_delim(code: &str, open: usize) -> Option<usize> {
+    let opener = code[open..].chars().next()?;
+    let closer = match opener {
+        '(' => ')',
+        '{' => '}',
+        '[' => ']',
+        _ => return None,
+    };
+    let mut depth = 0usize;
+    for (offset, c) in code[open..].char_indices() {
+        if c == opener {
+            depth += 1;
+        } else if c == closer {
+            depth -= 1;
+            if depth == 0 {
+                return Some(open + offset);
+            }
+        }
+    }
+    None
+}
+
+/// The first block at the same depth after `from`. The () and [] of the signature are
+/// skipped, and a `;` met first means a declaration without a body.
+fn block_after(code: &str, from: usize) -> Option<(usize, usize)> {
+    let mut i = from;
+    while i < code.len() {
+        let c = code[i..].chars().next()?;
+        match c {
+            '{' => return matching_delim(code, i).map(|end| (i, end)),
+            '(' | '[' => i = matching_delim(code, i)? + 1,
+            ';' => return None,
+            _ => i += c.len_utf8(),
+        }
+    }
+    None
+}
+
+/// A function with a body: its name and the byte positions of the body's braces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FnSpan {
+    pub name: String,
+    pub open: usize,
+    pub close: usize,
+}
+
+/// Each function with a body in `code`, a masked copy of a Rust source that keeps the
+/// byte positions of the text (the `code` of the tasty-doc-guards `Source`).
+pub fn fn_spans(code: &str) -> Vec<FnSpan> {
+    let mut out = Vec::new();
+    for kw in word_positions(code, "fn") {
+        let after = kw + "fn".len();
+        let name: String = code[after..]
+            .chars()
+            .skip_while(|c| c.is_whitespace())
+            .take_while(|c| is_ident(*c))
+            .collect();
+        if name.is_empty() {
+            continue; // A type such as `fn(u32) -> u32`.
+        }
+        let Some((open, close)) = block_after(code, after) else {
+            continue;
+        };
+        out.push(FnSpan { name, open, close });
+    }
     out
 }
