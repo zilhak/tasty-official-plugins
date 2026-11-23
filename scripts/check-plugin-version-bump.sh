@@ -596,6 +596,9 @@ pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
                     in_pkg && $0 ~ re { print NR; exit }')
             fi
             [ -n "$vline" ] || vline=$(printf '%s' "$out" | version_line_no)
+            # Lines are not parsed as TOML: inside a multi-line string a version line may be
+            # text, so such a manifest is compared whole.
+            case "$out" in *"'''"*|*'"""'*) vline="" ;; esac
             [ -n "$vline" ] && out=$(printf '%s' "$out" | sed "${vline}d")
             printf '%s' "$out" | cksum
             ;;
