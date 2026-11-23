@@ -1259,7 +1259,7 @@ fn todo_number_is_not_evaded_by_case() {
 #[test]
 fn todo_number_takes_the_slash_as_a_separator() {
     let cases: &[(&str, Option<&str>)] = &[
-        (fx!("(todo", "/6047 R2)"), Some(fx!("todo", "/6047"))),
+        (fx!("(todo", "/6047 and more)"), Some(fx!("todo", "/6047"))),
         (fx!("TODO", "/9175"), Some(fx!("TODO", "/9175"))),
         (fx!("x/todo", "//8213.md"), Some(fx!("todo", "//8213"))),
         ("TODO/notes in one list", None),
@@ -1284,9 +1284,9 @@ fn todo_number_catches_bracketed_numbers() {
         (fx!("TODO", "(7391 here"), None),
         (fx!("TODO", "(7391]"), None),
         ("TODO(someone): fix it later", None),
-        ("TODO(fixme)", None),
-        ("TODO(v2): drop the cache", None),
-        ("TODO(3rd)", None),
+        ("TODO(later)", None),
+        ("TODO(v9): keep the order", None),
+        ("TODO(2nd)", None),
         ("TODO(0.1.2)", None),
     ];
     for (line, want) in cases {
@@ -1363,7 +1363,7 @@ fn anchor_number_catches_numbers_in_anchors() {
     assert!(find_anchor_number(fx!("[link](x.md#a-TODO", "-7391-b)")).is_some());
     assert!(find_anchor_number(fx!("[link](x.md#a-todo", "--7391)")).is_some());
     assert_eq!(
-        find_anchor_number("[link](x.md#todo-conductor-notes)"),
+        find_anchor_number("[link](x.md#todo-conductor-guide)"),
         None
     );
     assert_eq!(find_anchor_number(fx!("[link](x.md#todo", "7391)")), None);
@@ -1541,8 +1541,11 @@ fn round_number_catches_two_or_more_digits() {
             assert_eq!(find_round_number(&no), None, "{no}");
         }
     }
-    assert_eq!(find_round_number("R1 and R2"), None);
-    assert_eq!(find_round_number("RGB12_FOO"), None);
+    for d in 0..=9 {
+        let one = format!("row R{d} only");
+        assert_eq!(find_round_number(&one), None, "{one}");
+    }
+    assert_eq!(find_round_number("ABR12_KEY"), None);
 }
 
 #[test]
@@ -2174,8 +2177,8 @@ fn the_inventory_reports_an_unlisted_bundle_beside_a_cache_marker_in_assets() {
     )
     .expect("write the marker");
     std::fs::write(assets.join("extra.min.js"), "").expect("write");
-    // The marker hides the untracked bundle from the Git list, so only the direct read
-    // of the folder reports it.
+    // The repository wide check leaves out untracked paths under a cache marker, so only
+    // the direct read of the folder reports the bundle.
     assert_eq!(
         bundle_inventory(repo.root()),
         Ok(BundleInventory {
