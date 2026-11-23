@@ -164,7 +164,9 @@ cleanup() {
     echo "the previous $(basename "$cur") may be partly left in $removing" >&2
   fi
   if [[ $locked -eq 1 ]]; then
-    rmdir "$lock" || failed="$failed, remove the lock $lock"
+    # Not rm -f: a lock that is already gone is reported. stdin is not a terminal, so rm
+    # never stops to ask.
+    { rm "$lock/owner" </dev/null && rmdir "$lock"; } || failed="$failed, remove the lock $lock"
   fi
   cd "$repo" || failed="$failed, leave the build copy"
   if [[ -n "$build_copy" ]]; then rm -rf "$build_copy" || failed="$failed, remove $build_copy"; fi
@@ -260,11 +262,18 @@ $wrong
 A version in $tasty that the requirements here do not accept leaves its patch unused."
 fi
 
-# One run at a time replaces the plugins in DIR. A run that finds the lock fails at
-# once; a lock left by a killed run is removed by hand.
+# One run at a time replaces the plugins in DIR. The lock is the folder
+# DIR/.dev-bundle.lock with the file owner in it. mkdir alone does not keep two runs
+# apart: some mkdir builds (uutils before 0.11.0, the default on Ubuntu 26.04) also
+# exit 0 for the run that lost a race to create the same folder. The owner file, made
+# with bash noclobber (an exclusive create), decides which run holds the lock. A run
+# that cannot create the folder or the owner file fails at once and leaves the path as
+# it found it, since what is there belongs to another run. A lock left by a killed run
+# is removed by hand. Runs exclude each other only where the file system of DIR
+# creates files exclusively, as local file systems do.
 lock="$out/.dev-bundle.lock"
-mkdir "$lock" 2>/dev/null \
-  || die "another dev-bundle.sh is writing $out, or a killed run left $lock; remove it if none runs"
+mkdir "$lock" 2>/dev/null && ( set -C; : >"$lock/owner" ) 2>/dev/null \
+  || die "cannot create the lock $lock: another dev-bundle.sh is writing $out, or a killed run left the lock; remove it if none runs"
 locked=1
 
 count=0
