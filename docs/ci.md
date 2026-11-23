@@ -126,9 +126,9 @@ The `--lib --bins` scope is the one tasty uses for its Windows and macOS unit te
 The `repo-gates` integration tests run the plugin version check, its fixup, the git
 hooks, and the output lock of `scripts/dev-bundle.sh` on fixture repositories. On macOS
 they run those shell scripts with the BSD tools (`sed`, `awk`, `comm`, `mktemp`, `mv`)
-and the bash on `PATH`, which Linux does not cover. Before them the job runs `cargo fetch --locked`, because the fixtures resolve with `cargo
---offline`, and installs `strip-cfg-test` as `plugin-version-check.yml` does. They do not
-run on Windows.
+and the bash on `PATH`, which Linux does not cover. Before them the job runs `cargo
+fetch --locked`, because the fixtures resolve with `cargo --offline`, and installs
+`strip-cfg-test` as `plugin-version-check.yml` does. They do not run on Windows.
 
 Clippy (`scripts/check.sh lint`) runs natively on Linux (`check` job, on whichever Linux
 runner takes it), `windows-x64`, and `macos-arm64` (`test` job). It does not run for
