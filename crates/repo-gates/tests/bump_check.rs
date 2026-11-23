@@ -2165,6 +2165,10 @@ fn a_tab_inside_a_workspace_dependency_subtable_line_does_not_hide_a_change() {
     }
 }
 
+/// Adds a line that is not read as an entry; gives the line, its changed form, and how the
+/// changed line is shown.
+type AddUnreadableLine = fn(&PinFixture) -> (String, String, String);
+
 /// A line that is not read as an entry still stops the check when only the part after a
 /// tab changed. One input per place that reports such a line: a quoted key in
 /// [workspace.dependencies], a quoted key in a `[workspace.dependencies.<name>]` table, a
@@ -2172,7 +2176,7 @@ fn a_tab_inside_a_workspace_dependency_subtable_line_does_not_hide_a_change() {
 /// [workspace.dependencies] once quotes are dropped.
 #[test]
 fn an_unreadable_workspace_dependency_line_changed_after_a_tab_is_undecidable() {
-    let cases: [(&str, fn(&PinFixture) -> (String, String, String)); 4] = [
+    let cases: [(&str, AddUnreadableLine); 4] = [
         ("a quoted key in the table", |f| {
             let line = "\"q\" = { version = \"1\",\tdefault-features = true }".to_string();
             f.edit_root(
