@@ -1659,6 +1659,29 @@ fn a_pin_move_of_a_root_crate_that_changes_only_its_version_line() {
     }
 }
 
+/// A line that only looks like the version line, inside a multi-line string, is content:
+/// with a multi-line string the manifest is compared whole.
+#[test]
+fn a_version_line_inside_a_multi_line_string_is_content() {
+    let manifest = "[package]\nname = \"ext\"\nedition = \"2021\"\ndescription = '''\n\
+                    version = \"2.1.0\"\n'''\nversion = \"1.0.0\"\n";
+    let f = PinFixture::new();
+    f.root_crate_source(manifest, &[]);
+    f.ext_write(
+        "Cargo.toml",
+        &manifest.replacen("version = \"2.1.0\"", "version = \"2.2.0\"", 1),
+    );
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.contains("changed: Cargo.toml")),
+        "{text}"
+    );
+}
+
 /// version.workspace = true in [package] takes the version of [workspace.package] in the
 /// same manifest: a change there is the inherited change, not content.
 #[test]
@@ -1754,6 +1777,39 @@ fn a_root_crate_resolves_a_helper_of_a_build_script_from_the_crate_being_judged(
     }
 }
 
+/// A file named build.rs that is not next to a package manifest is not a build script of
+/// its own package: its rerun-if-changed paths are read from the crate judged.
+#[test]
+fn a_build_rs_away_from_a_package_manifest_is_read_from_the_crate_being_judged() {
+    let f = PinFixture::new();
+    f.root_crate_source(
+        EXT_MANIFEST,
+        &[
+            ("crates/other/Cargo.toml", OTHER_MANIFEST),
+            ("crates/other/src/lib.rs", "pub fn o() {}\n"),
+            (
+                "crates/other/build.rs",
+                "#[path = \"support/build.rs\"]\nmod helper;\n\nfn main() {\n    helper::h();\n}\n",
+            ),
+            (
+                "crates/other/support/build.rs",
+                "pub fn h() {\n    println!(\"cargo:rerun-if-changed=../../data.txt\");\n}\n",
+            ),
+            ("data.txt", "1\n"),
+        ],
+    );
+    f.ext_write("data.txt", "2\n");
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains(
+            "ext reads a path above the source root (crates/other/support/build.rs: ../../data.txt)"
+        ),
+        "{text}"
+    );
+}
+
 /// rustfmt gets the edition of [package], or of [workspace.package] when [package] inherits
 /// it, not an edition of another table that comes first. `gen` is reserved in 2024, so the
 /// wrong edition makes a formatting change look like content.
@@ -1828,6 +1884,23 @@ fn a_pin_move_of_a_root_crate_that_changes_only_test_code_needs_no_bump() {
     f.move_ext_pin();
     let (code, text) = f.check_judged(&HEAD_RANGE);
     assert_eq!(code, 0, "{text}");
+
+    // The same with the library outside src/: the whole repository is scanned.
+    let f = PinFixture::new();
+    f.root_crate_source(
+        &format!("{EXT_MANIFEST}\n[lib]\npath = \"app/lib.rs\"\n"),
+        &[("app/lib.rs", &lib)],
+    );
+    f.ext_write(
+        "app/lib.rs",
+        &lib.replace(
+            "assert_eq!(super::e(), 1);",
+            "assert_eq!(super::e(), 1, \"e\");",
+        ),
+    );
+    f.move_ext_pin();
+    let (code, text) = f.check_judged(&HEAD_RANGE);
+    assert_eq!(code, 0, "app/lib.rs:\n{text}");
 }
 
 // ── root build inputs ────────────────────────────────────────────────────────
@@ -2081,6 +2154,7 @@ fn a_quoted_workspace_dependencies_table_is_read() {
     for header in [
         "[workspace.\"dependencies\"]",
         "[ \"workspace\" . dependencies ]",
+        "['workspace'.'dependencies']",
     ] {
         let f = PinFixture::new();
         f.edit_root("[workspace.dependencies]\n", &format!("{header}\n"));
@@ -2524,7 +2598,8 @@ fn a_rev_only_change_of_a_renamed_entry_is_not_an_entry_change() {
     f.move_pin(&t2);
     f.commit("move the pin");
 
-    let (_, text) = f.check(&HEAD_RANGE);
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
     assert!(
         !text.contains("Cargo.toml [workspace.dependencies] alias:"),
         "{text}"
