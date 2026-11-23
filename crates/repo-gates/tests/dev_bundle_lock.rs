@@ -3,7 +3,8 @@
 //! folder and bash noclobber makes the owner file, which decides the holder. These tests run
 //! a copy of the script in a synthetic repository with a stub cargo, so a run goes as far as
 //! the lock and then fails with "cargo reported no executable", which here means it took the
-//! lock. Nothing is built.
+//! lock. Nothing is built. One run uses a stub cargo that writes an executable, so it goes to
+//! the end and exits 0.
 //!
 //! A run is held after the lock by a grep in front of PATH: the script first calls grep after
 //! taking the lock. A run is held inside its release by an rmdir in front of PATH: the
@@ -36,6 +37,20 @@ const CLEANUP_FAILED: &str = "cleanup could not";
 const STUB_CHECK_SH: &str =
     "#!/usr/bin/env bash\ncase \"$1\" in list-bins) echo tasty-plugin-x ;; *) exit 2 ;; esac\n";
 const STUB_CARGO: &str = "#!/bin/sh\nexit 0\n";
+/// A cargo that builds; @EXE@ is the executable it writes. See `use_cargo_that_builds`.
+const BUILDING_CARGO: &str = r#"#!/bin/sh
+exe='@EXE@'
+mkdir -p "${exe%/*}"
+printf 'stub' > "$exe"
+chmod 755 "$exe"
+for a in "$@"; do
+  case "$a" in
+    --message-format=*)
+      printf '{"reason":"compiler-artifact","target":{"name":"tasty-plugin-x"},"executable":"%s"}\n' "$exe"
+      ;;
+  esac
+done
+"#;
 
 /// Names the bash that runs dev-bundle.sh, as an absolute path.
 const BASH_VAR: &str = "REPO_GATES_DEV_BUNDLE_BASH";
@@ -191,6 +206,18 @@ impl Fixture {
             ),
         )
         .expect("stub mkdir");
+    }
+
+    /// Puts a cargo in front of PATH that builds: it writes an executable for tasty-plugin-x
+    /// and, with a message format, prints the compiler-artifact message cargo would. A run
+    /// then goes to the end.
+    fn use_cargo_that_builds(&self) {
+        let exe = self.tmp.path().join("target/stub/tasty-plugin-x");
+        support::write_executable(
+            &self.tmp.path().join("bin/cargo"),
+            BUILDING_CARGO.replace("@EXE@", &exe.display().to_string()),
+        )
+        .expect("building cargo");
     }
 
     fn out(&self) -> PathBuf {
@@ -442,6 +469,22 @@ fn a_release_profile_run_removes_its_lock_when_it_ends() {
         .expect("run dev-bundle.sh");
     assert_passed_and_released(&f, &out);
     f.assert_out_untouched();
+}
+
+#[test]
+fn a_run_that_bundles_the_plugins_exits_0_and_removes_its_lock() {
+    let f = Fixture::new();
+    f.use_cargo_that_builds();
+    let out = f.run();
+    let err = stderr(&out);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("bundled 1 plugins into"), "{err}");
+    assert_eq!(f.out_names(), ["x"], "{err}");
+    assert_eq!(
+        describe(&f.out().join("x")),
+        "folder [tasty-plugin-x: file \"stub\", tasty-plugin.toml: file \"id = \\\"x\\\"\\n\"]",
+        "{err}"
+    );
 }
 
 #[test]
