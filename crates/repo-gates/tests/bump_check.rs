@@ -1612,6 +1612,34 @@ fn a_root_crate_reading_a_file_of_its_repository_is_not_outside_its_crate() {
     assert!(text.contains("changed: data.txt"), "{text}");
 }
 
+/// git archive leaves out an export-ignore file, but Cargo builds with it: its change is
+/// still a change.
+#[test]
+fn a_pin_move_that_changes_an_export_ignored_build_input_demands_a_bump() {
+    let f = PinFixture::new();
+    f.root_crate_source(
+        EXT_MANIFEST,
+        &[
+            (
+                "src/lib.rs",
+                &format!("{EXT_LIB}pub const D: &str = include_str!(\"../data.txt\");\n"),
+            ),
+            ("data.txt", "1\n"),
+            (".gitattributes", "data.txt export-ignore\n"),
+        ],
+    );
+    f.ext_write("data.txt", "2\n");
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.contains("changed: data.txt")),
+        "{text}"
+    );
+}
+
 /// The version line of the root manifest is left out as for a crate in a directory, also
 /// when [workspace.package] comes first with a version of its own.
 #[test]

@@ -648,6 +648,13 @@ EOF2
         fi
     done
     for f in "${diffs[@]}"; do
+        # git archive leaves out export-ignore paths that Cargo still builds with: a changed
+        # path that neither extracted copy has counts as changed.
+        if [ ! -e "$WORK/$k.old.raw/$f" ] && [ ! -L "$WORK/$k.old.raw/$f" ] \
+            && [ ! -e "$WORK/$k.new.raw/$f" ] && [ ! -L "$WORK/$k.new.raw/$f" ]; then
+            PIN_FILES="$PIN_FILES $f"
+            continue
+        fi
         a=$(pin_sum "$WORK/$k.old.raw" "$WORK/$k.old.cooked" "$f" "$dir" "$ed")
         b=$(pin_sum "$WORK/$k.new.raw" "$WORK/$k.new.cooked" "$f" "$dir" "$ed")
         [ "$a" = "$b" ] || PIN_FILES="$PIN_FILES $f"
