@@ -134,6 +134,9 @@ removing=""
 published_id=0
 lock=""
 locked=0
+# Set by the last line. bash 3.2 can run the EXIT trap with $? 0 after an
+# expansion error ends the script, so a run that ends with 0 before that line failed.
+finished=0
 
 # Each step runs even when one before it fails; the failed steps are listed and the
 # exit code stays non-zero.
@@ -190,6 +193,10 @@ cleanup() {
   if [[ -n "$failed" ]]; then
     echo "error: cleanup could not${failed#,}" >&2
     if [[ $rc -eq 0 ]]; then rc=1; fi
+  fi
+  if [[ $rc -eq 0 && $finished -ne 1 ]]; then
+    echo "error: dev-bundle.sh stopped before it finished" >&2
+    rc=1
   fi
   exit "$rc"
 }
@@ -368,3 +375,4 @@ done <<<"$bins"
 
 [[ $count -gt 0 ]] || die "no plugins bundled"
 echo "bundled $count plugins into $out ($PROFILE${TARGET:+, $TARGET}); nothing is signed" >&2
+finished=1
