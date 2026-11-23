@@ -259,18 +259,21 @@ the index.
   a number with the Korean ordinal suffix `번` before the TODO word, in any case; a
   numbered conductor ticket; a path from the local work folder into its TODO, plan, or
   conductor folders; a date joined to a word by hyphens; a TODO number in a Markdown
-  anchor; a mention of the local agent folders (a home path is allowed); upper case
+  anchor; a mention of the local agent folders, where the shorter name counts only with
+  its leading dot and is allowed right after a home path or near a home word, because a
+  user setting folder of that name sits in the home folder; upper case
   TODO in prose (not in Markdown, and not the task markers `TODO:` and
   `TODO(scope):`); a zero followed by one digit from 1 to 9 in round brackets; a plan
   coordinate of an upper case letter, a number, and two upper case letters joined by
   dots; and an upper case R with two or more digits outside an identifier. `.gitignore`
   may name the local folders, and the test file holds the shapes it describes; both are
-  listed with the patterns they may hold. In a Git checkout the files come from Git:
-  tracked paths wherever they sit, read from the index and from the work tree when it
-  differs, a tracked link as its target text, and untracked paths that Git does not
-  ignore. An
-  untracked path is left out when any part of it is one of the pruned names of this
-  check (build, dependency, editor and tool folders, and the local agent files and
+  listed with the patterns they may hold. In a Git checkout the files come from Git.
+  Every tracked path but a submodule entry is read from the index wherever it sits, a
+  tracked link as its target text there. A tracked regular file is also
+  read from the work tree when that copy differs and its path passes through no link.
+  Untracked regular files that Git does not ignore are read too; untracked links are
+  not. An untracked path is left out when any part of it is one of the pruned names of
+  this check (build, dependency, editor and tool folders, and the local agent files and
   folders) or when it sits under a folder marked as a build cache. Without Git the tree
   is walked and skips the same names, whether a file or a folder carries them, and the
   folders marked as build caches. Binary extensions and the vendored minified bundles of
