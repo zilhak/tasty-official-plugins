@@ -4,8 +4,9 @@ name: Release
 # tag and opens a draft pre-release, release-meta and package build the release
 # files on every platform as workflow artifacts, and publish uploads them to the
 # draft and publishes it as a pre-release, never as Latest. If create-release
-# fails, no Release is created; if a later job fails, the Release stays a draft.
-# Only promote.yml marks a Release as Latest, after a published Tasty release
+# fails, no Release is created; if a later job fails before the publish request,
+# the Release stays a draft. If the check after the publish request fails, the
+# Release stays published (see docs/ci.md#failures-and-reruns). Only promote.yml marks a Release as Latest, after a published Tasty release
 # bundles it. A manual run (workflow_dispatch) builds the same files as workflow
 # artifacts and creates no Release. The packages are not signed. See docs/ci.md.
 

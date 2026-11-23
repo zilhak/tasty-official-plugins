@@ -825,7 +825,8 @@ Instead, read the state, notes, and files of the Release and decide:
   files, so the tag does not count as released. Keep the published notes and files as
   they are; if the state is off, set it back to a pre-release only. Promotion refuses
   such a Release on its own (check 7 of `scripts/release-promote.sh` compares the files
-  and the marker block the same way), so it never becomes Latest. Report the mismatch and
+  with those the tag commit packages, and the marker block as `publish` does), so it
+  never becomes Latest. Report the mismatch and
   release the fix under the next patch tag.
 
 A rerun uses the workflow file of the tag commit. Runs of tags made before the
@@ -858,7 +859,9 @@ fake `gh`. In short, the Release must be a published pre-release of the tag comm
 two Tasty versions must be published Tasty releases with `min_tasty` not above
 `new_tasty`, the lock file at the `new_tasty` tag must pin this repository, tag, and
 commit with the same archive hashes, the current Latest must be older (or there is none),
-and the published files and marker block must still match what `publish` checked. Then
+and the published files must be exactly those the tag commit packages (its own plugin
+list and manifests decide the archive names), with lists, `release-meta.toml`, lock
+entries, and marker block that agree with them as `publish` checked. Then
 one `gh release edit` writes the notes, clears the pre-release flag, and marks the
 Release Latest, and the script checks that Latest is the tag.
 
@@ -875,8 +878,9 @@ Release Latest, and the script checks that Latest is the tag.
   on `main` before the first tag that uses them, and `promote.yml` also on `develop`.
   Otherwise a published pre-release has no way to Latest.
 - **Releases from before.** `v0.1.2` became Latest before this stage existed and stays
-  Latest until a newer Release is promoted. Promoting `v0.1.2`, `v0.1.1`, or `v0.1.0`
-  fails: they are not pre-releases and their notes have no pending line.
+  Latest until a newer Release is promoted. Promoting `v0.1.2` fails at the first
+  check: it is already Latest, and its notes do not hold the promoted lines. Promoting
+  `v0.1.1` or `v0.1.0` fails at the next one: they are not pre-releases.
 
 The supported minimum Tasty of a Release is, by default, the first Tasty release that
 bundles it: `min_tasty` equals `new_tasty`. That version passed tasty's lock file checks

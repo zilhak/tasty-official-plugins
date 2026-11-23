@@ -785,12 +785,13 @@ NOTES=""
 note() { NOTES="$NOTES
 [plugin-version] note: $*"; }
 
-# The released state: the tip of origin/main, written "<ref> (<sha8>)". main moves only for
-# releases and hotfixes, so its tip is the baseline. Neither tags nor the state of Releases
-# are read, so the result does not depend on which tags a clone fetched; the tip can be
-# ahead of what is published (between a tag push and its publish, and while a pre-release
-# waits for promotion). A local main is used only when origin/main does not exist: it is
-# rarely updated, so an old local main would pass versions that were already published.
+# The baseline of released versions: the tip of origin/main, written "<ref> (<sha8>)".
+# main moves only for releases and hotfixes, so its tip is the baseline. Neither tags nor
+# the state of Releases are read, so the result does not depend on which tags a clone
+# fetched; the tip can be ahead of what is published (between a tag push and its publish,
+# and while a pre-release waits for promotion). A local main is used only when origin/main
+# does not exist: it is rarely updated, so an old local main would pass versions that were
+# already published.
 release_base() {
     local ref=origin/main sha
     if ! sha=$(git rev-parse --verify --quiet "$ref^{commit}"); then
