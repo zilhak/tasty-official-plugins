@@ -219,10 +219,12 @@ The lock has these limits:
 
 - Runs keep each other out only when the file system of `DIR` creates files
   exclusively, as local file systems do.
-- An earlier version of `dev-bundle.sh`, which took the lock with `mkdir` alone, is kept
-  out only where `mkdir` fails for an existing folder. uutils `mkdir` before 0.11.0, the
-  default on Ubuntu 26.04, does not, so do not run an earlier version on the same `DIR`
-  there.
+- An earlier version of `dev-bundle.sh` took the lock with `mkdir` alone. It is refused
+  when it comes to a lock that is already held. But with uutils `mkdir` before 0.11.0,
+  the default on Ubuntu 26.04, the run that loses a race to create the lock folder also
+  exits 0, so when an earlier version and this one create the lock folder at the same
+  moment, the earlier version can go on without the `owner` file. Do not run an earlier
+  version on the same `DIR` there.
 
 Without `--tasty`, the plugins are built against the tasty commit that `Cargo.lock` pins,
 with `--locked`. With `--tasty`, every package that `Cargo.lock` takes from the tasty git

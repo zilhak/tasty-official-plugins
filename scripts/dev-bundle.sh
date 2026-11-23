@@ -289,9 +289,10 @@ fi
 # Limits:
 # - Runs exclude each other only where the file system of DIR creates files
 #   exclusively, as local file systems do.
-# - An earlier version of this script, which took the lock with mkdir alone, is kept
-#   out only where mkdir fails for an existing folder; uutils mkdir before 0.11.0 does
-#   not.
+# - An earlier version of this script took the lock with mkdir alone. It is refused at
+#   a lock that is already held, but with a mkdir that exits 0 for the run that lost the
+#   race (uutils before 0.11.0), an earlier version that creates the lock folder at the
+#   same moment as this one can go on without the owner file.
 # - A run that ends on a signal while it takes or releases the lock, or that makes the
 #   folder but cannot create the owner file, can leave the lock folder behind, or a
 #   DIR/.dev-bundle.lock.release.* folder. Remove it by hand when no other run is
