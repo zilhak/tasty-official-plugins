@@ -6,9 +6,14 @@
 //! lock. Nothing is built.
 //!
 //! A run is held after the lock by a grep in front of PATH: the script first calls grep after
-//! taking the lock. A mkdir in front of PATH plays a run that lost a race to create the lock
-//! folder, as uutils mkdir before 0.11.0 does: it finds the folder made by the other run and
-//! exits 0 all the same.
+//! taking the lock. A run is held inside its release by an rmdir in front of PATH: the
+//! release calls rmdir last. A mkdir in front of PATH plays a run that lost a race to create
+//! the lock folder, as uutils mkdir before 0.11.0 does: it finds the folder made by the other
+//! run and exits 0 all the same.
+//!
+//! The runs pass --profile release. Without a profile the script expands an empty array under
+//! set -u, which the bash 3.2 of macOS rejects before the lock is reached. That is a defect of
+//! the script outside the lock, so these tests step around it.
 
 #![cfg(unix)]
 
@@ -109,6 +114,14 @@ impl Fixture {
             ),
         )
         .expect("holding grep");
+        support::write_executable(
+            &t.join("bin/rmdir"),
+            format!(
+                "#!/bin/sh\nif [ -n \"$RMDIR_HOLD\" ]; then\n  : > \"$RMDIR_HOLD/in\"\n  while [ ! -e \"$RMDIR_HOLD/go\" ]; do sleep 0.05; done\nfi\nexec \"{}\" \"$@\"\n",
+                real_tool("rmdir").display()
+            ),
+        )
+        .expect("holding rmdir");
         fs::create_dir_all(t.join("out/x")).expect("out dir");
         fs::write(t.join("out/x/keep"), "kept\n").expect("keep");
         Fixture { tmp }
@@ -116,13 +129,15 @@ impl Fixture {
 
     /// Puts the mkdir of a run that lost the race in front of PATH. A mkdir of one folder
     /// without options makes the folder as the other run would have, and with
-    /// STUB_MKDIR_MODE=owned also that run's owner file, then exits 0.
+    /// STUB_MKDIR_MODE=owned also that run's owner file, then exits 0. With
+    /// STUB_MKDIR_MODE=lost it makes nothing and exits 0: the other run made the folder
+    /// earlier, and this run reaches its owner file only now.
     fn use_mkdir_that_lost_the_race(&self) {
         let real = real_tool("mkdir");
         support::write_executable(
             &self.tmp.path().join("bin/mkdir"),
             format!(
-                "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"${{1#-}}\" = \"$1\" ] && [ ! -e \"$1\" ] && [ ! -h \"$1\" ]; then\n  \"{real}\" \"$1\" || exit 1\n  if [ \"$STUB_MKDIR_MODE\" = owned ]; then printf 'other run\\n' > \"$1/owner\"; fi\n  exit 0\nfi\nexec \"{real}\" \"$@\"\n",
+                "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"${{1#-}}\" = \"$1\" ] && [ \"$STUB_MKDIR_MODE\" = lost ]; then\n  exit 0\nfi\nif [ \"$#\" -eq 1 ] && [ \"${{1#-}}\" = \"$1\" ] && [ ! -e \"$1\" ] && [ ! -h \"$1\" ]; then\n  \"{real}\" \"$1\" || exit 1\n  if [ \"$STUB_MKDIR_MODE\" = owned ]; then printf 'other run\\n' > \"$1/owner\"; fi\n  exit 0\nfi\nexec \"{real}\" \"$@\"\n",
                 real = real.display()
             ),
         )
@@ -143,10 +158,13 @@ impl Fixture {
         cmd.arg(t.join("repo/scripts/dev-bundle.sh"))
             .arg("--out")
             .arg(self.out())
+            // See the module comment: a profile keeps the bash 3.2 of macOS going.
+            .args(["--profile", "release"])
             .current_dir(t)
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("HOLD_DIR")
             .env_remove("STUB_MKDIR_MODE")
+            .env_remove("RMDIR_HOLD")
             .env(
                 "PATH",
                 format!(
@@ -188,6 +206,37 @@ impl Fixture {
         };
         wait_for(&dir.join("held"));
         held
+    }
+
+    /// Starts a run and returns once its release has moved the lock and reached rmdir. It
+    /// stays there until the returned value is released or dropped.
+    fn hold_in_release(&self) -> Held {
+        let dir = self.tmp.path().join("release-hold");
+        fs::create_dir_all(&dir).expect("hold dir");
+        let child = self
+            .command()
+            .env("RMDIR_HOLD", &dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start dev-bundle.sh");
+        let held = Held {
+            child: Some(child),
+            go: dir.join("go"),
+        };
+        wait_for(&dir.join("in"));
+        held
+    }
+
+    /// The names in DIR: after a run ends, only the plugin folder may be there, not the lock
+    /// or a folder it was moved to.
+    fn out_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(self.out())
+            .expect("read out")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
     }
 
     fn assert_out_untouched(&self) {
@@ -239,7 +288,7 @@ fn assert_passed_and_released(f: &Fixture, out: &Output) {
     assert!(!out.status.success(), "{err}");
     assert!(err.contains(PASSED), "the run did not take the lock: {err}");
     assert!(!err.contains(CLEANUP_FAILED), "{err}");
-    assert_eq!(describe(&f.lock()), "missing", "{err}");
+    assert_eq!(f.out_names(), ["x"], "{err}");
 }
 
 // ── A lock that is there ────────────────────────────────────────────────────
@@ -347,4 +396,35 @@ fn a_run_whose_owner_file_vanished_reports_the_lock() {
     assert!(err.contains(PASSED), "{err}");
     assert!(err.contains(CLEANUP_FAILED), "{err}");
     assert!(err.contains(RELEASE_FAILED), "{err}");
+}
+
+#[test]
+fn a_run_about_to_claim_the_folder_being_released_fails_and_leaves_nothing() {
+    let f = Fixture::new();
+    f.use_mkdir_that_lost_the_race();
+    let first = f.hold_in_release();
+    // The second run's mkdir lost the race to the first run long ago; it reaches its owner
+    // file while the first run releases the lock.
+    let second = f.run_with_mkdir_mode("lost");
+    assert_refused(&second);
+    let first = first.release();
+    assert_passed_and_released(&f, &first);
+    f.assert_out_untouched();
+}
+
+#[test]
+fn a_release_does_not_remove_a_lock_folder_made_after_it() {
+    let f = Fixture::new();
+    let first = f.hold_in_release();
+    // Plays the runs that come next: one that took over whatever is at the lock path and
+    // released it, then one that has just made a new lock folder and not yet its owner file.
+    let lock = f.lock();
+    if lock.exists() {
+        fs::remove_dir_all(&lock).expect("the next run's release");
+    }
+    fs::create_dir(&lock).expect("a new lock folder");
+    let first = first.release();
+    let err = stderr(&first);
+    assert!(err.contains(PASSED), "{err}");
+    assert_eq!(describe(&lock), "folder []", "{err}");
 }
