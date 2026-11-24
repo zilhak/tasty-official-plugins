@@ -2147,6 +2147,16 @@ fn a_multi_line_string_inside_an_inherited_section_is_undecidable() {
         &f.check(&HEAD_RANGE),
         "a multi-line string in the inherited sections of the root Cargo.toml",
     );
+    // The text on the line that opens the string is part of it, blanks at its end too.
+    let root = "\n[workspace.package]\nauthors = [\"one\"]\n\
+                description = \"\"\"hello\nworld\n\"\"\"\n";
+    for (from, to) in [("hello\n", "hello  \n"), ("world", "earth")] {
+        let f = PinFixture::inherited_move(root, AUTHORS, from, to);
+        assert_undecidable_with(
+            &f.check(&HEAD_RANGE),
+            "a multi-line string in the inherited sections of the root Cargo.toml",
+        );
+    }
 }
 
 /// A quoted workspace key inherits as a bare one does; a [lints] table, also written with a

@@ -1212,7 +1212,9 @@ toml_lines_body() {
                 if (mq == "" && depth <= 0) { emit(pending); pending = ""; depth = 0 }
                 next
             }
-            sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+            # Blanks at the end of a line that leaves a multi-line string open are text of it.
+            sub(/^[[:space:]]+/, "", line)
+            if (mq == "") sub(/[[:space:]]+$/, "", line)
             if (line == "") next
             if (pending != "") {
                 pending = pending " " line
