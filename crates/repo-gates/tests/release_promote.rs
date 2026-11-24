@@ -186,28 +186,45 @@ fn tree_with(manifest: impl Fn(usize, &str) -> String) -> Tree {
     git(d, &["add", "-A"]);
     git(d, &["commit", "--quiet", "-m", "tag commit"]);
     let commit = git(d, &["rev-parse", "HEAD"]);
-    Tree {
+    let tree = Tree {
         dir,
         commit,
         plugins,
         crates,
-    }
+    };
+    // The worlds do not lean on the tags the script lists: each run starts from an empty
+    // list, and the list tests set their own.
+    list_unvalued(&tree, &[]);
+    tree
 }
 
-/// Lists `entries` ("<tag> <commit>") in UNVALUED_TAGS of the script copy that the runs
-/// use. The tag commit is made already, so its sha stays.
+/// Sets UNVALUED_TAGS of the script copy that the runs use to `entries` ("<tag>
+/// <commit>"), whatever the script lists, on one line or over several up to a line `)`.
+/// The tag commit is made already, so its sha stays.
 fn list_unvalued(tree: &Tree, entries: &[String]) {
     let path = tree.dir.path().join("scripts/release-promote.sh");
     let script = std::fs::read_to_string(&path).expect("read script copy");
-    let empty = "\nUNVALUED_TAGS=()\n";
-    assert_eq!(
-        script.matches(empty).count(),
-        1,
-        "one empty UNVALUED_TAGS line"
-    );
+    let lines: Vec<&str> = script.lines().collect();
+    let starts: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].starts_with("UNVALUED_TAGS=("))
+        .collect();
+    assert_eq!(starts.len(), 1, "one UNVALUED_TAGS assignment");
+    let start = starts[0];
+    let end = if lines[start].trim_end().ends_with(')') {
+        start
+    } else {
+        start
+            + lines[start..]
+                .iter()
+                .position(|l| l.trim() == ")")
+                .expect("the line that closes UNVALUED_TAGS")
+    };
     let list: Vec<String> = entries.iter().map(|e| format!("\"{e}\"")).collect();
-    let listed = format!("\nUNVALUED_TAGS=({})\n", list.join(" "));
-    std::fs::write(&path, script.replace(empty, &listed)).expect("write script copy");
+    let listed = format!("UNVALUED_TAGS=({})", list.join(" "));
+    let mut out: Vec<&str> = lines[..start].to_vec();
+    out.push(&listed);
+    out.extend_from_slice(&lines[end + 1..]);
+    std::fs::write(&path, out.join("\n") + "\n").expect("write script copy");
 }
 
 /// The GitHub state the fake gh shows. `World::good()` passes every check.
