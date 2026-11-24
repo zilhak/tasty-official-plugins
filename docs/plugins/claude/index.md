@@ -614,7 +614,7 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 
 | 조건 | 왜 |
 |---|---|
-| 누적 출력의 해시가 기준 시간 동안 같음 | 이번 턴의 마지막 출력 4 KiB에 오류 문구가 있으면 30초, 없으면 설정 `no_output_notice_secs`(기본 600초). 비교 대상은 스캐너가 보관한 크기 제한 안의 누적 텍스트이며 화면 전체나 프로세스 진행 상태가 아니다. 재그리기 출력은 출력 변화로 세지 않는다(아래 "재그리기 출력"). 호스트의 `CHILD_OUTPUT_SILENCE`(120초)와 별개의 값이다. 그래서 `tasty claude children`이 이 알림보다 먼저 `stale`을 보여 줄 수 있다. 호스트의 자식 출력 침묵도 재그리기 출력으로 끝나지 않으므로([적용이 일으킨 출력](https://github.com/zilhak/tasty/blob/develop/docs/design/policies/render-on-draw.md#적용이-일으킨-출력)), 응답에 출처 정보가 있으면 재그리기만 온 동안 두 조용한 구간이 함께 이어진다 |
+| 기준 시간 동안 출력 변화가 없음 | 기준 시간은 오류 직후면 30초, 아니면 설정 `no_output_notice_secs`(기본 600초)다. 출력 변화는 스캐너가 보관한 크기 제한 안의 누적 텍스트로 보며 화면 전체나 프로세스 진행 상태가 아니다. 재그리기 출력은 출력 변화로 세지 않는다. 정확한 판정은 `error_scan.rs`의 `ErrorScanner::track_output`이 정본이다(아래 "재그리기 출력"). 호스트의 `CHILD_OUTPUT_SILENCE`(120초)와 별개의 값이다. 그래서 `tasty claude children`이 이 알림보다 먼저 `stale`을 보여 줄 수 있다. 호스트의 자식 출력 침묵도 재그리기 출력으로 끝나지 않으므로([적용이 일으킨 출력](https://github.com/zilhak/tasty/blob/develop/docs/design/policies/render-on-draw.md#적용이-일으킨-출력)), 응답에 출처 정보가 있으면 재그리기만 온 동안 두 조용한 구간이 함께 이어진다 |
 | `terminal.state`가 `active` 또는 `stale` | `idle`·`needs_input`·`exited`는 별도 상태 훅이 다루므로 제외한다. 그 훅이나 알림이 실제 전달됐음을 확인하는 조건은 아니다. `stale`은 `confidence`와 무관하게 포함한다. 대기가 아닌 오류 없는 정지가 `active`가 아닐 때(`stale`)는 훅을 그대로 발화하되, 그 자식에 idle 체크를 걸어 둔 부모와 그 조용한 구간에 idle 줄을 이미 받은 부모에게는 줄을 쓰지 않는다. 그 조용함은 그 부모의 idle 체크가 알리므로 같은 조용함을 두 알림이 따로 알리지 않는다. 체크가 없는 부모는 지금처럼 정지 줄을 받는다. `stale`은 `active`처럼 발화를 허용하는 상태라 아래의 조회 멈춤 대상이 아니다. 발화하면 그 구간을 알린 것으로 기록해 다시 묻지 않고, 발화 요청이 실패하면 다음 회차에 다시 조회한다(`error_scan.rs`의 `maybe_notify_stall`·`fire_stall`) |
 
 오류 없는 기준은 플러그인 설정 `no_output_notice_secs`(`plugin_settings."com.tasty.claude".no_output_notice_secs`)로 정한다. 설정 › Plugins › Claude Code의 "Seconds without child output before notifying the parent"(`claude.settings.no_output_notice_secs`) 항목이다. 상태가 `active`·`stale`인 자식의 오류 없는 정지와 백그라운드 작업 대기에 쓴다. `stale`인 오류 없는 정지는 위처럼 idle 체크를 건 부모에게만 쓰지 않는다. 설정 키·범위·저장 값은 0.3.6 전과 같으며 옮길 것은 없다. 기본 600초, 범위 60~86400초다. 설정 파일을 직접 고친 값도 코드에서 이 범위로 조정하고, 숫자가 아니면 기본값을 쓴다. 끄는 값은 없다. 설정 변경 이벤트가 없어 스캐너가 30초 간격으로 다시 읽으므로 재시작 없이 반영된다. 조회에 실패하면 마지막 값을 유지한다. 오류 직후 30초와 재알림 간격 5분은 설정 대상이 아니다.
@@ -623,10 +623,7 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 
 **재그리기 출력.** Tasty는 OS에 터미널 크기를 적용한 뒤(숨은 터미널이 보이게 될 때, 보이는 창의 크기 변경, Windows 절전 복귀의 깨우기 통지) 정해진 시간 구간 안에 들어온 출력을 재그리기로 분류한다. 응답에 `text_origins`를 실어 `text`의 각 부분이 일반 출력인지 재그리기인지 알린다([`read_since_scan_mark`](https://github.com/zilhak/tasty/blob/develop/docs/reference/api.md), [적용이 일으킨 출력](https://github.com/zilhak/tasty/blob/develop/docs/design/policies/render-on-draw.md#적용이-일으킨-출력), [출력 스캐너 전용 커서](https://github.com/zilhak/tasty/blob/develop/docs/features/terminal-output/index.md#출력-스캐너-전용-커서)). 스캐너는 이 분류를 그대로 따르고 재그리기를 스스로 추정하지 않는다.
 
-- 정지 시계는 재그리기를 뺀 출력이 누적 출력을 바꿀 때만 다시 센다. 재그리기만 온 회차는 조용한 구간, 보낸 알림과 `claude-stall-notice` meta, 기준 선택, 상태 조회 멈춤을 그대로 둔다.
-- 30초 기준에는 재그리기 텍스트를 넣지 않는다. 응답이 표시한 끊긴 자리나 응답 사이의 단절(응답 유실, `stream` 바뀜)을 가로지르는 오류 문구도 세지 않는다.
-- `claude-error` 이벤트는 재그리기를 포함한 누적 창 전체를 본다. 재그리기 화면에도 실제 오류 줄이 있을 수 있기 때문이다. 알림 문구는 발화 직전 화면으로 고르므로, 재그리기 화면에 예전 오류 줄이 있으면 기준 시간은 설정값이고 문구는 오류 뒤 정지(error)다.
-- 정확한 판정은 `error_scan.rs`의 `TextOrigins`·`RecentOutput`·`ErrorScanner::track_output`과 시험 `error_scan/origin_tests.rs`가 정본이다.
+재그리기만 온 회차는 정지 시계를 다시 세지 않고, 조용한 구간과 보낸 알림(`claude-stall-notice` meta), 이미 고른 기준 시간, 상태 조회 멈춤을 그대로 둔다. 30초 기준에는 재그리기 텍스트를 넣지 않고, 재그리기나 응답 사이의 단절로 끊긴 오류 문구도 세지 않는다. `claude-error` 이벤트는 재그리기 화면에도 실제 오류 줄이 있을 수 있어 재그리기를 포함한 누적 창 전체를 본다. 알림 문구는 발화 직전 화면으로 고르므로 재그리기 화면의 예전 오류 줄은 문구를 오류 뒤 정지(error)로 만들 수 있지만, 기준 시간은 재그리기로 바뀌지 않는다. 정확한 판정은 `error_scan.rs`의 `TextOrigins`·`RecentOutput`·`ErrorScanner::track_output`과 시험 `error_scan/origin_tests.rs`가 정본이다.
 
 효과는 응답에 `text_origins`를 싣는 Tasty와 이 필드를 읽는 claude 플러그인이 함께 있을 때 난다. 이 필드가 없는 응답(필드를 싣지 않는 Tasty, attach mirror, 호스트가 출처 정보를 뺀 응답)은 지금처럼 텍스트 전체를 일반 출력으로 센다. 원격 자식의 정지 스캐너는 실행 서버의 claude 플러그인이 그 서버의 터미널을 읽으므로, 실행 서버의 Tasty와 플러그인이 둘 다 이 조건을 갖춰야 한다.
 
