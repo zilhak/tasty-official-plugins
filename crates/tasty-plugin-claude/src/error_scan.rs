@@ -591,13 +591,14 @@ impl RecentOutput {
         }
     }
 
-    /// 앞에서 잘라 [`RECENT_ERROR_BYTES`] 이하로 줄인다. 잘라 낸 출력은 단어 경계 판정에도 쓰지 않는다.
+    /// 앞에서 잘라 [`RECENT_ERROR_BYTES`] 이하로 줄인다. 잘라 낸 뒤의 맨 앞은 문자열의 시작으로 판정하므로, 잘라 낸
+    /// 출력은 물론 절단점에 걸린 끊긴 자리의 빠진 본문도 단어 경계 판정에 쓰지 않는다.
     fn trim(&mut self) {
         let before = self.text.len();
         trim_window(&mut self.text, RECENT_ERROR_BYTES);
         let cut = before - self.text.len();
         if cut > 0 {
-            self.breaks.retain(|b| b.at >= cut);
+            self.breaks.retain(|b| b.at > cut);
             for b in &mut self.breaks {
                 b.at -= cut;
             }

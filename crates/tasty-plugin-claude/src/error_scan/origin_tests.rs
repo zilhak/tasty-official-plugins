@@ -477,6 +477,39 @@ fn the_front_of_the_recent_output_is_a_string_start_as_before() {
     );
 }
 
+/// 4 KiB 절단점이 재그리기 자리와 겹쳐도 창의 맨 앞은 문자열의 시작이다. 잘린 앞 출력 바로 뒤의 재그리기 문자를
+/// 맨 앞 문구의 왼쪽 경계로 쓰지 않는다.
+#[test]
+fn a_front_cut_at_a_redraw_break_is_a_string_start() {
+    let tail = format!("API Error{}", ".".repeat(4087));
+    assert_eq!(1 + tail.len(), RECENT_ERROR_BYTES + 1);
+    let text = format!("qx{tail}");
+    assert!(
+        error_threshold_after([with_origins(
+            &text,
+            &[
+                (0, 1, "normal"),
+                (1, 2, "redraw"),
+                (2, text.len(), "normal")
+            ],
+            &[],
+        )]),
+        "한 응답"
+    );
+    let mut r = Reader::new();
+    assert!(
+        error_threshold_after([
+            r.next(with_origins(
+                "qx",
+                &[(0, 1, "normal"), (1, 2, "redraw")],
+                &[]
+            )),
+            r.next(plain(&tail)),
+        ]),
+        "마지막 일반 부분이 출처 생략 응답으로 따로 옴"
+    );
+}
+
 // ── stream 바뀜·응답 유실·호출 실패 ───────────────────────────────────
 
 #[test]
