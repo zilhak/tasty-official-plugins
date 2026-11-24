@@ -1,6 +1,7 @@
 //! Checks that the plugin crates are the workspace members the build list
 //! names, that every tasty crate comes from one pinned tasty commit, that
-//! each plugin manifest version matches its crate version, and that each
+//! each plugin manifest version matches its crate version, that every plugin
+//! manifest requires the same minimum Tasty, and that each
 //! plugin's PLUGIN_ID constant matches its manifest id, and that no package comes
 //! from a path outside the repository or from a path [patch] in the committed
 //! manifest and cargo config, which a clean clone cannot build.
@@ -306,6 +307,78 @@ fn plugin_manifest_versions_match_crate_versions() {
         checked += 1;
     }
     assert_eq!(checked, 8, "expected eight plugin manifests");
+}
+
+/// The value of a line `min_tasty_version = "<value>"` with only spaces after it, the one
+/// shape check 8 of scripts/release-promote.sh reads.
+fn plain_min_tasty_line(line: &str) -> Option<&str> {
+    let value = line
+        .trim_end()
+        .strip_prefix("min_tasty_version = \"")?
+        .strip_suffix('"')?;
+    (!value.contains('"')).then_some(value)
+}
+
+/// Every plugin manifest requires the same minimum Tasty. The value sits at top level on
+/// one plain line, the shape promotion reads, so a manifest that promotion would refuse
+/// fails here before it is tagged. tasty's parser reads the same value, and its
+/// validate() judges the format as the host does.
+#[test]
+fn plugin_manifests_require_the_same_minimum_tasty() {
+    let crates = workspace_root().join("crates");
+    let mut values = BTreeMap::new();
+    for plugin in script_plugins() {
+        let dir = crates.join(&plugin);
+        let path = dir.join("tasty-plugin.toml");
+        if !path.exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{plugin}: read tasty-plugin.toml: {e}"));
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|line| line.contains("min_tasty_version"))
+            .collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "{plugin}: min_tasty_version must be on exactly one line: {lines:?}"
+        );
+        let line_value = plain_min_tasty_line(lines[0]).unwrap_or_else(|| {
+            panic!(
+                "{plugin}: the line must be min_tasty_version = \"X.Y.Z\" with nothing after it: {:?}",
+                lines[0]
+            )
+        });
+        // A key inside a table such as [entry] is not the top-level key the host reads.
+        let raw: toml::Table = toml::from_str(&text)
+            .unwrap_or_else(|e| panic!("{plugin}: parse tasty-plugin.toml: {e}"));
+        let top = raw
+            .get("min_tasty_version")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("{plugin}: no top-level min_tasty_version string"));
+        assert_eq!(
+            top, line_value,
+            "{plugin}: the min_tasty_version line is not the top-level value"
+        );
+        let manifest = Manifest::read(&dir).unwrap_or_else(|e| panic!("{plugin}: {e:#}"));
+        manifest
+            .validate()
+            .unwrap_or_else(|e| panic!("{plugin}: invalid manifest: {e:#}"));
+        assert_eq!(
+            manifest.min_tasty_version.as_deref(),
+            Some(top),
+            "{plugin}: tasty's parser reads another min_tasty_version"
+        );
+        values.insert(plugin, top.to_string());
+    }
+    assert_eq!(values.len(), 8, "expected eight plugin manifests");
+    let distinct: BTreeSet<&String> = values.values().collect();
+    assert_eq!(
+        distinct.len(),
+        1,
+        "the plugin manifests require different minimum Tasty versions: {values:?}"
+    );
 }
 
 /// Crates whose types the egui-mesh wire carries as raw bytes between tasty and a

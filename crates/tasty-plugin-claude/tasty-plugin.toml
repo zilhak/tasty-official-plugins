@@ -1,10 +1,11 @@
 manifest_version = 1
 id = "com.tasty.claude"
 name = "Claude Code"
-version = "0.3.9"
+version = "0.3.10"
 description = "Claude Code CLI integration for Tasty"
 api_version = "1"
 lang_dir = "lang"
+min_tasty_version = "0.14.1"
 
 [entry]
 type = "process"

@@ -30,7 +30,9 @@ target it, and a manual workflow run without `--ref` runs on it.
    eight plugins. By default it is the Tasty release that will first bundle this
    Release, as the tasty maintainers name it; under the older-release exception it is
    that older release ([Minimum Tasty version](ci.md#minimum-tasty-version)). Every
-   Release takes this step, a hotfix included.
+   Release takes this step, a hotfix included. Do not make a new tag whose manifests
+   have no value: the only such tags are the ones `UNVALUED_TAGS` in
+   `scripts/release-promote.sh` lists.
 2. Move `release` to a commit chosen from `develop`. If `release` is an ancestor of that
    commit, use `git merge --ff-only <commit>`. Otherwise (a release fix is not yet on
    `develop`) merge it with a merge commit.

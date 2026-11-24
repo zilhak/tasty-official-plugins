@@ -1,10 +1,11 @@
 manifest_version = 1
 id = "com.tasty.clipboard-viewer"
 name = "Clipboard Viewer"
-version = "0.2.5"
+version = "0.2.6"
 description = "Read-only viewer of the current system clipboard"
 api_version = "1"
 lang_dir = "lang"
+min_tasty_version = "0.14.1"
 
 [entry]
 type = "process"

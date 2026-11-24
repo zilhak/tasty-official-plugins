@@ -72,9 +72,14 @@ TASTY_REPO=zilhak/tasty
 # The platforms of a release, as PLATFORMS in release.yml.
 PLATFORMS=(windows-x64 windows-arm64 macos-arm64 linux-x64 linux-arm64)
 # The tags whose manifests have no min_tasty_version, as "<tag> <peeled commit>"; check 8
-# skips them. Empty while no manifest carries the key. Keep it on one line, or one entry
-# per line with ")" alone on the last line: the promotion tests rewrite it in those forms.
-UNVALUED_TAGS=()
+# skips them. These are all the v* tags made before the manifests carried the key; no tag
+# is added after that. Keep it on one line, or one entry per line with ")" alone on the
+# last line: the promotion tests rewrite it in those forms.
+UNVALUED_TAGS=(
+  "v0.1.0 ba234e6e4bc3a7789517ce38cc22a7341f8719e9"
+  "v0.1.1 92385b5a08e6b34cb109bdb781b7f92905a8c395"
+  "v0.1.2 7dc7ec7d8ff23700a9da8944fa161744c43b6b9b"
+)
 
 say() {
   if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then

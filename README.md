@@ -22,7 +22,9 @@ and a TSV list per platform, and `release-meta.toml`. The tag is `v` + the versi
 `VERSION`. The packages are not signed. A Release becomes Latest only after a published
 Tasty release bundles it; then its notes say which Tasty it needs (`Requires Tasty`).
 Until then the notes say `Requires Tasty: pending`, and installing its files by hand
-into a released Tasty may fail. See [docs/ci.md](docs/ci.md#releases).
+into a released Tasty may fail. The plugin manifests name the same Tasty release as
+`min_tasty_version`, and a Tasty release that knows this key refuses a plugin that needs
+a newer Tasty. See [docs/ci.md](docs/ci.md#releases).
 
 ## License
 
