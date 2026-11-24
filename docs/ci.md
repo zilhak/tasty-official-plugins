@@ -944,13 +944,15 @@ top-level key `min_tasty_version`. tasty defines the key and how a host judges i
 a Tasty release that knows the key refuses a plugin that requires a newer Tasty, and
 releases up to v0.14.0 ignore it.
 
-- **Value.** The first Tasty release that will bundle the Release, the version promotion
-  writes as `min_tasty`. All eight manifests carry the same value: a Release builds them
-  from one tasty rev and its notes have one `Requires Tasty` line. The value changes with
-  every Release. It goes in after the tasty maintainers have fixed that release number
-  and before the tag, in the step of [Promoting to release](branching.md#promoting-to-release)
-  that hotfixes share; a guessed number would stop either tasty's release build (a value
-  above the bundling version) or the promotion (a value other than `min_tasty`).
+- **Value.** The supported minimum Tasty that promotion will write as `min_tasty`: by
+  default the first Tasty release that will bundle the Release, or an older release
+  under the exception at the end of [Promotion](#promotion), chosen before the tag. All
+  eight manifests carry the same value: a Release builds them from one tasty rev and its
+  notes have one `Requires Tasty` line. The value changes with every Release. It goes in
+  after the tasty maintainers have fixed the release number and before the tag, in the
+  step of [Promoting to release](branching.md#promoting-to-release) that hotfixes share.
+  A guessed number above the version of the Tasty release that bundles the tag stops
+  tasty's release build when it fetches the plugins.
 - **Format.** `crates/plugin-pin-check/tests/pin.rs` reads the eight manifests with
   tasty's parser (`Manifest::read` and `validate`), so with a pinned tasty rev that knows
   the key the format of the value is judged by the host's own code. Promotion checks only
@@ -964,12 +966,18 @@ releases up to v0.14.0 ignore it.
 - **Limit.** Check 8 catches a value left from the previous Release only when `min_tasty`
   is the right new value: a stale value promoted with the same stale `min_tasty` passes.
   The update step before each tag is what prevents it.
-- **A different release number.** If Tasty is released under another number than the
-  manifests carry and the tag is not yet bundled by a published Tasty, take the new number
-  from the tasty maintainers, put it into the eight manifests, bump the eight plugins and
-  `VERSION`, and release a new tag for tasty to pin. If a Tasty release under the other
-  number already bundles the tag, promotion refuses it and it stays a pre-release; the
-  fixed tag then takes the number of the next Tasty release, by the same steps.
+- **A different release number.** This is about the default value. If Tasty is
+  released under another number than the manifests carry and no published Tasty bundles
+  the tag yet, take the new number from the tasty maintainers, put it into the eight
+  manifests, bump the eight plugins and `VERSION`, and release a new tag for tasty to
+  pin. If a published Tasty already bundles the tag, the script still promotes it only
+  with a `min_tasty` equal to the manifest value, among its other checks (its head
+  comment is the reference). Such a value is the default only if it is the first
+  bundling release; otherwise it is an older release, which the exception in
+  [Promotion](#promotion) allows only after the same verification on it, and a value
+  that is no published Tasty release cannot be promoted at all. When neither holds, the
+  tag stays a pre-release, and the fixed tag takes the number of the next Tasty release
+  by the same steps.
 
 ### release-meta.toml
 
