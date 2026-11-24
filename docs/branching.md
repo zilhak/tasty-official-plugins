@@ -26,10 +26,11 @@ target it, and a manual workflow run without `--ref` runs on it.
 ## Promoting to release
 
 1. Before the move, on `develop`: set `min_tasty_version` in the eight plugin manifests
-   to the Tasty release that will first bundle this Release, as the tasty maintainers
-   name it, and bump the patch version of the eight plugins
-   ([Minimum Tasty version](ci.md#minimum-tasty-version)). Every Release takes this
-   step, a hotfix included.
+   to the supported minimum Tasty of this Release, and bump the patch version of the
+   eight plugins. By default it is the Tasty release that will first bundle this
+   Release, as the tasty maintainers name it; under the older-release exception it is
+   that older release ([Minimum Tasty version](ci.md#minimum-tasty-version)). Every
+   Release takes this step, a hotfix included.
 2. Move `release` to a commit chosen from `develop`. If `release` is an ancestor of that
    commit, use `git merge --ff-only <commit>`. Otherwise (a release fix is not yet on
    `develop`) merge it with a merge commit.

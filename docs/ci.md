@@ -966,18 +966,14 @@ releases up to v0.14.0 ignore it.
 - **Limit.** Check 8 catches a value left from the previous Release only when `min_tasty`
   is the right new value: a stale value promoted with the same stale `min_tasty` passes.
   The update step before each tag is what prevents it.
-- **A different release number.** This is about the default value. If Tasty is
-  released under another number than the manifests carry and no published Tasty bundles
-  the tag yet, take the new number from the tasty maintainers, put it into the eight
-  manifests, bump the eight plugins and `VERSION`, and release a new tag for tasty to
-  pin. If a published Tasty already bundles the tag, the script still promotes it only
-  with a `min_tasty` equal to the manifest value, among its other checks (its head
-  comment is the reference). Such a value is the default only if it is the first
-  bundling release; otherwise it is an older release, which the exception in
-  [Promotion](#promotion) allows only after the same verification on it, and a value
-  that is no published Tasty release cannot be promoted at all. When neither holds, the
-  tag stays a pre-release, and the fixed tag takes the number of the next Tasty release
-  by the same steps.
+- **A different release number.** With the default value, if Tasty is released under
+  another number than the manifests carry, take the new number from the tasty
+  maintainers, put it into the eight manifests, bump the eight plugins and `VERSION`, and
+  release a new tag for tasty to pin; once a published Tasty already bundles the old tag,
+  the new tag takes the number of the next Tasty release. Naming an older release instead
+  falls under the exception at the end of [Promotion](#promotion). Which inputs promotion
+  accepts is judged by the head comment of `scripts/release-promote.sh` and
+  `crates/repo-gates/tests/release_promote.rs`.
 
 ### release-meta.toml
 
