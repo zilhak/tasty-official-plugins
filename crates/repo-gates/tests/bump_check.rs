@@ -1690,6 +1690,98 @@ fn a_pin_move_that_changes_an_export_ignored_build_input_demands_a_bump() {
     );
 }
 
+/// git archive writes a submodule as an empty directory, so the copies have nothing to
+/// compare; a move of only the submodule commit is still a change (Cargo checks submodules
+/// of a git dependency out).
+#[test]
+fn a_pin_move_that_moves_only_a_submodule_demands_a_bump() {
+    let f = PinFixture::new();
+    let sub = f.repo.parent().expect("temp dir").join("sub-src");
+    fs::create_dir_all(&sub).expect("sub dir");
+    init_repo(&sub);
+    write(&sub, "data.txt", "1\n");
+    commit_all(&sub, "sub 1");
+    let s1 = git_out(&sub, &["rev-parse", "HEAD"]);
+    write(&sub, "data.txt", "2\n");
+    commit_all(&sub, "sub 2");
+    let s2 = git_out(&sub, &["rev-parse", "HEAD"]);
+    f.root_crate_source(
+        EXT_MANIFEST,
+        &[(
+            "src/lib.rs",
+            &format!("{EXT_LIB}pub const D: &str = include_str!(\"../sub/data.txt\");\n"),
+        )],
+    );
+    let e = f.ext_dir();
+    f.ext_write(
+        ".gitmodules",
+        &format!(
+            "[submodule \"sub\"]\n\tpath = sub\n\turl = file://{}\n",
+            sub.display()
+        ),
+    );
+    fs::create_dir_all(e.join("sub")).expect("submodule dir");
+    let gitlink = |sha: &str| {
+        run_git(
+            &e,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha},sub"),
+            ],
+        )
+    };
+    gitlink(&s1);
+    f.move_ext_pin();
+    gitlink(&s2);
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.contains("changed: sub")),
+        "{text}"
+    );
+}
+
+/// A link whose target git archive leaves out (export-ignore) reads as missing in both
+/// copies; pointing it at another such file is still a change.
+#[test]
+fn a_link_retargeted_between_export_ignored_files_demands_a_bump() {
+    let f = PinFixture::new();
+    f.root_crate_source(
+        EXT_MANIFEST,
+        &[
+            (
+                "src/lib.rs",
+                &format!("{EXT_LIB}pub const D: &str = include_str!(\"../data.txt\");\n"),
+            ),
+            ("a.txt", "1\n"),
+            ("b.txt", "2\n"),
+            (
+                ".gitattributes",
+                "a.txt export-ignore\nb.txt export-ignore\n",
+            ),
+        ],
+    );
+    let link = f.ext_dir().join("data.txt");
+    std::os::unix::fs::symlink("a.txt", &link).expect("link to a.txt");
+    f.move_ext_pin();
+    fs::remove_file(&link).expect("remove the link");
+    std::os::unix::fs::symlink("b.txt", &link).expect("link to b.txt");
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.contains("changed: data.txt")),
+        "{text}"
+    );
+}
+
 /// The version line of the root manifest is left out as for a crate in a directory, also
 /// when [workspace.package] comes first with a version of its own.
 #[test]

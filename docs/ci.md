@@ -414,7 +414,8 @@ would leave that range unchecked.
   build inputs. A tasty pin move or a changed `[workspace.dependencies]` entry needs a
   bump of each plugin whose dependency closure holds a changed crate. A crate at the root
   of its git repository is compared as the whole repository (`judge_pin_moves`). A pin
-  move whose changed paths git cannot list is undecidable (`pin_package_changed`). An
+  move whose changed paths git cannot list is undecidable, and a changed submodule or
+  link without its target counts as changed (`pin_package_changed`). An
   update of a crates.io crate in `Cargo.lock` needs one too, unless the plugin is already
   above its version at the tip of `origin/main` (the local `main` only when there is no
   `origin/main`). `main` moves only for releases and hotfixes, so its tip is the baseline.

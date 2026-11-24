@@ -655,6 +655,15 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
         fi
     done
     for f in "${diffs[@]}"; do
+        # A submodule (git archive writes an empty directory for it) and a link without its
+        # target (an export-ignore target, say) have no content to compare here, so a changed
+        # one counts as changed.
+        if [ -d "$WORK/$k.old.raw/$f" ] || [ -d "$WORK/$k.new.raw/$f" ] \
+            || { [ -L "$WORK/$k.old.raw/$f" ] && [ ! -e "$WORK/$k.old.raw/$f" ]; } \
+            || { [ -L "$WORK/$k.new.raw/$f" ] && [ ! -e "$WORK/$k.new.raw/$f" ]; }; then
+            PIN_FILES="$PIN_FILES $f"
+            continue
+        fi
         # git archive leaves out export-ignore paths that Cargo still builds with: a changed
         # path that neither extracted copy has counts as changed.
         if [ ! -e "$WORK/$k.old.raw/$f" ] && [ ! -L "$WORK/$k.old.raw/$f" ] \
