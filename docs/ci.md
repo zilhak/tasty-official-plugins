@@ -418,7 +418,9 @@ would leave that range unchecked.
   bump of each plugin whose dependency closure holds a changed crate. A crate at the root
   of its git repository is compared as the whole repository (`judge_pin_moves`). A pin
   move whose changed paths git cannot list is undecidable, and a changed submodule or
-  link without its target counts as changed (`pin_package_changed`). An
+  link without its target counts as changed (`pin_package_changed`). Its tests, benches,
+  examples, and Markdown are left out, except a file that shipped code includes
+  (`include_paths`). An
   update of a crates.io crate in `Cargo.lock` needs one too, unless the plugin is already
   above its version at the tip of `origin/main` (the local `main` only when there is no
   `origin/main`). `main` moves only for releases and hotfixes, so its tip is the baseline.

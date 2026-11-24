@@ -654,16 +654,91 @@ pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
     esac
 }
 
+# The repository paths that the Rust files under <root> read with include_str! or
+# include_bytes! and a string literal, one per line, resolved against the file that holds
+# the call (the call and its literal may span lines). A call inside a doc attribute
+# (#[doc = ...] or #![doc = ...], up to the bracket that closes it) is crate documentation
+# and is left out. Paths built by macros are not read.
+include_paths() {  # <root>
+    [ -d "$1" ] || return 0
+    (cd "$1" && find . -name '*.rs' -type f -exec awk '
+        function flush(   s, n, i, c, q, d, st, ns, p, rest, lit, base, parts, np, out, j, top, stack, bad) {
+            s = buf; n = length(s); ns = 0
+            # The spans of the doc attributes, with brackets counted outside strings.
+            rest = s; p = 0
+            while (match(rest, /#!?\[[[:space:]]*doc[[:space:]]*=/)) {
+                st = p + RSTART; d = 0; q = 0
+                for (i = st; i <= n; i++) {
+                    c = substr(s, i, 1)
+                    if (q) { if (c == "\\") i++; else if (c == "\"") q = 0; continue }
+                    if (c == "\"") q = 1
+                    else if (c == "[") d++
+                    else if (c == "]") { d--; if (d == 0) break }
+                }
+                ns++; ds[ns] = st; de[ns] = i
+                p = i; rest = substr(s, i + 1)
+            }
+            rest = s; p = 0
+            while (match(rest, /include_(str|bytes)![[:space:]]*\([[:space:]]*r?#*"[^"]*"/)) {
+                st = p + RSTART; lit = substr(rest, RSTART, RLENGTH)
+                p = p + RSTART + RLENGTH - 1; rest = substr(s, p + 1)
+                for (j = 1; j <= ns; j++) if (st >= ds[j] && st <= de[j]) break
+                if (j <= ns) continue
+                sub(/^[^"]*"/, "", lit); sub(/"$/, "", lit)
+                if (lit == "" || substr(lit, 1, 1) == "/") continue
+                base = file; sub(/[^\/]*$/, "", base)
+                np = split(base lit, parts, "/"); top = 0; bad = 0
+                for (j = 1; j <= np; j++) {
+                    if (parts[j] == "" || parts[j] == ".") continue
+                    if (parts[j] == "..") { if (top == 0) { bad = 1; break } top--; continue }
+                    stack[++top] = parts[j]
+                }
+                if (bad) continue
+                out = ""
+                for (j = 1; j <= top; j++) out = out (j > 1 ? "/" : "") stack[j]
+                print out
+            }
+        }
+        FNR == 1 { if (file != "") flush(); file = FILENAME; sub(/^\.\//, "", file); buf = "" }
+        { buf = buf $0 "\n" }
+        END { if (file != "") flush() }' {} +) | sort -u
+}
+
+# Copies the Rust files of the crate in <dir> at <commit> outside its tests/, benches/ and
+# examples/ (Cargo targets that no plugin binary holds) from the extracted tree <raw> to
+# <out>, and from git those that git archive left out (export-ignore): the sources whose
+# includes are read.
+shipped_sources() {  # <src> <commit> <dir> <raw> <out>
+    local f t
+    mkdir -p "$5" || die "cannot create the work directory."
+    t="$5.list"
+    xgit -C "$1" ls-tree -r -z --name-only "$2" -- "$3" > "$t" \
+        || die "cannot list the files of $3 at ${2:0:8}."
+    while IFS= read -r -d '' f; do
+        case "$f" in *.rs) ;; *) continue ;; esac
+        case "$f" in
+            "$(repo_path "$3" tests)"/*|"$(repo_path "$3" benches)"/*|"$(repo_path "$3" examples)"/*) continue ;;
+        esac
+        mkdir -p "$(dirname "$5/$f")" || die "cannot create the work directory."
+        if [ -f "$4/$f" ]; then
+            cp "$4/$f" "$5/$f" || die "cannot copy $f."
+        else
+            xgit -C "$1" show "$2:$f" > "$5/$f" || die "cannot read $f at ${2:0:8}."
+        fi
+    done < "$t"
+}
+
 # Whether package <name> in <dir> ships other content at <new> than at <old>. Sets PIN_FILES
-# to the changed paths. Tests, benches, examples and Markdown are left out. Stops when git
-# cannot list the changed paths.
+# to the changed paths. Tests, benches, examples and Markdown are left out, except a file
+# that shipped code reads with include_str! or include_bytes! (include_paths, of the code
+# that the judge keeps). Stops when git cannot list the changed paths.
 PIN_SEQ=0
 pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
     local src="$1" old="$2" new="$3" dir="$4" name="$5" ed="$6" paths=("$4") e f
-    local present side k raw cooked has_rs=0 a b c
+    local present side k raw cooked has_rs=0 a b c hit
     PIN_FILES=""
     for e in $(extra_inputs_of "$name" use); do paths+=("${e%/}"); done
-    local diffs=()
+    local diffs=() cands=()
     PIN_SEQ=$((PIN_SEQ + 1))
     k="pin.$PIN_SEQ"
     # Into a file first: a list that git cannot give is undecidable, not an empty list.
@@ -673,12 +748,15 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
     while IFS= read -r -d '' f; do
         [ -n "$f" ] || continue
         case "$f" in
-            "$(repo_path "$dir" tests)"/*|"$(repo_path "$dir" benches)"/*|"$(repo_path "$dir" examples)"/*|*.md) continue ;;
+            # Kept apart: compared only when shipped code includes it (below).
+            "$(repo_path "$dir" tests)"/*|"$(repo_path "$dir" benches)"/*|"$(repo_path "$dir" examples)"/*|*.md)
+                cands+=("$f"); continue ;;
         esac
         diffs+=("$f")
         case "$f" in *.rs) has_rs=1 ;; esac
     done < "$WORK/$k.diff"
-    [ "${#diffs[@]}" -gt 0 ] || return 1
+    # Arrays are guarded by their length: bash 3.2 stops on an empty "${a[@]}" under set -u.
+    [ "${#diffs[@]}" -gt 0 ] || [ "${#cands[@]}" -gt 0 ] || return 1
     for side in old new; do
         if [ "$side" = old ]; then c="$old"; else c="$new"; fi
         raw="$WORK/$k.$side.raw"; cooked="$WORK/$k.$side.cooked"
@@ -701,6 +779,39 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
                 || die "the test-only code remover failed ($name at ${c:0:8})."
         fi
     done
+    if [ "${#cands[@]}" -gt 0 ]; then
+        # The includes of the shipped sources of either side, as they are first. Only when one
+        # of them names a left-out path is the judge run, on those sources alone: it reads
+        # every file it is given, and a test fixture need not be valid Rust or UTF-8.
+        : > "$WORK/$k.included"
+        for side in old new; do
+            if [ "$side" = old ]; then c="$old"; else c="$new"; fi
+            shipped_sources "$src" "$c" "$dir" "$WORK/$k.$side.raw" "$WORK/$k.$side.ship"
+            include_paths "$WORK/$k.$side.ship" >> "$WORK/$k.included" \
+                || die "cannot read the includes of $name at ${c:0:8}."
+        done
+        hit=0
+        for f in "${cands[@]}"; do
+            if grep -qxF -- "$f" "$WORK/$k.included"; then hit=1; break; fi
+        done
+        if [ "$hit" = 1 ] && [ -n "$STRIP_BIN" ]; then
+            : > "$WORK/$k.included"
+            for side in old new; do
+                if [ "$side" = old ]; then c="$old"; else c="$new"; fi
+                [ -d "$WORK/$k.$side.ship/$dir" ] || continue
+                "$STRIP_BIN" --blank-test-only-files "$WORK/$k.$side.shipcooked" "$WORK/$k.$side.ship" "$dir" >/dev/null \
+                    || die "the test-only code remover failed ($name at ${c:0:8})."
+                include_paths "$WORK/$k.$side.shipcooked" >> "$WORK/$k.included" \
+                    || die "cannot read the includes of $name at ${c:0:8}."
+            done
+        fi
+        if [ "$hit" = 1 ]; then
+            for f in "${cands[@]}"; do
+                if grep -qxF -- "$f" "$WORK/$k.included"; then diffs+=("$f"); fi
+            done
+        fi
+    fi
+    [ "${#diffs[@]}" -gt 0 ] || return 1
     for f in "${diffs[@]}"; do
         # A submodule (git archive writes an empty directory for it) and a link without its
         # target (an export-ignore target, say) have no content to compare here, so a changed

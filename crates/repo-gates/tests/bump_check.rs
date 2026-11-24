@@ -1850,6 +1850,172 @@ fn a_shipped_file_with_a_non_ascii_name_is_compared_by_its_name() {
     );
 }
 
+// Files that shipped code of a pinned crate includes are compared, also when they are
+// Markdown or sit under tests/, benches/, or examples/.
+
+impl PinFixture {
+    /// The repository of ext with `files`, pinned; then `change` and a move of the pin.
+    fn ext_moved(files: &[(&str, &str)], change: &[(&str, &str)]) -> PinFixture {
+        let f = PinFixture::new();
+        f.root_crate_source(EXT_MANIFEST, files);
+        for (rel, body) in change {
+            f.ext_write(rel, body);
+        }
+        f.move_ext_pin();
+        f
+    }
+}
+
+fn assert_ext_changed((code, text): &(i32, String), path: &str, what: &str) {
+    assert_eq!(*code, 1, "{what}:\n{text}");
+    assert!(
+        reasons_of(text, "beta")
+            .iter()
+            .any(|r| r.starts_with("ext ") && r.contains(&format!("changed: {path}"))),
+        "{what}:\n{text}"
+    );
+}
+
+#[test]
+fn a_markdown_or_test_file_that_shipped_code_includes_is_compared() {
+    let lib = |call: &str| format!("{EXT_LIB}pub const H: &str = {call};\n");
+    let cases = [
+        ("src/help.md", lib("include_str!(\"help.md\")"), "one line"),
+        (
+            "README.md",
+            lib("include_str!(\"../README.md\")"),
+            "one line",
+        ),
+        (
+            "tests/data.txt",
+            lib("include_bytes!(\"../tests/data.txt\")"),
+            "one line",
+        ),
+        (
+            "src/help.md",
+            lib("include_str!(\n    \"help.md\"\n)"),
+            "over several lines",
+        ),
+    ];
+    for (path, source, how) in &cases {
+        let f = PinFixture::ext_moved(&[("src/lib.rs", source), (path, "1\n")], &[(path, "2\n")]);
+        assert_ext_changed(&f.check(&HEAD_RANGE), path, &format!("{path}, {how}"));
+    }
+}
+
+/// git archive leaves an export-ignore source out, but Cargo builds it: its includes count,
+/// with the judge and without.
+#[test]
+fn a_file_included_by_an_export_ignored_source_is_compared() {
+    let source = format!("{EXT_LIB}pub const H: &str = include_str!(\"help.md\");\n");
+    for judged in [false, true] {
+        let f = PinFixture::ext_moved(
+            &[
+                ("src/lib.rs", &source),
+                ("src/help.md", "1\n"),
+                (".gitattributes", "src/lib.rs export-ignore\n"),
+            ],
+            &[("src/help.md", "2\n")],
+        );
+        let r = if judged {
+            f.check_judged(&HEAD_RANGE)
+        } else {
+            f.check(&HEAD_RANGE)
+        };
+        assert_ext_changed(&r, "src/help.md", &format!("judged {judged}"));
+    }
+}
+
+/// A README that the crate documentation includes is not shipped content.
+#[test]
+fn a_readme_included_as_crate_docs_is_still_left_out() {
+    for attr in [
+        "#![doc = include_str!(\"../README.md\")]\n",
+        "#![doc =\n    include_str!(\"../README.md\")\n]\n",
+    ] {
+        let f = PinFixture::ext_moved(
+            &[("src/lib.rs", &format!("{attr}{EXT_LIB}"))],
+            &[("README.md", "ext, more\n")],
+        );
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 0, "{attr}:\n{text}");
+    }
+}
+
+/// With the judge, an include in test-only code does not make its file shipped content.
+#[test]
+fn a_test_fixture_read_only_by_test_code_is_still_left_out() {
+    let source = format!(
+        "{EXT_LIB}\n#[cfg(test)]\nmod tests {{\n    const F: &str = include_str!(\"../tests/fixture.txt\");\n\n    #[test]\n    fn t() {{\n        assert!(!F.is_empty());\n    }}\n}}\n"
+    );
+    let f = PinFixture::ext_moved(
+        &[("src/lib.rs", &source), ("tests/fixture.txt", "1\n")],
+        &[("tests/fixture.txt", "2\n")],
+    );
+    let (code, text) = f.check_judged(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}
+
+/// Examples and benches are Cargo targets of their own, not part of a plugin binary.
+#[test]
+fn an_example_or_bench_that_includes_a_readme_is_left_out() {
+    for rel in ["examples/demo.rs", "benches/smoke.rs"] {
+        for judged in [false, true] {
+            let f = PinFixture::ext_moved(
+                &[(
+                    rel,
+                    "const R: &str = include_str!(\"../README.md\");\n\nfn main() {\n    let _ = R;\n}\n",
+                )],
+                &[("README.md", "ext, more\n")],
+            );
+            let r = if judged {
+                f.check_judged(&HEAD_RANGE)
+            } else {
+                f.check(&HEAD_RANGE)
+            };
+            assert_eq!(r.0, 0, "{rel}, judged {judged}:\n{}", r.1);
+        }
+    }
+}
+
+impl PinFixture {
+    /// ext with a test fixture that is not UTF-8 under tests/, pinned in one move, and with
+    /// `source` as src/lib.rs; then a second move that changes only the README.
+    fn ext_with_a_non_utf8_fixture(source: &str) -> PinFixture {
+        let f = PinFixture::new();
+        f.root_crate_source(EXT_MANIFEST, &[("src/lib.rs", source)]);
+        fs::create_dir_all(f.ext_dir().join("tests/fixtures")).expect("fixture dir");
+        fs::write(
+            f.ext_dir().join("tests/fixtures/invalid-utf8.rs"),
+            b"// \xff\xfe not UTF-8\n",
+        )
+        .expect("write the fixture");
+        f.move_ext_pin();
+        f.ext_write("README.md", "ext, more\n");
+        f.move_ext_pin();
+        f
+    }
+}
+
+/// A README that no Rust source reads does not start the judge, which would stop on a test
+/// fixture that is not UTF-8.
+#[test]
+fn a_readme_unread_by_rust_code_does_not_start_the_judge() {
+    let f = PinFixture::ext_with_a_non_utf8_fixture(EXT_LIB);
+    let (code, text) = f.check_judged(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}
+
+/// When shipped code includes the README, the judge runs on the shipped sources only, so the
+/// fixture under tests/ does not stop it.
+#[test]
+fn a_judge_started_for_an_included_file_skips_non_shipping_sources() {
+    let f = PinFixture::ext_with_a_non_utf8_fixture(&format!(
+        "{EXT_LIB}pub const HELP: &str = include_str!(\"../README.md\");\n"
+    ));
+    assert_ext_changed(&f.check_judged(&HEAD_RANGE), "README.md", "judged");
+}
+
 /// A line that only looks like the version line, inside a multi-line string, is content:
 /// with a multi-line string the manifest is compared whole.
 #[test]
