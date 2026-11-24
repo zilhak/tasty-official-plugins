@@ -861,7 +861,9 @@ two Tasty versions must be published Tasty releases with `min_tasty` not above
 commit with the same archive hashes, the current Latest must be older (or there is none),
 and the published files must be exactly those the tag commit packages (its own plugin
 list and manifests decide the archive names), with lists, `release-meta.toml`, lock
-entries, and marker block that agree with them as `publish` checked. Then
+entries, and marker block that agree with them as `publish` checked, and the manifests of
+the tag commit must require `min_tasty` as their `min_tasty_version`, unless the tag is
+from before that key ([Minimum Tasty version](#minimum-tasty-version)). Then
 one `gh release edit` writes the notes, clears the pre-release flag, and marks the
 Release Latest, and the script checks that Latest is the tag.
 
@@ -886,6 +888,10 @@ The supported minimum Tasty of a Release is, by default, the first Tasty release
 bundles it: `min_tasty` equals `new_tasty`. That version passed tasty's lock file checks
 and was shipped with the plugins. An older version is named as `min_tasty` only after the
 same verification on it.
+The manifests carry the same version as `min_tasty_version`, by default the first
+bundling release. To name an older version under the exception above, the manifests must
+carry that older version too, so it is chosen before the tag: promotion refuses a
+`min_tasty` that differs from the manifests, and changing their value takes a new tag.
 
 ### Verification before promotion
 
@@ -918,12 +924,52 @@ platforms (`Verified with Tasty`).
      installed copies.
   2. No manifest is refused: no `skipped` warning from the loader or the CLI dynamic
      commands, nothing in the discovery log, no `invalid plugin manifest` from
-     `plugin install`.
+     `plugin install`, and no minimum version refusal. `plugin install` reports a Tasty
+     older than the manifest's `min_tasty_version` before it validates the manifest, as
+     an error of its own that names the required and the current version, not as
+     `invalid plugin manifest`. All eight plugins carry one value for the whole Release;
+     agent-stream is not in the bundle download (`bundle = false`), so only its direct
+     install on the published package shows that the host accepts it.
   3. `plugin list` shows each bundled plugin as `connected` without `last_failure`, with
      the version of its `[[plugin]]` entry in `release-meta.toml`. agent-stream gets the
      same check, and the manifest check of item 2, after its direct install on a GUI host.
   4. One basic action per plugin, such as opening its surface kind or running one of its
      CLI commands.
+
+### Minimum Tasty version
+
+A plugin manifest may name the oldest Tasty release that accepts the plugin with the
+top-level key `min_tasty_version`. tasty defines the key and how a host judges it
+([plugin system, 최소 Tasty 버전](https://github.com/zilhak/tasty/blob/develop/docs/features/plugin-system/index.md#최소-tasty-버전)):
+a Tasty release that knows the key refuses a plugin that requires a newer Tasty, and
+releases up to v0.14.0 ignore it.
+
+- **Value.** The first Tasty release that will bundle the Release, the version promotion
+  writes as `min_tasty`. All eight manifests carry the same value: a Release builds them
+  from one tasty rev and its notes have one `Requires Tasty` line. The value changes with
+  every Release. It goes in after the tasty maintainers have fixed that release number
+  and before the tag, in the step of [Promoting to release](branching.md#promoting-to-release)
+  that hotfixes share; a guessed number would stop either tasty's release build (a value
+  above the bundling version) or the promotion (a value other than `min_tasty`).
+- **Format.** `crates/plugin-pin-check/tests/pin.rs` reads the eight manifests with
+  tasty's parser (`Manifest::read` and `validate`), so with a pinned tasty rev that knows
+  the key the format of the value is judged by the host's own code. Promotion checks only
+  the version form.
+- **Promotion.** Check 8 of `scripts/release-promote.sh` compares the value of each
+  manifest of the tag commit with `min_tasty`. Its head comment and
+  `crates/repo-gates/tests/release_promote.rs` are the reference for the manifest shapes
+  it reads, those it refuses as unreadable, and tags from before the key. It does not
+  judge whether a manifest is TOML: the check CI of the tag commit parses the manifests,
+  and the tag push does not wait for it, so look at that CI run before promoting.
+- **Limit.** Check 8 catches a value left from the previous Release only when `min_tasty`
+  is the right new value: a stale value promoted with the same stale `min_tasty` passes.
+  The update step before each tag is what prevents it.
+- **A different release number.** If Tasty is released under another number than the
+  manifests carry and the tag is not yet bundled by a published Tasty, take the new number
+  from the tasty maintainers, put it into the eight manifests, bump the eight plugins and
+  `VERSION`, and release a new tag for tasty to pin. If a Tasty release under the other
+  number already bundles the tag, promotion refuses it and it stays a pre-release; the
+  fixed tag then takes the number of the next Tasty release, by the same steps.
 
 ### release-meta.toml
 

@@ -25,13 +25,18 @@ target it, and a manual workflow run without `--ref` runs on it.
 
 ## Promoting to release
 
-1. Move `release` to a commit chosen from `develop`. If `release` is an ancestor of that
+1. Before the move, on `develop`: set `min_tasty_version` in the eight plugin manifests
+   to the Tasty release that will first bundle this Release, as the tasty maintainers
+   name it, and bump the patch version of the eight plugins
+   ([Minimum Tasty version](ci.md#minimum-tasty-version)). Every Release takes this
+   step, a hotfix included.
+2. Move `release` to a commit chosen from `develop`. If `release` is an ancestor of that
    commit, use `git merge --ff-only <commit>`. Otherwise (a release fix is not yet on
    `develop`) merge it with a merge commit.
-2. Verify the candidate on `release`. Commit release fixes on `release`.
-3. When verification is done, make the version commit on `release`: it bumps `VERSION`,
+3. Verify the candidate on `release`. Commit release fixes on `release`.
+4. When verification is done, make the version commit on `release`: it bumps `VERSION`,
    and its body is the release note.
-4. Back-merge the fixes and the version commit from `release` into `develop`. If
+5. Back-merge the fixes and the version commit from `release` into `develop`. If
    `develop` is ahead, this is a merge commit.
 
 `release` takes no new features: only verification, release fixes, and the version
@@ -64,14 +69,16 @@ in the upload step of `publish`); check the Release by hand as
 ## Hotfixes
 
 1. Branch from `main`, fix, and land the fix on `main`.
-2. On `main`, make the version commit: it bumps the patch number in `VERSION`, and its
+2. Before the version commit, on `main`: set the minimum Tasty of the manifests and bump
+   the plugins as step 1 of [Promoting to release](#promoting-to-release) describes.
+3. On `main`, make the version commit: it bumps the patch number in `VERSION`, and its
    body is the release note.
-3. Tag the version commit (`git tag -a vX.Y.Z -m vX.Y.Z`) and push `main` with the tag
+4. Tag the version commit (`git tag -a vX.Y.Z -m vX.Y.Z`) and push `main` with the tag
    only: `git push --atomic origin main vX.Y.Z`. `release` is not part of this push.
    The tag push publishes a pre-release, as for a release.
-4. Back-merge `main` into `release` and `develop`. If the target is ahead, this is a
+5. Back-merge `main` into `release` and `develop`. If the target is ahead, this is a
    merge commit.
-5. Promote the hotfix Release to Latest with `promote.yml` after a published Tasty
+6. Promote the hotfix Release to Latest with `promote.yml` after a published Tasty
    release bundles it, as in step 4 of [Releasing to main](#releasing-to-main).
 
 Do not back-merge with cherry-pick. A cherry-picked commit has a different hash, so the
