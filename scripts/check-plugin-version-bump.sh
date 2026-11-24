@@ -836,24 +836,63 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
     [ -n "$PIN_FILES" ]
 }
 
-# Whether the [workspace.dependencies] or [workspace.package] sections of the tasty root
-# Cargo.toml differ between two commits. Only matters to a crate that inherits from them.
+# Whether the inherited sources of the tasty root Cargo.toml differ between two commits:
+# [workspace.dependencies] and [workspace.package] with their subtables, and dotted keys
+# dependencies.* and package.* of [workspace] (or workspace.* at the top). The manifest is
+# read as TOML keys (toml_lines_body with TOML_MULTI=1), so comments and spacing do not
+# count. Only matters to a crate that inherits from them. Stops when a record that cannot be
+# read could be in those sources, or when a multi-line value in them changed; a multi-line
+# string elsewhere, or one in them that did not change, is passed over.
 pin_root_inherited_changed() {  # <src> <old> <new>
-    local s c
+    local c bad
     for c in "$2" "$3"; do
-        s=$(xgit -C "$1" show "$c:Cargo.toml" 2>/dev/null | awk '
-            /^\[/ { keep = ($0 ~ /^\[workspace\.(dependencies|package)/) }
-            keep { print }')
-        printf '%s' "$s" | cksum > "$WORK/root-inherit.$c"
+        { xgit -C "$1" show "$c:Cargo.toml" 2>/dev/null || true; } | TOML_MULTI=1 toml_lines_body \
+            > "$WORK/root-inherit.$c.lines" || die "cannot read the root Cargo.toml of $1 at ${c:0:8}."
+        awk -F '\t' "$TOML_KEY_AWK"'
+            function source(sec, line,    n, e, m) {
+                n = split_key(sec, sp)
+                if (n >= 2 && sp[1] == "workspace" && (sp[2] == "dependencies" || sp[2] == "package")) return 1
+                e = eq_at(line); if (!e) return 0
+                m = split_key(substr(line, 1, e - 1), kp)
+                if (sec != "" && n == 1 && sp[1] == "workspace") return m >= 2 && (kp[1] == "dependencies" || kp[1] == "package")
+                if (sec == "") return m >= 3 && kp[1] == "workspace" && (kp[2] == "dependencies" || kp[2] == "package")
+                return 0
+            }
+            $1 == "<unreadable>" {
+                # Where the record is: its table, unless the table name itself is not read.
+                n = split_key($2, sp)
+                if ($3 ~ /^line [0-9]+, a backslash escape in a table name/ || $3 !~ /^line / \
+                    || (n >= 2 && sp[1] == "workspace" && (sp[2] == "dependencies" || sp[2] == "package")) \
+                    || (n == 1 && sp[1] == "workspace") || $2 == "") print "<bad>\t" $3
+                next
+            }
+            {
+                line = substr($0, length($1) + 2)
+                m = (substr(line, 1, 8) == "<multi> ")
+                if (m) line = substr(line, 9)
+                if (source($1, line)) { n = split_key($1, sp); print (m ? "<multi>" : "<plain>") "\t" join_parts(sp, 1, n) "\t" line }
+            }' "$WORK/root-inherit.$c.lines" | sort > "$WORK/root-inherit.$c" \
+            || die "cannot read the root Cargo.toml of $1 at ${c:0:8}."
+        bad=$(awk -F '\t' '$1 == "<bad>" { print "    " $2 }' "$WORK/root-inherit.$c")
+        [ -z "$bad" ] || die "cannot read the inherited sections of the root Cargo.toml of $1 at ${c:0:8}; judge the plugin versions by hand:
+$bad"
     done
-    ! cmp -s "$WORK/root-inherit.$2" "$WORK/root-inherit.$3"
+    cmp -s "$WORK/root-inherit.$2" "$WORK/root-inherit.$3" && return 1
+    if comm -3 "$WORK/root-inherit.$2" "$WORK/root-inherit.$3" | first_field | grep -q '^<multi>$'; then
+        die "a multi-line string in the inherited sections of the root Cargo.toml of $1 changed between ${2:0:8} and ${3:0:8}, which is not read; judge the plugin versions by hand."
+    fi
+    return 0
 }
 
-# Whether the manifest of <dir> inherits something other than lints from the workspace.
+# Whether the manifest of <dir> inherits something other than lints from the workspace: a
+# key workspace = true, bare or quoted, outside the [lints] table (its name read as a TOML key).
 pin_inherits() {  # <src> <commit> <dir>
-    xgit -C "$1" show "$2:$(repo_path "$3" Cargo.toml)" | awk '
-        /^\[/ { lints = ($0 ~ /^\[lints/) }
-        !lints && /workspace[[:space:]]*=[[:space:]]*true/ { found = 1 }
+    xgit -C "$1" show "$2:$(repo_path "$3" Cargo.toml)" | awk "$TOML_KEY_AWK"'
+        /^[[:space:]]*\[/ {
+            h = $0; sub(/^[[:space:]]*\[+/, "", h); sub(/\].*$/, "", h)
+            lints = (split_key(h, hp) >= 1 && hp[1] == "lints")
+        }
+        !lints && /["\047]?workspace["\047]?[[:space:]]*=[[:space:]]*true/ { found = 1 }
         END { exit found ? 0 : 1 }'
 }
 
@@ -1037,9 +1076,17 @@ EOF2
 # brackets would be counted and swallow the sections after them. Such a line, brackets that
 # close more than they open, and brackets still open at the end come out as
 # "<unreadable><TAB>reason" so that the caller stops. So does a backslash in a table name or
-# a key: escapes are not decoded, so "rele\u0061se" would not read as release.
+# a key: escapes are not decoded, so "release" would not read as release.
 toml_lines() {
-    git show "$1" | awk '
+    git show "$1" | toml_lines_body
+}
+
+# toml_lines of the TOML on stdin. With TOML_MULTI=1 a multi-line string is read to its
+# closing delimiter: its lines are text (joined with the byte \036), its record comes out as
+# "section<TAB><multi> line", and the other unreadable records as
+# "<unreadable><TAB>section<TAB>reason", so that a caller can tell where they are.
+toml_lines_body() {
+    awk '
         # The key of a key/value line: the text before the first = outside strings.
         function key_of(s,    i, c, q) {
             q = ""
@@ -1071,32 +1118,79 @@ toml_lines() {
             }
             return out
         }
+        # scan for TOML_MULTI=1: a multi-line string (mq is its delimiter) is text up to its
+        # closing delimiter, also over lines; up to two more quotes right before it belong to it.
+        function scan_multi(s,    i, n, c, q, out) {
+            out = ""; q = ""; n = length(s); i = 1
+            while (i <= n) {
+                c = substr(s, i, 1)
+                if (mq != "") {
+                    if (mq == "\"\"\"" && c == "\\") { out = out substr(s, i, 2); i += 2; continue }
+                    if (substr(s, i, 3) == mq) {
+                        i += 3; out = out mq
+                        while (i <= n && substr(s, i, 1) == substr(mq, 1, 1) && substr(s, i, 3) != mq) { out = out substr(s, i, 1); i++ }
+                        mq = ""; continue
+                    }
+                    out = out c; i++; continue
+                }
+                if (q != "") {
+                    out = out c
+                    if (q == "\"" && c == "\\" && i < n) { i++; out = out substr(s, i, 1) }
+                    else if (c == q) q = ""
+                    i++; continue
+                }
+                if (c == "#") break
+                if ((c == "\"" || c == "\047") && substr(s, i, 3) == c c c) { mq = c c c; multi = 1; out = out mq; i += 3; continue }
+                if (c == "\"" || c == "\047") q = c
+                else if (c == "[" || c == "{") depth++
+                else if (c == "]" || c == "}") depth--
+                out = out c; i++
+            }
+            return out
+        }
+        function unreadable(why) {
+            if (ML) print "<unreadable>\t" sec "\t" why; else print "<unreadable>\t" why
+        }
+        function emit(text) {
+            print sec "\t" ((ML && pm) ? "<multi> " : "") text
+            pm = 0
+        }
+        BEGIN { ML = (ENVIRON["TOML_MULTI"] == "1") }
         {
-            multi = 0
-            line = scan($0)
-            if (multi) { print "<unreadable>\tline " NR ", a multi-line string: " $0; bad = 1 }
-            if (depth < 0) { print "<unreadable>\tline " NR ", a bracket that closes nothing: " $0; bad = 1; depth = 0 }
+            multi = 0; wasin = (mq != "")
+            if (ML) line = scan_multi($0); else line = scan($0)
+            if (multi && !ML) unreadable("line " NR ", a multi-line string: " $0)
+            if (multi) pm = 1
+            if (depth < 0) { unreadable("line " NR ", a bracket that closes nothing: " $0); depth = 0 }
+            if (wasin) {
+                # A line inside a multi-line string is text, as it is.
+                pending = pending "\036" line; pm = 1
+                if (mq == "" && depth <= 0) { emit(pending); pending = ""; depth = 0 }
+                next
+            }
             sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
             if (line == "") next
             if (pending != "") {
                 pending = pending " " line
-                if (depth <= 0) { print sec "\t" pending; pending = ""; depth = 0 }
+                if (mq == "" && depth <= 0) { emit(pending); pending = ""; depth = 0 }
                 next
             }
             if (line ~ /^\[/ && line ~ /\]$/ && depth == 0) {
                 sec = line; gsub(/^\[+[[:space:]]*|[[:space:]]*\]+$/, "", sec)
-                if (index(sec, "\\")) { print "<unreadable>\tline " NR ", a backslash escape in a table name: " $0; bad = 1 }
+                if (index(sec, "\\")) unreadable("line " NR ", a backslash escape in a table name: " $0)
+                pm = 0
                 next
             }
-            if (index(key_of(line), "\\")) { print "<unreadable>\tline " NR ", a backslash escape in a key: " $0; bad = 1 }
-            if (depth > 0) { pending = line; next }
+            if (index(key_of(line), "\\")) unreadable("line " NR ", a backslash escape in a key: " $0)
+            if (depth > 0 || mq != "") { pending = line; next }
             depth = 0
-            print sec "\t" line
+            emit(line)
         }
         END {
             if (pending != "" || depth != 0) {
-                print "<unreadable>\tbrackets still open at the end of the file, after: " substr(pending, 1, 80)
+                unreadable("brackets still open at the end of the file, after: " substr(pending, 1, 80))
             }
+            if (mq != "") unreadable("a multi-line string still open at the end of the file")
         }'
 }
 

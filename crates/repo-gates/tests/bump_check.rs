@@ -2043,6 +2043,137 @@ fn a_version_line_inside_a_multi_line_string_is_content() {
     }
 }
 
+// The inherited sources of a tasty root manifest are read as TOML keys.
+
+impl PinFixture {
+    /// tasty with `root` after the members of its root [workspace] and `a` after the
+    /// [package] lines of tasty-a, pinned; then `from` → `to` in the root manifest (or a new
+    /// docs/new.md when `from` is empty) and another pin move.
+    fn inherited_move(root: &str, a: &str, from: &str, to: &str) -> PinFixture {
+        let f = PinFixture::new();
+        f.tasty_write(
+            "Cargo.toml",
+            &format!("[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n{root}"),
+        );
+        f.tasty_write(
+            "crates/tasty-a/Cargo.toml",
+            &format!("[package]\nname = \"tasty-a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n{a}"),
+        );
+        let t2 = f.tasty_commit("inherit from the root");
+        f.move_pin(&t2);
+        f.commit("move the pin");
+        if from.is_empty() {
+            f.tasty_write("docs/new.md", "new\n");
+        } else {
+            let body = fs::read_to_string(f.tasty.join("Cargo.toml")).expect("read");
+            assert_eq!(body.matches(from).count(), 1, "{from:?} in {body}");
+            f.tasty_write("Cargo.toml", &body.replacen(from, to, 1));
+        }
+        let t3 = f.tasty_commit("change the root");
+        f.move_pin(&t3);
+        f.commit("move the pin again");
+        f
+    }
+}
+
+const INHERITED: &str = "the inherited [workspace.dependencies] or [workspace.package] changed";
+
+fn assert_inherited((code, text): &(i32, String), what: &str) {
+    assert_eq!(*code, 1, "{what}:\n{text}");
+    assert!(
+        reasons_of(text, "alpha")
+            .iter()
+            .any(|r| r.starts_with("tasty-a ") && r.contains(INHERITED)),
+        "{what}:\n{text}"
+    );
+}
+
+const AUTHORS: &str = "authors.workspace = true\n";
+
+#[test]
+fn a_root_inherited_section_written_with_quotes_or_spaces_or_dotted_keys_is_judged() {
+    for root in [
+        "\n[workspace.\"package\"]\nauthors = [\"one\"]\n",
+        "\n[ workspace.package ]\nauthors = [\"one\"]\n",
+        "package.authors = [\"one\"]\n",
+    ] {
+        let f = PinFixture::inherited_move(root, AUTHORS, "\"one\"", "\"two\"");
+        assert_inherited(&f.check(&HEAD_RANGE), root);
+    }
+}
+
+#[test]
+fn a_comment_only_change_of_an_inherited_section_needs_no_bump() {
+    let f = PinFixture::inherited_move(
+        "\n[workspace.package]\nauthors = [\"one\"] # the first\n",
+        AUTHORS,
+        "# the first",
+        "# the only one",
+    );
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}
+
+/// A multi-line string outside the inherited sections is passed over within its delimiters,
+/// so a line in it that looks like a table does not swallow what follows.
+#[test]
+fn a_multi_line_string_outside_the_inherited_sections_is_passed_over() {
+    let root = "\n[workspace.package]\nauthors = [\"one\"]\n\n[workspace.metadata.deb]\n\
+                extended-description = \"\"\"\n[not a table]\nThe first line.\n\"\"\"\n";
+    let f = PinFixture::inherited_move(root, AUTHORS, "The first line.", "The only line.");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    let f = PinFixture::inherited_move(root, AUTHORS, "\"one\"", "\"two\"");
+    assert_inherited(&f.check(&HEAD_RANGE), "the inherited authors");
+}
+
+#[test]
+fn an_unchanged_multi_line_string_inside_an_inherited_section_is_passed_over() {
+    let root = "\n[workspace.package]\nauthors = [\"one\"]\n\
+                description = \"\"\"\nA long text.\n[not a table]\n\"\"\"\n";
+    let f = PinFixture::inherited_move(root, AUTHORS, "\"one\"", "\"two\"");
+    assert_inherited(&f.check(&HEAD_RANGE), "authors");
+    let f = PinFixture::inherited_move(root, AUTHORS, "", "");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}
+
+#[test]
+fn a_multi_line_string_inside_an_inherited_section_is_undecidable() {
+    let root = "\n[workspace.package]\nauthors = [\"one\"]\n\
+                description = \"\"\"\nA long text.\n\"\"\"\n";
+    let f = PinFixture::inherited_move(root, AUTHORS, "A long text.", "A longer text.");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "a multi-line string in the inherited sections of the root Cargo.toml",
+    );
+}
+
+/// A quoted workspace key inherits as a bare one does; a [lints] table, also written with a
+/// quoted name, inherits only lints, which the check does not compare.
+#[test]
+fn an_inheritance_written_with_a_quoted_workspace_key_is_judged() {
+    let root = "\n[workspace.package]\nauthors = [\"one\"]\n";
+    for a in [
+        "authors.\"workspace\" = true\n",
+        "authors.'workspace' = true\n",
+        "authors = { \"workspace\" = true }\n",
+    ] {
+        let f = PinFixture::inherited_move(root, a, "\"one\"", "\"two\"");
+        assert_inherited(&f.check(&HEAD_RANGE), a);
+    }
+    let root = "\n[workspace.package]\nauthors = [\"one\"]\n\n\
+                [workspace.lints.rust]\nunsafe_code = \"forbid\"\n";
+    for a in [
+        "\n[lints]\n\"workspace\" = true\n",
+        "\n[ \"lints\" ]\nworkspace = true\n",
+    ] {
+        let f = PinFixture::inherited_move(root, a, "\"one\"", "\"two\"");
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 0, "{a}:\n{text}");
+    }
+}
+
 /// version.workspace = true in [package] takes the version of [workspace.package] in the
 /// same manifest: a change there is the inherited change, not content.
 #[test]
