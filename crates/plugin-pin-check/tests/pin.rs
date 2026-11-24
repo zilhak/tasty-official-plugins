@@ -309,20 +309,36 @@ fn plugin_manifest_versions_match_crate_versions() {
     assert_eq!(checked, 8, "expected eight plugin manifests");
 }
 
-/// The value of a line `min_tasty_version = "<value>"` with only spaces after it, the one
-/// shape check 8 of scripts/release-promote.sh reads.
-fn plain_min_tasty_line(line: &str) -> Option<&str> {
-    let value = line
-        .trim_end()
-        .strip_prefix("min_tasty_version = \"")?
-        .strip_suffix('"')?;
-    (!value.contains('"')).then_some(value)
+/// What `min_tasty_of` in scripts/lib/min-tasty.sh, the reading of promotion check 8, prints
+/// for a manifest with this text: "value<TAB>X", "none", or "bad<TAB>reason".
+fn min_tasty_of(text: &str) -> String {
+    use std::io::Write;
+    let lib = workspace_root().join("scripts/lib/min-tasty.sh");
+    let mut child = Command::new("bash")
+        .args(["-c", "source \"$1\" && min_tasty_of -", "bash"])
+        .arg(&lib)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("run bash for {}: {e}", lib.display()));
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(text.as_bytes())
+        .expect("write the manifest to min_tasty_of");
+    let out = child.wait_with_output().expect("wait for min_tasty_of");
+    assert!(out.status.success(), "min_tasty_of failed: {out:?}");
+    String::from_utf8(out.stdout)
+        .expect("min_tasty_of prints UTF-8")
+        .trim_end_matches('\n')
+        .to_string()
 }
 
-/// Every plugin manifest requires the same minimum Tasty. The value sits at top level on
-/// one plain line, the shape promotion reads, so a manifest that promotion would refuse
-/// fails here before it is tagged. tasty's parser reads the same value, and its
-/// validate() judges the format as the host does.
+/// Every plugin manifest requires the same minimum Tasty. Each manifest is read with the
+/// function promotion check 8 reads it with, and that value is the top-level value of the
+/// TOML and the one tasty's parser reads; its validate() judges the format as the host
+/// does.
 #[test]
 fn plugin_manifests_require_the_same_minimum_tasty() {
     let crates = workspace_root().join("crates");
@@ -335,31 +351,17 @@ fn plugin_manifests_require_the_same_minimum_tasty() {
         }
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("{plugin}: read tasty-plugin.toml: {e}"));
-        let lines: Vec<&str> = text
-            .lines()
-            .filter(|line| line.contains("min_tasty_version"))
-            .collect();
-        assert_eq!(
-            lines.len(),
-            1,
-            "{plugin}: min_tasty_version must be on exactly one line: {lines:?}"
-        );
-        let line_value = plain_min_tasty_line(lines[0]).unwrap_or_else(|| {
-            panic!(
-                "{plugin}: the line must be min_tasty_version = \"X.Y.Z\" with nothing after it: {:?}",
-                lines[0]
-            )
-        });
-        // A key inside a table such as [entry] is not the top-level key the host reads.
         let raw: toml::Table = toml::from_str(&text)
             .unwrap_or_else(|e| panic!("{plugin}: parse tasty-plugin.toml: {e}"));
+        // A key inside a table such as [entry] is not the top-level key the host reads.
         let top = raw
             .get("min_tasty_version")
             .and_then(toml::Value::as_str)
             .unwrap_or_else(|| panic!("{plugin}: no top-level min_tasty_version string"));
         assert_eq!(
-            top, line_value,
-            "{plugin}: the min_tasty_version line is not the top-level value"
+            min_tasty_of(&text),
+            format!("value\t{top}"),
+            "{plugin}: promotion check 8 does not read the top-level min_tasty_version"
         );
         let manifest = Manifest::read(&dir).unwrap_or_else(|e| panic!("{plugin}: {e:#}"));
         manifest
@@ -379,6 +381,59 @@ fn plugin_manifests_require_the_same_minimum_tasty() {
         1,
         "the plugin manifests require different minimum Tasty versions: {values:?}"
     );
+}
+
+/// Manifests that are valid TOML with a top-level min_tasty_version, but in a shape check 8
+/// cannot read, fail the manifest test above: it reads them with the same function.
+#[test]
+fn manifest_shapes_that_promotion_refuses_are_refused_here() {
+    let base = std::fs::read_to_string(
+        workspace_root().join("crates/tasty-plugin-claude/tasty-plugin.toml"),
+    )
+    .expect("read the claude manifest");
+    let line = base
+        .lines()
+        .find(|l| l.starts_with("min_tasty_version = "))
+        .expect("the claude manifest has a min_tasty_version line")
+        .to_string();
+    let raw: toml::Table = toml::from_str(&base).expect("parse the claude manifest");
+    let value = raw["min_tasty_version"].as_str().expect("a string value");
+    assert_eq!(min_tasty_of(&base), format!("value\t{value}"));
+    let shapes: Vec<(&str, String)> = vec![
+        (
+            "the name inside a multi-line string, the key escaped",
+            format!(
+                "review_note = \"\"\"\n{line}\n\"\"\"\n\"min_tasty_\\u0076ersion\" = \"{value}\""
+            ),
+        ),
+        (
+            "a multi-line string beside the line",
+            format!("{line}\nnotes = \"\"\"\nfirst\n\"\"\""),
+        ),
+        ("a comment after the value", format!("{line} # review")),
+        (
+            "a second line that names the key",
+            format!("{line}\n# min_tasty_version note"),
+        ),
+    ];
+    for (why, replacement) in &shapes {
+        let text = base.replacen(&line, replacement, 1);
+        assert_ne!(text, base, "{why}: the fixture changed nothing");
+        let raw: toml::Table =
+            toml::from_str(&text).unwrap_or_else(|e| panic!("{why}: not TOML: {e}"));
+        assert_eq!(
+            raw.get("min_tasty_version").and_then(toml::Value::as_str),
+            Some(value),
+            "{why}: the fixture must keep the top-level value"
+        );
+        let read = min_tasty_of(&text);
+        assert!(read.starts_with("bad\t"), "{why}: read as {read:?}");
+    }
+    // A quoted key before the first table.
+    let quoted = base.replacen("\nlang_dir = ", "\n\"lang_dir\" = ", 1);
+    assert_ne!(quoted, base, "the claude manifest has a lang_dir line");
+    let read = min_tasty_of(&quoted);
+    assert!(read.starts_with("bad\t"), "a quoted key: read as {read:?}");
 }
 
 /// Crates whose types the egui-mesh wire carries as raw bytes between tasty and a

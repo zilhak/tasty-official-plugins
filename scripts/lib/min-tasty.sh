@@ -1,5 +1,6 @@
 # The reading of min_tasty_version that check 8 of scripts/release-promote.sh uses.
-# Sourced by release-promote.sh.
+# Sourced by release-promote.sh, and run by crates/plugin-pin-check/tests/pin.rs so that the
+# manifests are read the same way before a tag.
 # shellcheck shell=bash
 
 # The top-level min_tasty_version of tasty-plugin.toml $1, read as check 8 (b) in the
