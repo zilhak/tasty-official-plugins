@@ -158,6 +158,7 @@ fn tree_with(manifest: impl Fn(usize, &str) -> String) -> Tree {
         "scripts/check.sh",
         "scripts/release-check.sh",
         "scripts/release-promote.sh",
+        "scripts/lib/min-tasty.sh",
     ] {
         let body = std::fs::read(support::repo_file(script)).expect("read script");
         support::write_executable(&d.join(script), body).expect("copy script");
