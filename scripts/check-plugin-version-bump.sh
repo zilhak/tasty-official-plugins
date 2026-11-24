@@ -608,7 +608,8 @@ pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
 }
 
 # Whether package <name> in <dir> ships other content at <new> than at <old>. Sets PIN_FILES
-# to the changed paths. Tests, benches, examples and Markdown are left out.
+# to the changed paths. Tests, benches, examples and Markdown are left out. Stops when git
+# cannot list the changed paths.
 PIN_SEQ=0
 pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
     local src="$1" old="$2" new="$3" dir="$4" name="$5" ed="$6" paths=("$4") e f
@@ -616,6 +617,11 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
     PIN_FILES=""
     for e in $(extra_inputs_of "$name" use); do paths+=("${e%/}"); done
     local diffs=()
+    PIN_SEQ=$((PIN_SEQ + 1))
+    k="pin.$PIN_SEQ"
+    # Into a file first: a list that git cannot give is undecidable, not an empty list.
+    xgit -C "$src" diff -z --name-only "$old" "$new" -- "${paths[@]}" > "$WORK/$k.diff" \
+        || die "cannot list the paths of $name that changed between ${old:0:8} and ${new:0:8}."
     # NUL separated: the paths as they are, not quoted as git prints names outside ASCII.
     while IFS= read -r -d '' f; do
         [ -n "$f" ] || continue
@@ -624,10 +630,8 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
         esac
         diffs+=("$f")
         case "$f" in *.rs) has_rs=1 ;; esac
-    done < <(xgit -C "$src" diff -z --name-only "$old" "$new" -- "${paths[@]}")
+    done < "$WORK/$k.diff"
     [ "${#diffs[@]}" -gt 0 ] || return 1
-    PIN_SEQ=$((PIN_SEQ + 1))
-    k="pin.$PIN_SEQ"
     for side in old new; do
         if [ "$side" = old ]; then c="$old"; else c="$new"; fi
         raw="$WORK/$k.$side.raw"; cooked="$WORK/$k.$side.cooked"

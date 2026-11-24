@@ -1468,6 +1468,56 @@ fn a_pin_move_from_an_unreadable_commit_is_undecidable() {
     assert!(text.contains("11111111"), "{text}");
 }
 
+/// The first git on PATH, which a stand-in in front of it hands every other call to.
+fn real_git() -> String {
+    let path = std::env::var("PATH").unwrap_or_default();
+    path.split(':')
+        .filter(|d| !d.is_empty())
+        .map(|d| Path::new(d).join("git"))
+        .find(|p| p.is_file())
+        .expect("git on PATH")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The list of changed paths of a pin move comes from git; when git cannot give it, the
+/// move is undecidable, not a move without changes. Only the diff of the pinned repository
+/// (`git -C <dir> diff -z --name-only`) fails here, so no other branch stops first.
+#[test]
+fn a_pin_move_whose_changed_paths_cannot_be_listed_is_undecidable() {
+    const MARK: &str = "zz-pin-diff-died-here";
+    let f = PinFixture::new();
+    f.tasty_write(
+        "crates/tasty-a/src/lib.rs",
+        &TASTY_A_LIB.replace("    1\n}\n\n#", "    10\n}\n\n#"),
+    );
+    let t2 = f.tasty_commit("change a");
+    f.move_pin(&t2);
+    f.commit("move the pin");
+
+    let stub = tempfile::tempdir().expect("stub dir");
+    support::write_executable(
+        &stub.path().join("git"),
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = -C ]; then case \" $* \" in *\" diff -z --name-only \"*) echo {MARK} >&2; exit 128 ;; esac; fi\nexec \"{real}\" \"$@\"\n",
+            real = real_git()
+        ),
+    )
+    .expect("write the stub");
+    let mut cmd = f.command(false);
+    cmd.env("PATH", path_with(stub.path()));
+    let (code, text) = run(cmd, &HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("cannot list the paths of tasty-a that changed between"),
+        "{text}"
+    );
+    assert!(
+        text.contains(MARK),
+        "the stand-in did not fail the diff:\n{text}"
+    );
+}
+
 /// Case 15: A lower version together with a pin move is undecidable, not a pass.
 #[test]
 fn a_pin_move_with_a_lower_version_is_undecidable() {
