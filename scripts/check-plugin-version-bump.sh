@@ -608,6 +608,49 @@ pin_edition() {  # <src> <commit> <dir> <name>
     PIN_EDITION="$e"
 }
 
+# Stops as undecidable when the [package] build of the manifest of <dir> at <commit> names
+# a build script next to the manifest of another package, or cannot be read. Cargo reads the
+# paths of a build script from the package that runs it, but pin_check_outside_inputs takes
+# a build.rs next to a manifest as a script of that manifest. true, false, no build, and a
+# script without another manifest next to it (./build.rs too) go on as before.
+pin_check_build_script() {  # <src> <commit> <dir> <name>
+    local man b p fdir
+    man=$(repo_path "$3" Cargo.toml)
+    b=$(xgit -C "$1" show "$2:$man" | awk "$TOML_KEY_AWK"'
+        /^[[:space:]]*\[/ {
+            h = $0; sub(/^[[:space:]]*\[+/, "", h); sub(/\].*$/, "", h)
+            n = split_key(h, hp); in_pkg = (n == 1 && hp[1] == "package")
+            next
+        }
+        in_pkg {
+            line = trim($0)
+            if (line == "" || substr(line, 1, 1) == "#") next
+            e = eq_at(line); if (!e) next
+            np = split_key(substr(line, 1, e - 1), kp)
+            if (np < 1 || kp[1] != "build") next
+            if (np != 1 || seen++) { bad = 1; next }
+            v = trim(substr(line, e + 1))
+            if (match(v, /^"[^"\\]*"/) || match(v, /^\047[^\047]*\047/)) s = substr(v, 2, RLENGTH - 2)
+            else if (match(v, /^(true|false)/)) s = "<bool>"
+            else { bad = 1; next }
+            if (s == "" || substr(v, RLENGTH + 1) !~ /^[[:space:]]*(#.*)?$/) { bad = 1; next }
+            val = s
+        }
+        END { if (bad) print "<bad>"; else if (seen) print val }') \
+        || die "cannot read the manifest of $4 ($man at ${2:0:8})"
+    case "$b" in
+        ""|"<bool>") return ;;
+        "<bad>") die "cannot read the build script of $4 ($man at ${2:0:8}): a [package] build that is not true, false, or a plain string; judge the plugin versions by hand." ;;
+    esac
+    p=$(norm_path "$(repo_path "$3" "$b")")
+    [ -n "$p" ] || die "$4 names a build script above the source root ($man: $b)"
+    fdir=$(dirname "$p")
+    [ "$fdir" != "$3" ] || return
+    if xgit -C "$1" cat-file -e "$2:$(repo_path "$fdir" Cargo.toml)" 2>/dev/null; then
+        die "$4 uses $p as its build script, which sits next to the manifest of another package ($(repo_path "$fdir" Cargo.toml)); its paths are not resolved here, so judge the plugin versions by hand."
+    fi
+}
+
 # The shipped content of one file of an extracted tree: Rust after the judge and rustfmt
 # without blank lines, the crate manifest without its version line (whole when it has a
 # multi-line string), anything else as is.
@@ -955,6 +998,7 @@ EOF2
             d_new="$PKG_DIR"
             [ "$d_new" != "<quoted>" ] || die "cannot read the directory of $name in $url at ${new:0:8}: $QUOTED_NOTE."
             pin_edition "$PIN_SRC" "$new" "$d_new" "$name"
+            pin_check_build_script "$PIN_SRC" "$new" "$d_new" "$name"
             pin_check_outside_inputs "$PIN_SRC" "$new" "$d_new" "$name"
             reason=""
             if [ "$old" = "-" ]; then

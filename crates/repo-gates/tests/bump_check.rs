@@ -2302,6 +2302,87 @@ fn a_build_rs_away_from_a_package_manifest_is_read_from_the_crate_being_judged()
     );
 }
 
+/// Sets `build = <value>` in the manifest of tasty-a, puts a build script that reruns on
+/// ../outside.txt at `script` (with a manifest of the package nested next to it when
+/// `nested`), moves the pin there, then changes crates/outside.txt and moves the pin again.
+fn move_past_a_build_script(value: &str, script: &str, nested: bool) -> (i32, String) {
+    let f = PinFixture::new();
+    f.tasty_write(
+        "crates/tasty-a/Cargo.toml",
+        &format!(
+            "[package]\nname = \"tasty-a\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = {value}\n"
+        ),
+    );
+    let dir = Path::new("crates/tasty-a").join(script);
+    let dir = dir.parent().expect("script directory");
+    if nested {
+        f.tasty_write(
+            &dir.join("Cargo.toml").to_string_lossy(),
+            "[package]\nname = \"nested\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+    }
+    f.tasty_write(
+        &Path::new("crates/tasty-a").join(script).to_string_lossy(),
+        "fn main() {\n    println!(\"cargo:rerun-if-changed=../outside.txt\");\n}\n",
+    );
+    f.tasty_write("crates/outside.txt", "one\n");
+    let t2 = f.tasty_commit("give tasty-a a build script");
+    f.move_pin(&t2);
+    f.commit("move the pin to the build script");
+    f.tasty_write("crates/outside.txt", "two\n");
+    let t3 = f.tasty_commit("change the file the build script reruns on");
+    f.move_pin(&t3);
+    f.commit("move the pin past the change");
+    f.check(&HEAD_RANGE)
+}
+
+/// Cargo reads the paths of a build script from the package that runs it. A `build` that
+/// names the build.rs of a package nested in the crate (also through ./, or with an escape
+/// that is not decoded) stops the check instead of reading ../outside.txt from the nested
+/// package.
+#[test]
+fn a_build_script_borrowed_from_a_nested_package_is_undecidable() {
+    for (value, want) in [
+        (
+            "\"nested/build.rs\"",
+            "tasty-a uses crates/tasty-a/nested/build.rs as its build script, which sits next \
+             to the manifest of another package (crates/tasty-a/nested/Cargo.toml)",
+        ),
+        (
+            "\"./nested/build.rs\"",
+            "tasty-a uses crates/tasty-a/nested/build.rs as its build script",
+        ),
+        (
+            "\"nest\\u0065d/build.rs\"",
+            "cannot read the build script of tasty-a (crates/tasty-a/Cargo.toml at ",
+        ),
+    ] {
+        let (code, text) = move_past_a_build_script(value, "nested/build.rs", true);
+        assert_eq!(code, 2, "{value}:\n{text}");
+        assert!(text.contains(want), "{value}:\n{text}");
+    }
+}
+
+/// A build script of the crate itself, and `build = false`, take the usual path: the
+/// rerun-if-changed path is read from the crate and stops the check as outside it.
+#[test]
+fn an_own_or_disabled_build_script_takes_the_usual_path() {
+    for (value, script) in [
+        ("\"./build.rs\"", "build.rs"),
+        ("\"tools/build.rs\"", "tools/build.rs"),
+        ("false", "build.rs"),
+    ] {
+        let (code, text) = move_past_a_build_script(value, script, false);
+        assert_eq!(code, 2, "{value}:\n{text}");
+        assert!(
+            text.contains(&format!(
+                "tasty-a reads crates/outside.txt outside its crate (crates/tasty-a/{script})"
+            )),
+            "{value}:\n{text}"
+        );
+    }
+}
+
 /// rustfmt gets the edition of [package], or of [workspace.package] when [package] inherits
 /// it, not an edition of another table that comes first. `gen` is reserved in 2024, so the
 /// wrong edition makes a formatting change look like content.
