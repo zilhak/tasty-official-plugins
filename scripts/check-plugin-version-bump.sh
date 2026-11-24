@@ -882,8 +882,10 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
 # Whether the inherited sources of the tasty root Cargo.toml differ between two commits:
 # [workspace.dependencies] and [workspace.package] with their subtables, and dotted keys
 # dependencies.* and package.* of [workspace] (or workspace.* at the top). The manifest is
-# read as TOML keys (toml_lines_body with TOML_MULTI=1), so comments and spacing do not
-# count. Only matters to a crate that inherits from them. Stops when a record that cannot be
+# read as TOML keys (toml_lines_body with TOML_MULTI=1): comments and the blanks at the ends
+# of a line outside strings do not count, but spacing inside a line does, which errs toward a
+# bump or a stop.
+# Only matters to a crate that inherits from them. Stops when a record that cannot be
 # read could be in those sources, or when a multi-line value in them changed; a multi-line
 # string elsewhere, or one in them that did not change, is passed over.
 pin_root_inherited_changed() {  # <src> <old> <new>
@@ -1120,7 +1122,7 @@ EOF2
 # brackets would be counted and swallow the sections after them. Such a line, brackets that
 # close more than they open, and brackets still open at the end come out as
 # "<unreadable><TAB>reason" so that the caller stops. So does a backslash in a table name or
-# a key: escapes are not decoded, so "release" would not read as release.
+# a key: escapes are not decoded, so "rele\u0061se" would not read as release.
 toml_lines() {
     git show "$1" | toml_lines_body
 }

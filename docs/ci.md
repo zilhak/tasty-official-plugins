@@ -410,9 +410,9 @@ would leave that range unchecked.
   start that is missing from the clone (after a force push) fails the job.
 - Exit codes: 0 pass or nothing to judge, 1 a plugin needs a version bump, 2 undecidable.
   Only 0 passes.
-- Path names are read as they are, also outside ASCII. A name that git still prints quoted
-  (a double quote, a backslash, or a control character) is undecidable where the check
-  would judge it, and is passed over elsewhere (`git_quotes` in the script).
+- Path names are read as they are, also outside ASCII. A name that git still prints
+  quoted stops the check where it could be judged; `git_quotes` and its callers in the
+  script, and the tests on quoted names, give the cases.
 - Besides the plugin directories and their path dependencies, the check judges the root
   build inputs. A tasty pin move or a changed `[workspace.dependencies]` entry needs a
   bump of each plugin whose dependency closure holds a changed crate. A crate at the root
@@ -434,8 +434,8 @@ would leave that range unchecked.
   fetched: if it was not fetched after a release, the baseline is older and a second
   update can pass locally; the CI checkout fetches it on every run. `[workspace]` and
   unknown sections are undecidable, and so is a changed `[workspace.dependencies]` line
-  that cannot be read or that no package in `Cargo.lock` answers to. A changed entry with a
-  line that is not read does not take its key as the package name. The table names are
+  that cannot be read or that no package in `Cargo.lock` answers to, or whose package
+  name cannot be read (`dep_entries`). The table names are
   read as TOML keys, so quotes and spaces around the dots do not matter (tabs are not
   supported); `dep_entries` in the script decides which tables it reads. A root `Cargo.toml`
   with a multi-line string (`"""` or `'''`), with unbalanced brackets, or with a backslash
@@ -574,9 +574,8 @@ would leave that range unchecked.
   crate on every commit, and a move to crates.io once per release, as above. When the
   lock rows of the patched package stay the same, no bump is needed. A quoted key in an
   entry (`{ "path" = ... }`) reads like the bare key. The `path` and `package` of an entry
-  are its top-level fields (`field_value` in the script), so a string that mentions them
-  does not count; a `package` that is not a plain string in single or double quotes is
-  undecidable. A patched package in no lock, two
+  are read as its own fields, and a `package` that cannot be read is undecidable
+  (`field_value` and `judge_patch_entries` in the script). A patched package in no lock, two
   git sources of one package name, a key with a backslash escape, and a `[patch]` spelling
   other than `[patch.<source>]` entries, dotted keys, or `[patch.<source>.<name>]` tables
   are undecidable.
