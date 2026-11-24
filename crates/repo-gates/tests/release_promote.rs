@@ -7,7 +7,9 @@
 //! from a throwaway repository whose one commit is the tag commit: it holds this
 //! repository's scripts/check.sh and the tasty-plugin.toml of every crate that
 //! `scripts/check.sh list-bins` names, so the good world publishes the files of a real
-//! release (8 plugins on 5 platforms, 51 files).
+//! release (8 plugins on 5 platforms, 51 files). Check 8 reads min_tasty_version from those
+//! manifests, so the tree drops the value the real files have and each world sets its own:
+//! the good world gives every manifest MIN.
 
 #![cfg(unix)]
 
@@ -95,15 +97,56 @@ fn manifest_value(text: &str, key: &str) -> String {
         .to_string()
 }
 
+/// `manifest` without its min_tasty_version lines.
+fn without_min_tasty(manifest: &str) -> String {
+    let out: String = manifest
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("min_tasty_version"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert!(!out.contains("min_tasty_version"), "{out}");
+    out
+}
+
+/// `manifest` with `lines` right before its first table.
+fn before_first_table(manifest: &str, lines: &[&str]) -> String {
+    let mut out: Vec<&str> = manifest.lines().collect();
+    let at = out
+        .iter()
+        .position(|l| l.starts_with('['))
+        .expect("a table in the manifest");
+    out.splice(at..at, lines.iter().copied());
+    out.join("\n") + "\n"
+}
+
+/// `manifest` with the top-level line min_tasty_version = "<value>".
+fn with_min_tasty(manifest: &str, value: &str) -> String {
+    before_first_table(manifest, &[&format!("min_tasty_version = \"{value}\"")])
+}
+
+/// `manifest` with `lines` at its end, in its last table.
+fn at_end(manifest: &str, lines: &[&str]) -> String {
+    format!("{manifest}{}\n", lines.join("\n"))
+}
+
 /// The tag commit: a throwaway repository with the release scripts to run.
 struct Tree {
     dir: tempfile::TempDir,
     commit: String,
     /// The plugins the tag commit packages.
     plugins: Vec<Plugin>,
+    /// Their crates, in the same order.
+    crates: Vec<String>,
 }
 
+/// The tag commit whose manifests all carry min_tasty_version = MIN.
 fn tree() -> Tree {
+    tree_with(|_, m| with_min_tasty(m, MIN))
+}
+
+/// The tag commit whose manifest number `i` (in list-bins order) is `manifest(i, base)`,
+/// where `base` is the manifest of this repository without min_tasty_version.
+fn tree_with(manifest: impl Fn(usize, &str) -> String) -> Tree {
     let dir = tempfile::tempdir().expect("temp dir");
     let d = dir.path();
     git(d, &["init", "--quiet", "-b", "main"]);
@@ -126,15 +169,18 @@ fn tree() -> Tree {
         .expect("run check.sh list-bins");
     assert!(bins.status.success(), "check.sh list-bins failed");
     let mut plugins = Vec::new();
-    for crate_name in String::from_utf8_lossy(&bins.stdout).lines() {
+    let mut crates = Vec::new();
+    for (i, crate_name) in String::from_utf8_lossy(&bins.stdout).lines().enumerate() {
         let rel = format!("crates/{crate_name}/tasty-plugin.toml");
-        let text = std::fs::read_to_string(support::repo_file(&rel)).expect("read manifest");
+        let real = std::fs::read_to_string(support::repo_file(&rel)).expect("read manifest");
+        let text = manifest(i, &without_min_tasty(&real));
         std::fs::create_dir_all(d.join(format!("crates/{crate_name}"))).expect("crate dir");
         std::fs::write(d.join(&rel), &text).expect("write manifest");
         plugins.push((
             manifest_value(&text, "id"),
             manifest_value(&text, "version"),
         ));
+        crates.push(crate_name.to_string());
     }
     assert!(plugins.len() > 1, "list-bins names {plugins:?}");
     git(d, &["add", "-A"]);
@@ -144,7 +190,24 @@ fn tree() -> Tree {
         dir,
         commit,
         plugins,
+        crates,
     }
+}
+
+/// Lists `entries` ("<tag> <commit>") in UNVALUED_TAGS of the script copy that the runs
+/// use. The tag commit is made already, so its sha stays.
+fn list_unvalued(tree: &Tree, entries: &[String]) {
+    let path = tree.dir.path().join("scripts/release-promote.sh");
+    let script = std::fs::read_to_string(&path).expect("read script copy");
+    let empty = "\nUNVALUED_TAGS=()\n";
+    assert_eq!(
+        script.matches(empty).count(),
+        1,
+        "one empty UNVALUED_TAGS line"
+    );
+    let list: Vec<String> = entries.iter().map(|e| format!("\"{e}\"")).collect();
+    let listed = format!("\nUNVALUED_TAGS=({})\n", list.join(" "));
+    std::fs::write(&path, script.replace(empty, &listed)).expect("write script copy");
 }
 
 /// The GitHub state the fake gh shows. `World::good()` passes every check.
@@ -185,7 +248,11 @@ fn notes_with(block: &[String]) -> String {
 impl World {
     /// Publishes the release of the tag commit as a tag run uploads it.
     fn good() -> Self {
-        let tree = tree();
+        Self::of(tree())
+    }
+
+    /// Publishes the release of `tree` as a tag run uploads it.
+    fn of(tree: Tree) -> Self {
         let plugins = tree.plugins.clone();
         Self::publishing(tree, plugins.clone(), plugins)
     }
@@ -395,6 +462,30 @@ impl Run {
             self.result
         );
     }
+
+    /// Refused by check 8, with each of `names` in its message.
+    fn assert_check_8(&self, what: &str, names: &[&str]) {
+        self.assert_refused(what);
+        for name in std::iter::once("check 8: ").chain(names.iter().copied()) {
+            assert!(
+                self.result.output.contains(name),
+                "{what}: no {name:?} in\n{:?}",
+                self.result
+            );
+        }
+    }
+
+    /// Promoted with the one edit, check 8 skipped or not.
+    fn assert_promoted(&self, what: &str, skipped: bool) {
+        assert_eq!(self.result, 0, "{what}");
+        assert_eq!(self.edits.len(), 1, "{what}: {}", self.calls);
+        assert_eq!(
+            self.result.output.contains("Check 8 skipped"),
+            skipped,
+            "{what}: {:?}",
+            self.result
+        );
+    }
 }
 
 fn promote(world: &World, args: &[&str]) -> Run {
@@ -569,15 +660,210 @@ fn promotion_refuses_a_release_that_no_published_tasty_bundles() {
 
 #[test]
 fn the_minimum_tasty_may_not_be_newer_than_the_bundling_tasty() {
-    let mut w = World::good();
+    // The manifests require 0.16.0 too, so that only check 4 is left to refuse.
+    let mut w = World::of(tree_with(|_, m| with_min_tasty(m, "0.16.0")));
     w.tasty.insert("0.16.0".into(), ok("false false\n"));
     let mut args = default_args();
     args[3] = "0.16.0";
-    promote(&w, &args).assert_refused("min > new");
+    let run = promote(&w, &args);
+    run.assert_refused("min > new");
+    assert!(run.result.output.contains("check 4: "), "{:?}", run.result);
     // An older minimum is fine.
     let mut args = default_args();
     args[3] = "0.14.0";
-    assert_eq!(promote(&World::good(), &args).result, 0);
+    let w = World::of(tree_with(|_, m| with_min_tasty(m, "0.14.0")));
+    promote(&w, &args).assert_promoted("older minimum", false);
+}
+
+#[test]
+fn check_8_judges_the_manifests_of_the_good_world() {
+    run_good(&World::good()).assert_promoted("values equal to --min-tasty", false);
+}
+
+#[test]
+fn a_tag_without_values_passes_check_8_while_no_tag_is_listed() {
+    let w = World::of(tree_with(|_, m| m.to_string()));
+    run_good(&w).assert_promoted("no values, empty list", true);
+}
+
+#[test]
+fn a_listed_tag_skips_check_8_before_its_manifests_are_read() {
+    let t = tree_with(|_, m| m.to_string());
+    list_unvalued(
+        &t,
+        &[
+            format!("v1.2.2 {OTHER_COMMIT}"),
+            format!("{TAG} {}", t.commit),
+        ],
+    );
+    run_good(&World::of(t)).assert_promoted("listed, no values", true);
+    // A manifest shape check 8 cannot read does not matter for a listed tag.
+    let t = tree_with(|_, m| {
+        before_first_table(
+            m,
+            &[
+                "review_note = \"\"\"",
+                "min_tasty_version = \"0.14.1\"",
+                "\"\"\"",
+            ],
+        )
+    });
+    list_unvalued(&t, &[format!("{TAG} {}", t.commit)]);
+    run_good(&World::of(t)).assert_promoted("listed, unreadable manifests", true);
+}
+
+#[test]
+fn a_tag_without_values_is_refused_once_tags_are_listed() {
+    // Another tag is listed.
+    let t = tree_with(|_, m| m.to_string());
+    list_unvalued(&t, &[format!("v1.2.2 {}", t.commit)]);
+    run_good(&World::of(t)).assert_check_8("not listed", &[TAG]);
+    // The tag is listed for another commit.
+    let t = tree_with(|_, m| m.to_string());
+    list_unvalued(&t, &[format!("{TAG} {OTHER_COMMIT}")]);
+    run_good(&World::of(t)).assert_check_8("listed for another commit", &[TAG, OTHER_COMMIT]);
+}
+
+#[test]
+fn each_manifest_is_compared_with_the_minimum_tasty_on_its_own() {
+    let count = tree().crates.len();
+    for i in [0, count / 2, count - 1] {
+        // One value differs; the others are MIN.
+        let t = tree_with(|j, m| with_min_tasty(m, if j == i { "0.14.1" } else { MIN }));
+        let name = t.crates[i].clone();
+        run_good(&World::of(t)).assert_check_8("one value differs", &[&name, "0.14.1"]);
+        // One manifest has no value.
+        let t = tree_with(|j, m| {
+            if j == i {
+                m.to_string()
+            } else {
+                with_min_tasty(m, MIN)
+            }
+        });
+        let name = t.crates[i].clone();
+        run_good(&World::of(t))
+            .assert_check_8("one value missing", &[&name, "no min_tasty_version"]);
+    }
+}
+
+/// Refused by check 8 as unreadable when only manifest 1 is `shape(base with MIN)`, or when
+/// every manifest is `shape(base)`.
+fn assert_unreadable(what: &str, shape: impl Fn(&str) -> String) {
+    let t = tree_with(|j, m| {
+        let m = with_min_tasty(m, MIN);
+        if j == 1 { shape(&m) } else { m }
+    });
+    let name = t.crates[1].clone();
+    run_good(&World::of(t)).assert_check_8(what, &[&name, "cannot be read"]);
+}
+
+/// Refused by check 8 as unreadable when every manifest has `shape` and no plain line, the
+/// world that would pass as "no manifest has the key" if the shape were taken for no key.
+fn assert_unreadable_everywhere(what: &str, shape: impl Fn(&str) -> String) {
+    let t = tree_with(|_, m| shape(m));
+    let name = t.crates[0].clone();
+    run_good(&World::of(t)).assert_check_8(what, &[&name, "cannot be read"]);
+}
+
+#[test]
+fn manifests_whose_value_is_not_one_plain_top_level_line_are_refused() {
+    let quoted = r#""min_tasty_version" = "0.15.0""#;
+    assert_unreadable("quoted key", |m| {
+        m.replace(r#"min_tasty_version = "0.15.0""#, quoted)
+    });
+    assert_unreadable("key in a table", |m| {
+        at_end(&without_min_tasty(m), &[r#"min_tasty_version = "0.15.0""#])
+    });
+    assert_unreadable("empty string", |m| m.replace("\"0.15.0\"", "\"\""));
+    assert_unreadable("leading zero", |m| m.replace("\"0.15.0\"", "\"01.0.0\""));
+    assert_unreadable("two lines", |m| {
+        before_first_table(m, &[r#"min_tasty_version = "0.15.0""#])
+    });
+    assert_unreadable("table named min_tasty_version", |m| {
+        at_end(m, &["[min_tasty_version]", "probe = 1"])
+    });
+}
+
+#[test]
+fn shapes_where_a_line_search_misreads_the_top_level_value_are_refused() {
+    let fake = [
+        "review_note = \"\"\"",
+        r#"min_tasty_version = "0.14.1""#,
+        "\"\"\"",
+    ];
+    let escaped = r#""min_tasty_version" = "0.15.0""#;
+    // A line inside a multi-line string, and an escaped key that TOML reads as the key.
+    assert_unreadable("multi-line string and escaped key", |m| {
+        let mut lines = fake.to_vec();
+        lines.push(escaped);
+        before_first_table(&without_min_tasty(m), &lines)
+    });
+    assert_unreadable("multi-line string", |m| {
+        before_first_table(&without_min_tasty(m), &fake)
+    });
+    assert_unreadable("escaped key", |m| {
+        before_first_table(&without_min_tasty(m), &[escaped])
+    });
+    // A top-level key made a table by a quoted header after the tables.
+    assert_unreadable("quoted table header", |m| {
+        at_end(m, &[r#"["min_tasty_version"]"#, "probe = 1"])
+    });
+    // An array element that looks like a table header does not end the top level.
+    assert_unreadable("array then escaped key", |m| {
+        before_first_table(
+            &without_min_tasty(m),
+            &["review_note = [", r#"["x"]"#, "]", escaped],
+        )
+    });
+    // In every manifest and with no plain line, so that "no key" would pass the tag.
+    assert_unreadable_everywhere("multi-line string only", |m| {
+        before_first_table(
+            m,
+            &[
+                "review_note = \"\"\"",
+                r#"min_tasty_version = "0.15.0""#,
+                "\"\"\"",
+            ],
+        )
+    });
+    assert_unreadable_everywhere("escape in a key", |m| {
+        before_first_table(m, &[r#""min_tasty\u005fversion" = "0.15.0""#])
+    });
+    assert_unreadable_everywhere("escape in a table header", |m| {
+        at_end(m, &[r#"["min_tasty\u005fversion"]"#, "probe = 1"])
+    });
+}
+
+#[test]
+fn a_plain_value_line_is_read_beside_arrays_and_other_lines() {
+    // A multi-line array before the first table, with an element like a table header.
+    let w = World::of(tree_with(|_, m| {
+        before_first_table(
+            &with_min_tasty(m, MIN),
+            &["review_note = [", r#"["x"]"#, "]"],
+        )
+    }));
+    run_good(&w).assert_promoted("array with a header-like element", false);
+    // A multi-line array whose element lines carry comments.
+    let w = World::of(tree_with(|_, m| {
+        before_first_table(
+            &with_min_tasty(m, MIN),
+            &[
+                "permissions = [",
+                r#"  "a", # a comment ]"#,
+                r#"  "b",  # ["c"]"#,
+                "]",
+            ],
+        )
+    }));
+    run_good(&w).assert_promoted("array with comments", false);
+    // Check 8 does not judge whether a manifest is TOML: a value next to a line that is
+    // not TOML is still read. The check CI of the tag commit parses the manifests with the
+    // tasty parser (crates/plugin-pin-check/tests/pin.rs) and fails on it.
+    let w = World::of(tree_with(|_, m| {
+        before_first_table(&with_min_tasty(m, MIN), &["review_note = not_toml"])
+    }));
+    run_good(&w).assert_promoted("a line that is not TOML", false);
 }
 
 #[test]

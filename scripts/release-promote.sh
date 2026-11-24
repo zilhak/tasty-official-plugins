@@ -34,6 +34,28 @@
 #      file list exactly those archives, with the GitHub digests as hashes; the published
 #      release-meta.toml is for this tag and commit; and the marker block matches it as
 #      scripts/release-check.sh verify judges. The lock file has the same tasty_rev.
+#   8. Every manifest of the tag commit (each crate of list-bins, read on its own) requires
+#      the minimum Tasty: its top-level min_tasty_version equals --min-tasty. In order:
+#      a. A tag in UNVALUED_TAGS whose commit is the listed one skips the check before any
+#         manifest is read, so the manifest shape of an old tag cannot stop it. A listed
+#         name with another commit is not an exception.
+#      b. Each manifest is read line by line, as toml_lines in
+#         scripts/check-plugin-version-bump.sh reads (comments dropped, brackets counted
+#         outside strings, a line is a table header or a key line only when it starts with
+#         all brackets closed). The read takes only a shape where the line it finds is the
+#         TOML top-level value, and fails as unreadable on a multi-line string, brackets
+#         that close nothing or stay open, a table header whose first part is quoted,
+#         escaped, or named min_tasty_version, or a key before the first table that is not
+#         a bare key. Every line that names min_tasty_version counts: there must be at most
+#         one, and it must be a top-level line min_tasty_version = "X.Y.Z" (only spaces
+#         after it) before the first table, with a value that release-check.sh semver
+#         takes. An empty string is unreadable, not missing. The read does not judge that
+#         the file is TOML: the check CI of the tag commit parses the manifests.
+#      c. No manifest has the key: passes as a tag from before the key while UNVALUED_TAGS
+#         is empty, and fails once it lists tags. Some have it: fails, naming the others.
+#         All have it: each value must be --min-tasty as a string.
+#      It catches a value left from an earlier Release only when --min-tasty is the right
+#      new value. See docs/ci.md#minimum-tasty-version.
 # The promotion is one gh release edit: the pending line becomes "Requires Tasty: <min>
 # or later", a Verified with Tasty line is added, the Release stops being a pre-release,
 # and it becomes Latest. Then the Latest Release must be the tag.
@@ -49,6 +71,9 @@ CHECK=scripts/release-check.sh
 TASTY_REPO=zilhak/tasty
 # The platforms of a release, as PLATFORMS in release.yml.
 PLATFORMS=(windows-x64 windows-arm64 macos-arm64 linux-x64 linux-arm64)
+# The tags whose manifests have no min_tasty_version, as "<tag> <peeled commit>"; check 8
+# skips them. Empty while no manifest carries the key.
+UNVALUED_TAGS=()
 
 say() {
   if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
@@ -161,6 +186,87 @@ digest_of() {
 # manifest_string reads it: the first "$1 = ..." line, its quoted text.
 manifest_value() {
   grep -m1 -E "^$1[[:space:]]*=" "$2" | sed 's/.*"\([^"]*\)".*/\1/' || true
+}
+
+# The top-level min_tasty_version of tasty-plugin.toml $1, read as check 8 (b) in the
+# header describes: "value<TAB>X", "none", or "bad<TAB>reason" for the first unreadable line.
+# The key and bracket reading is the one of toml_lines in scripts/check-plugin-version-bump.sh.
+min_tasty_of() {
+  awk '
+    # The key of a key/value line: the text before the first = outside strings.
+    function key_of(s,    i, c, q) {
+      q = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { if (c == q) q = ""; continue }
+        if (c == "\"" || c == "\047") { q = c; continue }
+        if (c == "=") return substr(s, 1, i - 1)
+      }
+      return s
+    }
+    # Drops a comment and counts the brackets outside strings; the count goes to depth.
+    function scan(s,    i, n, c, q, out) {
+      out = ""; q = ""; n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (q != "") {
+          out = out c
+          if (q == "\"" && c == "\\" && i < n) { i++; out = out substr(s, i, 1); continue }
+          if (c == q) q = ""
+          continue
+        }
+        if (c == "#") break
+        if ((c == "\"" || c == "\047") && substr(s, i, 3) == c c c) multi = 1
+        if (c == "\"" || c == "\047") q = c
+        else if (c == "[" || c == "{") depth++
+        else if (c == "]" || c == "}") depth--
+        out = out c
+      }
+      return out
+    }
+    function unreadable(why) { if (bad == "") bad = "line " NR ", " why }
+    {
+      multi = 0
+      start = depth
+      line = scan($0)
+      if (multi) unreadable("a multi-line string")
+      if (depth < 0) { unreadable("a bracket that closes nothing"); depth = 0 }
+      if (index($0, "min_tasty_version")) {
+        hits++
+        if (hits > 1) {
+          unreadable("a second line that names min_tasty_version")
+        } else if (tables || start != 0 || $0 !~ /^[[:space:]]*min_tasty_version[[:space:]]*=[[:space:]]*"[^"]*"[[:space:]]*$/) {
+          unreadable("min_tasty_version not on a line min_tasty_version = \"X.Y.Z\" before the first table")
+        } else {
+          value = $0; sub(/^[^"]*"/, "", value); sub(/"[[:space:]]*$/, "", value)
+        }
+      }
+      sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+      # A line that starts inside open brackets is part of the value before it.
+      if (line == "" || start != 0) next
+      if (line ~ /^\[/ && line ~ /\]$/ && depth == 0) {
+        tables++
+        name = line; gsub(/^\[+[[:space:]]*|[[:space:]]*\]+$/, "", name)
+        if (index(name, ".")) name = substr(name, 1, index(name, ".") - 1)
+        sub(/[[:space:]]+$/, "", name)
+        if (index(name, "\"") || index(name, "\047") || index(name, "\\")) {
+          unreadable("a quote or backslash in the first part of a table name")
+        } else if (name == "min_tasty_version") {
+          unreadable("a table named min_tasty_version")
+        }
+        next
+      }
+      if (!tables) {
+        key = key_of(line); sub(/[[:space:]]+$/, "", key)
+        if (key !~ /^[A-Za-z0-9_-]+$/) unreadable("a key before the first table that is not a bare key")
+      }
+    }
+    END {
+      if (depth != 0) unreadable("brackets still open at the end of the file")
+      if (bad != "") print "bad\t" bad
+      else if (hits) print "value\t" value
+      else print "none"
+    }' "$1"
 }
 
 sha_of() {
@@ -345,8 +451,54 @@ fi
   fail "check 7: the lock file of v$NEW and release-meta.toml name different tasty_rev values"
 "$CHECK" verify "$WORK/notes.md" "$meta" || fail "check 7: the marker block does not match release-meta.toml"
 
-# A check that the Requires Tasty value matches the min_tasty_version of the plugin
-# manifests goes here once the manifests carry one.
+# ---- 8. The manifests require the minimum Tasty ----
+listed=""
+for entry in ${UNVALUED_TAGS[@]+"${UNVALUED_TAGS[@]}"}; do
+  [[ "${entry%% *}" == "$TAG" ]] || continue
+  if [[ "${entry#* }" == "$commit" ]]; then
+    listed=yes
+    break
+  fi
+  listed="for ${entry#* }"
+done
+if [[ "$listed" == yes ]]; then
+  echo "Check 8 skipped: $TAG ($commit) is listed as a tag whose manifests have no min_tasty_version"
+else
+  minimums="$WORK/min-tasty.txt"
+  : >"$minimums"
+  while IFS= read -r crate; do
+    [[ -n "$crate" ]] || continue
+    manifest="$WORK/$crate.tasty-plugin.toml"
+    git show "$commit:crates/$crate/tasty-plugin.toml" >"$manifest" ||
+      fail "check 8: cannot read crates/$crate/tasty-plugin.toml at $commit"
+    found=$(min_tasty_of "$manifest") || fail "check 8: cannot read crates/$crate/tasty-plugin.toml at $commit"
+    case "$found" in
+      none) echo "$crate -" >>"$minimums" ;;
+      value$'\t'*)
+        value=${found#value$'\t'}
+        "$CHECK" semver "$value" ||
+          fail "check 8: crates/$crate/tasty-plugin.toml at $commit cannot be read: min_tasty_version '$value' is not MAJOR.MINOR.PATCH"
+        echo "$crate $value" >>"$minimums"
+        ;;
+      *) fail "check 8: crates/$crate/tasty-plugin.toml at $commit cannot be read: ${found#bad$'\t'}" ;;
+    esac
+  done <<<"$bins"
+  missing=$(awk '$2 == "-" { printf "%s ", $1 }' "$minimums")
+  if ! awk '$2 != "-" { found = 1 } END { exit !found }' "$minimums"; then
+    if [[ ${#UNVALUED_TAGS[@]} -eq 0 ]]; then
+      echo "Check 8 skipped: no manifest of $TAG has min_tasty_version, a tag from before the key"
+    else
+      fail "check 8: no manifest of $TAG ($commit) has min_tasty_version, and the tag is not listed in UNVALUED_TAGS${listed:+ (it is listed $listed)}"
+    fi
+  elif [[ -n "$missing" ]]; then
+    fail "check 8: some manifests of $TAG have no min_tasty_version: ${missing% }"
+  else
+    while read -r crate value; do
+      [[ "$value" == "$MIN" ]] ||
+        fail "check 8: crates/$crate/tasty-plugin.toml at $commit has min_tasty_version $value, not --min-tasty $MIN"
+    done <"$minimums"
+  fi
+fi
 
 # ---- Promote ----
 "$CHECK" promote "$WORK/notes.md" "$MIN" "$NEW" "$ON" >"$WORK/promoted.md" ||
