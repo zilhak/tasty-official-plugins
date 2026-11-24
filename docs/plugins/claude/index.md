@@ -602,7 +602,7 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 
 `surface.read_since_scan_mark`는 에이전트의 `tasty set mark`·`read since-mark`·`parse-since-mark`와 별도의 커서를 사용한다. 읽을 때마다 해당 커서만 전진하며, 다음 호출에는 그 이후 출력이 온다.
 
-패턴 비교를 위해 플러그인이 읽은 출력을 크기 제한 안에서 누적한다. 이 커서는 스캐너 하나만 소비한다는 전제다. 다른 소비자가 같은 API를 호출하면 한쪽이 읽은 출력을 다른 쪽이 놓칠 수 있어 CLI로 제공하지 않는다. [터미널 입출력 설계](https://github.com/zilhak/tasty/blob/develop/docs/surfaces/terminal/index.md)를 참고한다.
+패턴 비교를 위해 플러그인이 읽은 출력을 크기 제한 안에서 누적한다. 이 커서는 스캐너 하나만 소비한다는 전제다. 다른 소비자가 같은 API를 호출하면 한쪽이 읽은 출력을 다른 쪽이 놓칠 수 있어 CLI로 제공하지 않는다. [출력 스캐너 전용 커서](https://github.com/zilhak/tasty/blob/develop/docs/features/terminal-output/index.md#출력-스캐너-전용-커서)를 참고한다.
 
 ### 정지 알림 (`claude-error-stalled` → 부모 completion-log)
 
@@ -615,13 +615,13 @@ API 오류에서 실제 이벤트를 받은 실험까지 완료한 것은 아니
 | 조건 | 왜 |
 |---|---|
 | 누적 출력의 해시가 기준 시간 동안 같음 | 이번 턴의 마지막 출력 4 KiB에 오류 문구가 있으면 30초, 없으면 설정 `no_output_notice_secs`(기본 600초). 비교 대상은 스캐너가 보관한 크기 제한 안의 누적 텍스트이며 화면 전체나 프로세스 진행 상태가 아니다. 호스트의 `CHILD_OUTPUT_SILENCE`(120초)와 별개의 값이다. 그래서 `tasty claude children`이 이 알림보다 먼저 `stale`을 보여 줄 수 있다 |
-| `terminal.state`가 `active` 또는 `stale` | `idle`·`needs_input`·`exited`는 별도 상태 훅이 다루므로 제외한다. 그 훅이나 알림이 실제 전달됐음을 확인하는 조건은 아니다. `stale`은 `confidence`와 무관하게 포함한다. 대기가 아닌 오류 없는 정지가 `active`가 아닐 때(`stale`)는 훅을 그대로 발화하되, 그 자식에 idle 체크를 걸어 둔 부모와 그 조용한 구간에 idle 줄을 이미 받은 부모에게는 줄을 쓰지 않는다. 그 조용함은 그 부모의 idle 체크가 알리므로 같은 조용함을 두 알림이 따로 알리지 않는다. 체크가 없는 부모는 지금처럼 정지 줄을 받는다. `stale`을 본 구간은 출력이 바뀌거나 hook이 올 때까지 다시 묻지 않는다 |
+| `terminal.state`가 `active` 또는 `stale` | `idle`·`needs_input`·`exited`는 별도 상태 훅이 다루므로 제외한다. 그 훅이나 알림이 실제 전달됐음을 확인하는 조건은 아니다. `stale`은 `confidence`와 무관하게 포함한다. 대기가 아닌 오류 없는 정지가 `active`가 아닐 때(`stale`)는 훅을 그대로 발화하되, 그 자식에 idle 체크를 걸어 둔 부모와 그 조용한 구간에 idle 줄을 이미 받은 부모에게는 줄을 쓰지 않는다. 그 조용함은 그 부모의 idle 체크가 알리므로 같은 조용함을 두 알림이 따로 알리지 않는다. 체크가 없는 부모는 지금처럼 정지 줄을 받는다. `stale`은 `active`처럼 발화를 허용하는 상태라 아래의 조회 멈춤 대상이 아니다. 발화하면 그 구간을 알린 것으로 기록해 다시 묻지 않고, 발화 요청이 실패하면 다음 회차에 다시 조회한다(`error_scan.rs`의 `maybe_notify_stall`·`fire_stall`) |
 
 오류 없는 기준은 플러그인 설정 `no_output_notice_secs`(`plugin_settings."com.tasty.claude".no_output_notice_secs`)로 정한다. 설정 › Plugins › Claude Code의 "Seconds without child output before notifying the parent"(`claude.settings.no_output_notice_secs`) 항목이다. 상태가 `active`·`stale`인 자식의 오류 없는 정지와 백그라운드 작업 대기에 쓴다. `stale`인 오류 없는 정지는 위처럼 idle 체크를 건 부모에게만 쓰지 않는다. 설정 키·범위·저장 값은 0.3.6 전과 같으며 옮길 것은 없다. 기본 600초, 범위 60~86400초다. 설정 파일을 직접 고친 값도 코드에서 이 범위로 조정하고, 숫자가 아니면 기본값을 쓴다. 끄는 값은 없다. 설정 변경 이벤트가 없어 스캐너가 30초 간격으로 다시 읽으므로 재시작 없이 반영된다. 조회에 실패하면 마지막 값을 유지한다. 오류 직후 30초와 재알림 간격 5분은 설정 대상이 아니다.
 
 30초 기준은 조용해지기 직전에 오류를 본 경우만 쓴다. 이번 턴의 마지막 출력 4 KiB로 판단하므로, 앞 턴의 오류나 그 뒤로 4 KiB를 넘게 이어진 출력은 세지 않는다. `claude-error` 이벤트와 중복 생략은 지금처럼 누적 창 전체를 본다.
 
-상태는 출력 조건을 넘긴 뒤에만 조회한다. 조회한 상태가 `idle`·`needs_input`·`exited`이면 그 조용한 구간에서는 다시 조회하지 않는다. 대기 meta 복원 조회도 함께 멈춘다. 이 세 상태는 hook이 보고한 값이라 출력이 바뀌거나 그 surface에 hook이 와야 바뀐다. 누적 출력이 바뀌거나 그 surface의 hook(종류 무관)이 플러그인에 오면 다음 회차에 다시 조회한다. 그래서 상태가 `active`로 돌아온 뒤 알리는 시점은 매 회차 조회할 때와 같다. 새 턴 신호(`prompt-submit`/`session-start`/`active`, 압축 뒤의 `session-start`는 제외)는 `active`를 호스트에 보고하기 **전에** 정지 관측을 초기화한다. 순서가 반대면 그 사이의 스캔 회차가 이전 턴의 조용한 구간과 새 상태 `active`를 함께 보고 재개 직후 거짓 정지 알림을 낼 수 있다. 상태 조회에 실패하면(빈 값) 확인하지 않은 것으로 보고 다음 회차에 다시 묻는다. hook을 거치지 않고 `terminal.set_state`로 상태를 바꾸면 다음 출력 변화나 hook까지 반영되지 않는다. 추적 유지 판단(`terminal.parent`·`surface.locate`)은 이 규칙과 무관하게 매 회차 한다.
+상태는 출력 조건을 넘긴 뒤에만 조회한다. 조회한 상태가 발화를 허용하지 않는 값(`active`·`stale` 밖의 비어 있지 않은 값. `idle`·`needs_input`·`exited`·`unknown` 등)이면 그 조용한 구간에서는 다시 조회하지 않는다. 대기 meta 복원 조회도 함께 멈춘다. 이 상태는 hook 보고만으로 정해지지 않는다. 호스트는 surface가 없으면 hook과 무관하게 `exited`를 내고, 연결이 끊긴 원격 자식에는 `unknown`을 돌려준다(tasty `derive_child_state`, `terminal.state` 핸들러의 `remote_connection_fields`). 누적 출력이 바뀌거나 그 surface의 hook(종류 무관)이 플러그인에 오면 다음 회차에 다시 조회한다. 그래서 출력 변화나 hook과 함께 `active`로 돌아온 뒤 알리는 시점은 매 회차 조회할 때와 같다. 출력 변화도 hook도 없이 호스트 관측만으로 바뀐 상태는 다음 출력 변화나 hook까지 반영되지 않는다. 새 턴 신호(`prompt-submit`/`session-start`/`active`, 압축 뒤의 `session-start`는 제외)는 `active`를 호스트에 보고하기 **전에** 정지 관측을 초기화한다. 순서가 반대면 그 사이의 스캔 회차가 이전 턴의 조용한 구간과 새 상태 `active`를 함께 보고 재개 직후 거짓 정지 알림을 낼 수 있다. 상태 조회에 실패하면(빈 값) 확인하지 않은 것으로 보고 다음 회차에 다시 묻는다. hook을 거치지 않고 `terminal.set_state`로 상태를 바꾸면 다음 출력 변화나 hook까지 반영되지 않는다. 추적 유지 판단(`terminal.parent`·`surface.locate`)은 이 규칙과 무관하게 매 회차 한다.
 
 **Monitor 기록.** Monitor는 이벤트가 있을 때만 출력하므로 조용한 것이 정상이다. 대기 Stop에서 Monitor는 정지 알림의 감시 대상·종류·이름에서 뺀다. 기다리는 작업이 모두 Monitor면 화면 기준과 출력 파일 기준 모두 알리지 않는다. Monitor만 남은 Stop·StopFailure는 이제 대기가 아니므로, 이런 대기는 이 규칙 이전 버전이 기록해 재시작 뒤 복원된 대기뿐이다(아래 "이 규칙 이전 버전이 Monitor만 기다리는 대기로 기록한 자식"). Monitor와 다른 작업이 함께 있으면 다른 작업만으로 판정한다.
 
