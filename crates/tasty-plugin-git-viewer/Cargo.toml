@@ -1,6 +1,6 @@
 [package]
 name = "tasty-plugin-git-viewer"
-version = "0.2.6"
+version = "0.2.7"
 edition = "2024"
 license = "MIT"
 description = "External Tasty plugin: read-only git status/log/diff viewer popup"
@@ -39,6 +39,8 @@ egui = { version = "0.31", default-features = false, features = [
 [dev-dependencies]
 # 언어별 시험의 대상 목록을 내장 언어 정본에서 얻는다.
 tasty-i18n.workspace = true
+# diff 색 시험이 내장 Mocha·Latte 테마를 만든다.
+tasty-themes.workspace = true
 tempfile = "3"
 
 [lints]

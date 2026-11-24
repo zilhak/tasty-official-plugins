@@ -174,6 +174,45 @@ impl<'a> DiffRow<'a> {
     }
 }
 
+/// diff 한 행의 잉크와 채움. 그리기 호출은 이 값만 받는다.
+/// 정본: tasty-page `vendor/ui_kits/terminal/overlays/git_viewer.jsx` `DiffLine`.
+/// 채움은 page component `git-diff-*-bg`가 가리키는 semantic tint 토큰이다.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DiffRowInk {
+    /// 본문과 `+`/`-` 부호의 잉크.
+    text: Color32,
+    /// 줄 번호 잉크. hunk 머리는 번호를 그리지 않는다.
+    number: Color32,
+    /// 행 채움. context 행은 채우지 않는다.
+    fill: Option<Color32>,
+}
+
+fn diff_row_ink(theme: &Theme, is_hunk: bool, kind: DiffLineKind) -> DiffRowInk {
+    let (text, number, fill) = match (is_hunk, kind) {
+        (true, _) => (
+            theme.accent_info_raised(),
+            theme.text_muted(),
+            Some(theme.tint_info_bg()),
+        ),
+        (false, DiffLineKind::Addition) => (
+            theme.accent_success_raised(),
+            theme.text_muted_raised(),
+            Some(theme.tint_success_bg()),
+        ),
+        (false, DiffLineKind::Deletion) => (
+            theme.accent_danger_raised(),
+            theme.text_muted_raised(),
+            Some(theme.tint_danger_bg()),
+        ),
+        (false, DiffLineKind::Context) => (theme.text_primary(), theme.text_muted(), None),
+    };
+    DiffRowInk {
+        text: text.to_egui(),
+        number: number.to_egui(),
+        fill: fill.map(|c| c.to_egui()),
+    }
+}
+
 /// diff 한 줄: gutter(old/new) + sign + text. hunk 헤더 밴드 / ± 라인 tint.
 fn diff_line(ui: &mut egui::Ui, theme: &Theme, row: DiffRow<'_>, row_w: f32) {
     let DiffRow {
@@ -189,43 +228,15 @@ fn diff_line(ui: &mut egui::Ui, theme: &Theme, row: DiffRow<'_>, row_w: f32) {
     let avail = ui.available_width();
     let full_w = avail.max(row_w);
     let (rect, _) = ui.allocate_exact_size(vec2(full_w, h), Sense::hover());
-    // diff 줄 배경 톤. hunk 머리만 한 단계 더 옅다. 대응 토큰 없음.
-    const DIFF_HUNK_BG_OPACITY: f32 = 0.09;
-    const DIFF_LINE_BG_OPACITY: f32 = 0.10;
-
-    let (fg, bg) = match (is_hunk, kind) {
-        (true, _) => (
-            theme.accent_info().to_egui(),
-            theme
-                .accent_info()
-                .to_egui()
-                .gamma_multiply(DIFF_HUNK_BG_OPACITY),
-        ),
-        (false, DiffLineKind::Addition) => (
-            theme.accent_success().to_egui(),
-            theme
-                .accent_success()
-                .to_egui()
-                .gamma_multiply(DIFF_LINE_BG_OPACITY),
-        ),
-        (false, DiffLineKind::Deletion) => (
-            theme.accent_danger().to_egui(),
-            theme
-                .accent_danger()
-                .to_egui()
-                .gamma_multiply(DIFF_LINE_BG_OPACITY),
-        ),
-        (false, DiffLineKind::Context) => (theme.text_primary().to_egui(), Color32::TRANSPARENT),
-    };
-    if bg != Color32::TRANSPARENT {
+    let ink = diff_row_ink(theme, is_hunk, kind);
+    if let Some(fill) = ink.fill {
         // 배경은 최소한 표시 영역을 채우고, 긴 줄이면 해당 줄 너비까지 늘린다.
         let band_w = avail.max(diff_min_w(ui.painter(), theme, text, sz));
         ui.painter()
-            .rect_filled(Rect::from_min_size(rect.min, vec2(band_w, h)), 0.0, bg);
+            .rect_filled(Rect::from_min_size(rect.min, vec2(band_w, h)), 0.0, fill);
     }
     let p = ui.painter();
     let cy = rect.center().y;
-    let gutter = theme.text_muted_raised().to_egui();
     if !is_hunk {
         let old_s = old_no.map(|n| n.to_string()).unwrap_or_default();
         let new_s = new_no.map(|n| n.to_string()).unwrap_or_default();
@@ -234,29 +245,27 @@ fn diff_line(ui: &mut egui::Ui, theme: &Theme, row: DiffRow<'_>, row_w: f32) {
             Align2::RIGHT_CENTER,
             old_s,
             mono(sz),
-            gutter,
+            ink.number,
         );
         p.text(
             egui::pos2(rect.left() + DIFF_GUTTER_W * 2.0 - 8.0, cy),
             Align2::RIGHT_CENTER,
             new_s,
             mono(sz),
-            gutter,
+            ink.number,
         );
         let sign = match kind {
             DiffLineKind::Addition => "+",
             DiffLineKind::Deletion => "-",
             DiffLineKind::Context => "",
         };
-        // 부호 글리프는 jsx `opacity: 0.8`(hunk band border 패턴과 동일 gamma_multiply).
-        // +/- 부호는 본문 전경보다 한 단계 물러난다. 대응 토큰 없음.
-        const DIFF_SIGN_OPACITY: f32 = 0.8;
+        // 부호는 추가·삭제를 가르는 글자라 본문과 같은 줄 잉크로 그린다.
         p.text(
             egui::pos2(rect.left() + DIFF_GUTTER_W * 2.0 + DIFF_SIGN_W * 0.5, cy),
             Align2::CENTER_CENTER,
             sign,
             mono(sz),
-            fg.gamma_multiply(DIFF_SIGN_OPACITY),
+            ink.text,
         );
     }
     let text_x = rect.left() + DIFF_GUTTER_W * 2.0 + DIFF_SIGN_W;
@@ -265,6 +274,280 @@ fn diff_line(ui: &mut egui::Ui, theme: &Theme, row: DiffRow<'_>, row_w: f32) {
         Align2::LEFT_CENTER,
         text,
         mono(sz),
-        fg,
+        ink.text,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::epaint::ClippedShape;
+    use egui::{Pos2, Shape};
+    use tasty_git_core::DiffHunk;
+
+    fn mocha() -> Theme {
+        Theme::with_colors_and_zoom(tasty_themes::mocha_fallback_colors(), false, 1.0)
+    }
+
+    /// 내장 Latte와 팔레트·밝기 분기가 같은 테마.
+    fn latte() -> Theme {
+        let file =
+            tasty_themes::ThemeFile::parse(tasty_themes::LATTE_TOML_TEXT).expect("latte.toml");
+        let (partial, is_light) = file.to_partial();
+        let mut colors = tasty_themes::mocha_fallback_colors();
+        colors.apply_partial(&partial);
+        Theme::with_colors(colors, is_light.unwrap_or(true))
+    }
+
+    /// 줄 번호는 행 바탕의 text-muted 셀을 쓴다.
+    /// Latte는 text_muted와 text_muted_raised를 가르고, Mocha는 text_muted_raised와 text_primary를 가른다.
+    #[test]
+    fn line_numbers_take_the_muted_cell_of_the_row() {
+        let l = latte();
+        assert_ne!(l.text_muted(), l.text_muted_raised());
+        let m = mocha();
+        assert_ne!(m.text_muted_raised(), m.text_primary());
+        for t in [m, l] {
+            assert_eq!(
+                diff_row_ink(&t, false, DiffLineKind::Context).number,
+                t.text_muted().to_egui()
+            );
+            for k in [DiffLineKind::Addition, DiffLineKind::Deletion] {
+                assert_eq!(
+                    diff_row_ink(&t, false, k).number,
+                    t.text_muted_raised().to_egui()
+                );
+            }
+        }
+    }
+
+    /// 채움은 각 색상의 semantic tint 토큰이고 context 행은 채우지 않는다.
+    #[test]
+    fn row_fills_read_the_tint_tokens() {
+        for t in [mocha(), latte()] {
+            assert_eq!(
+                diff_row_ink(&t, true, DiffLineKind::Context).fill,
+                Some(t.tint_info_bg().to_egui())
+            );
+            assert_eq!(
+                diff_row_ink(&t, false, DiffLineKind::Addition).fill,
+                Some(t.tint_success_bg().to_egui())
+            );
+            assert_eq!(
+                diff_row_ink(&t, false, DiffLineKind::Deletion).fill,
+                Some(t.tint_danger_bg().to_egui())
+            );
+            assert_eq!(diff_row_ink(&t, false, DiffLineKind::Context).fill, None);
+        }
+    }
+
+    /// 줄 잉크는 -raised accent이고 context는 text_primary다.
+    /// Mocha는 기본 accent와 -raised가 같아 -raised 판별은 Latte가 맡고,
+    /// Latte는 text_primary와 text_muted_raised가 같아 context 본문 판별은 Mocha가 맡는다.
+    #[test]
+    fn line_ink_is_the_raised_accent() {
+        let l = latte();
+        assert_ne!(l.accent_info_raised(), l.accent_info());
+        assert_ne!(l.accent_success_raised(), l.accent_success());
+        assert_ne!(l.accent_danger_raised(), l.accent_danger());
+        let m = mocha();
+        assert_ne!(m.text_primary(), m.text_muted_raised());
+        for t in [m, l] {
+            assert_eq!(
+                diff_row_ink(&t, true, DiffLineKind::Context).text,
+                t.accent_info_raised().to_egui()
+            );
+            assert_eq!(
+                diff_row_ink(&t, false, DiffLineKind::Addition).text,
+                t.accent_success_raised().to_egui()
+            );
+            assert_eq!(
+                diff_row_ink(&t, false, DiffLineKind::Deletion).text,
+                t.accent_danger_raised().to_egui()
+            );
+            assert_eq!(
+                diff_row_ink(&t, false, DiffLineKind::Context).text,
+                t.text_primary().to_egui()
+            );
+        }
+    }
+
+    const HUNK: &str = "@@ -10,2 +20,2 @@";
+    const KEPT: &str = "kept_body";
+    const GONE: &str = "gone_body";
+    const CAME: &str = "came_body";
+
+    /// hunk 하나에 context·삭제·추가 줄이 하나씩 있다. 본문과 줄 번호는 서로 겹치지 않는다.
+    fn sample_diff() -> DiffData {
+        let line = |kind, content: &str, old, new| DiffLine {
+            kind,
+            content: content.to_owned(),
+            old_lineno: old,
+            new_lineno: new,
+        };
+        DiffData {
+            file_path: "src/lib.rs".to_owned(),
+            hunks: vec![DiffHunk {
+                header: HUNK.to_owned(),
+                lines: vec![
+                    line(DiffLineKind::Context, KEPT, Some(10), Some(20)),
+                    line(DiffLineKind::Deletion, GONE, Some(11), None),
+                    line(DiffLineKind::Addition, CAME, None, Some(31)),
+                ],
+            }],
+        }
+    }
+
+    /// 출력에 그려진 글자 도형 하나.
+    struct PaintedText {
+        text: String,
+        rect: Rect,
+        /// 실제 테셀레이터가 낸 정점 색의 종류. galley 색, override·fallback, 도형 opacity가 모두 반영된다.
+        /// 밑줄·배경이 없는 글자 도형이라 정점은 모두 글리프다.
+        glyph_colors: Vec<Color32>,
+        opacity_factor: f32,
+    }
+
+    fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+        match shape {
+            Shape::Vec(v) => v.iter().for_each(|s| flatten(s, out)),
+            s => out.push(s.clone()),
+        }
+    }
+
+    fn tessellated_colors(ctx: &egui::Context, clipped: ClippedShape, ppp: f32) -> Vec<Color32> {
+        let mut out: Vec<Color32> = Vec::new();
+        for prim in ctx.tessellate(vec![clipped], ppp) {
+            if let egui::epaint::Primitive::Mesh(mesh) = prim.primitive {
+                for v in &mesh.vertices {
+                    if !out.contains(&v.color) {
+                        out.push(v.color);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn paint_frame(
+        ctx: &egui::Context,
+        theme: &Theme,
+        diff: &DiffData,
+        width_cache: &mut Option<(f32, f32)>,
+    ) -> (Vec<PaintedText>, Vec<(Rect, Color32)>) {
+        let tr = Translator::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lang"),
+            "en",
+        );
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0))),
+            ..Default::default()
+        };
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let area = ui.max_rect();
+                    draw_diff(ui, theme, &tr, diff, width_cache, area);
+                });
+        });
+        let (mut texts, mut rects) = (Vec::new(), Vec::new());
+        for clipped in &out.shapes {
+            let mut shapes = Vec::new();
+            flatten(&clipped.shape, &mut shapes);
+            for shape in shapes {
+                match &shape {
+                    Shape::Text(t) => texts.push(PaintedText {
+                        text: t.galley.text().to_owned(),
+                        rect: t.galley.rect.translate(t.pos.to_vec2()),
+                        opacity_factor: t.opacity_factor,
+                        glyph_colors: tessellated_colors(
+                            ctx,
+                            ClippedShape {
+                                clip_rect: clipped.clip_rect,
+                                shape: shape.clone(),
+                            },
+                            out.pixels_per_point,
+                        ),
+                    }),
+                    Shape::Rect(r) => rects.push((r.rect, r.fill)),
+                    _ => {}
+                }
+            }
+        }
+        (texts, rects)
+    }
+
+    /// 그리기 호출이 `diff_row_ink`의 값을 쓴다. 같은 Context·diff·너비 캐시로 Mocha 다음 Latte를 그리고,
+    /// 프레임마다 그 테마로 글자의 유효 글리프 색·불투명도와 행별 채움을 본다.
+    #[test]
+    fn painted_rows_use_the_row_ink() {
+        let ctx = egui::Context::default();
+        let diff = sample_diff();
+        let mut width_cache = None;
+        for (name, theme) in [("mocha", mocha()), ("latte", latte())] {
+            let (texts, rects) = paint_frame(&ctx, &theme, &diff, &mut width_cache);
+            for t in &texts {
+                assert_eq!(t.opacity_factor, 1.0, "{name}: '{}' opacity", t.text);
+            }
+            let find = |s: &str| -> &PaintedText {
+                let hits: Vec<&PaintedText> = texts.iter().filter(|t| t.text == s).collect();
+                assert_eq!(hits.len(), 1, "{name}: '{s}' 글자 도형 수");
+                hits[0]
+            };
+            let hunk = diff_row_ink(&theme, true, DiffLineKind::Context);
+            let ctx_ink = diff_row_ink(&theme, false, DiffLineKind::Context);
+            let del = diff_row_ink(&theme, false, DiffLineKind::Deletion);
+            let add = diff_row_ink(&theme, false, DiffLineKind::Addition);
+            let expected = [
+                (HUNK, hunk.text, theme.accent_info_raised().to_egui()),
+                (KEPT, ctx_ink.text, theme.text_primary().to_egui()),
+                (GONE, del.text, theme.accent_danger_raised().to_egui()),
+                ("-", del.text, theme.accent_danger_raised().to_egui()),
+                (CAME, add.text, theme.accent_success_raised().to_egui()),
+                ("+", add.text, theme.accent_success_raised().to_egui()),
+                ("10", ctx_ink.number, theme.text_muted().to_egui()),
+                ("20", ctx_ink.number, theme.text_muted().to_egui()),
+                ("11", del.number, theme.text_muted_raised().to_egui()),
+                ("31", add.number, theme.text_muted_raised().to_egui()),
+            ];
+            for (s, ink, token) in expected {
+                assert_eq!(ink, token, "{name}: '{s}' 행 잉크와 토큰");
+                assert_eq!(
+                    find(s).glyph_colors,
+                    vec![token],
+                    "{name}: '{s}' 유효 글리프 색"
+                );
+            }
+            // 행 채움: 본문 글자 위치를 덮는 행 높이 사각형. 본문 전체 바탕(well)은 행 높이가 아니라 빠진다.
+            let row_h = diff_row_h(&theme);
+            let bands_at = |s: &str| -> Vec<Color32> {
+                let c = find(s).rect.center();
+                rects
+                    .iter()
+                    .filter(|(r, _)| (r.height() - row_h).abs() < 0.5 && r.contains(c))
+                    .map(|(_, fill)| *fill)
+                    .collect()
+            };
+            assert_eq!(
+                bands_at(HUNK),
+                vec![theme.tint_info_bg().to_egui()],
+                "{name}: hunk 채움"
+            );
+            assert_eq!(
+                bands_at(GONE),
+                vec![theme.tint_danger_bg().to_egui()],
+                "{name}: 삭제 채움"
+            );
+            assert_eq!(
+                bands_at(CAME),
+                vec![theme.tint_success_bg().to_egui()],
+                "{name}: 추가 채움"
+            );
+            assert!(
+                bands_at(KEPT).is_empty(),
+                "{name}: context 행은 채우지 않는다"
+            );
+        }
+    }
 }
