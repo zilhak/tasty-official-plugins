@@ -763,6 +763,33 @@ fn each_manifest_is_compared_with_the_minimum_tasty_on_its_own() {
     }
 }
 
+/// Gives the work tree manifests of `tree` min_tasty_version = `value`, after the tag
+/// commit is made: the commit keeps its own values.
+fn change_work_tree_min_tasty(tree: &Tree, value: &str) {
+    for crate_name in &tree.crates {
+        let path = tree
+            .dir
+            .path()
+            .join(format!("crates/{crate_name}/tasty-plugin.toml"));
+        let text = std::fs::read_to_string(&path).expect("read work tree manifest");
+        let changed = with_min_tasty(&without_min_tasty(&text), value);
+        std::fs::write(&path, changed).expect("write work tree manifest");
+    }
+}
+
+#[test]
+fn check_8_reads_the_manifests_of_the_tag_commit_not_the_work_tree() {
+    // The tag commit requires MIN; the work tree has another value.
+    let t = tree();
+    change_work_tree_min_tasty(&t, "0.14.1");
+    run_good(&World::of(t)).assert_promoted("tag commit MIN, work tree other", false);
+    // The work tree requires MIN; the tag commit has another value.
+    let t = tree_with(|_, m| with_min_tasty(m, "0.14.1"));
+    change_work_tree_min_tasty(&t, MIN);
+    let name = t.crates[0].clone();
+    run_good(&World::of(t)).assert_check_8("work tree MIN, tag commit other", &[&name, "0.14.1"]);
+}
+
 /// Refused by check 8 as unreadable when only manifest 1 is `shape(base with MIN)`, or when
 /// every manifest is `shape(base)`.
 fn assert_unreadable(what: &str, shape: impl Fn(&str) -> String) {
