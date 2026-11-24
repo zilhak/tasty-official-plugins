@@ -5931,6 +5931,18 @@ fn a_path_patch_or_paths_in_the_cargo_config_is_rejected() {
         text.contains(".cargo/extra.toml (build settings)"),
         "{text}"
     );
+
+    // A tab after the key: the line is read whole, also by a later commit that does not
+    // touch the config.
+    f.write_config(".cargo/config.toml", "paths\t= [\"../x\"]\n");
+    write(&f.repo, "docs/note.md", "unrelated\n");
+    f.commit("an unrelated commit");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains(".cargo/config.toml: paths\t= [\"../x\"]"),
+        "{text}"
+    );
 }
 
 impl ExtFixture {
@@ -6125,6 +6137,73 @@ fn a_package_rename_in_a_patch_judges_both_packages() {
     );
     f.commit("name a package that is not locked");
     assert_undecidable_with(&f.check(&HEAD_RANGE), "no package nothere is in Cargo.lock");
+}
+
+/// The value of a [patch] entry is read whole, also after a tab inside it: a path field
+/// there is still a path patch, on a later commit that does not touch the entry too.
+#[test]
+fn a_path_patch_after_a_tab_inside_a_value_is_rejected() {
+    for gap in ["\t", " "] {
+        let f = ExtFixture::new();
+        let path = f.local_ext();
+        f.set_patch(
+            &format!("ext = {{ features = [\"std\",{gap}\"alloc\"], path = \"{path}\" }}\n"),
+            false,
+        );
+        f.commit("patch ext from a local copy, without the hooks");
+        write(&f.repo, "docs/note.md", "unrelated\n");
+        f.commit("an unrelated commit");
+        assert_path_patch_rejected(&f.check(&HEAD_RANGE), "Cargo.toml");
+    }
+}
+
+/// path is a field of the entry only at its top level: a string that mentions path= is no
+/// path patch.
+#[test]
+fn a_git_patch_whose_string_mentions_path_is_not_rejected() {
+    let f = ExtFixture::new();
+    let (url, _) = f.patch_source();
+    f.set_patch(
+        &format!(
+            "ext = {{ features = [\"std\",\t\"alloc\"], git = \"{url}\", branch = \"topic,path=demo\" }}\n"
+        ),
+        false,
+    );
+    f.commit("patch ext from a branch");
+    write(&f.repo, "docs/note.md", "unrelated\n");
+    f.commit("an unrelated commit");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}
+
+/// The package field after a tab inside the value is read, on the side that has the entry:
+/// here it names a package that Cargo.lock does not have. ext, the entry name, is locked, so
+/// reading the name from the entry instead would pass.
+#[test]
+fn a_patch_package_after_a_tab_inside_a_value_is_read() {
+    let entry = "ext = { features = [\"std\",\t\"alloc\"], package = \"nothere\", git = \"file:///unused\" }\n";
+    let f = ExtFixture::new();
+    f.set_patch(entry, false);
+    f.commit("add the entry");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "no package nothere is in Cargo.lock");
+    f.set_patch("", false);
+    f.commit("remove the entry");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "no package nothere is in Cargo.lock");
+}
+
+/// package is a field of the entry only at its top level: a string that mentions package= is
+/// no package name, and the entry name (ext, locked) is judged.
+#[test]
+fn a_patch_branch_string_mentioning_package_is_not_a_package_name() {
+    let f = ExtFixture::new();
+    f.set_patch(
+        "ext = { features = [\"std\",\t\"alloc\"], branch = \"topic,package=\", git = \"file:///unused\" }\n",
+        false,
+    );
+    f.commit("add the entry");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("Cargo.lock locks ext the same"), "{text}");
 }
 
 /// [patch] case 51: the pin rule pairs git packages by name, so two git sources of ext would

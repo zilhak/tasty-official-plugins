@@ -1378,6 +1378,37 @@ function norm_inline(v,    items, n, j, e, k, np, kq, out) {
     }
     return "{" out " }"
 }
+# The value of the top-level field <key> of a [patch] value as patch_entries writes it (a plain
+# value, an inline table, or both joined with " + "), trimmed; "" without the field, <bad>
+# when a table cannot be read. A string that only mentions the key is no field.
+function field_value(v, key,    parts, np, i, c, q, d, st, j, n, items, e, kq, nk) {
+    np = 0; q = ""; d = 0; st = 1
+    for (i = 1; i <= length(v); i++) {
+        c = substr(v, i, 1)
+        if (q != "") {
+            if (q == "\"" && c == "\\") { i++; continue }
+            if (c == q) q = ""
+            continue
+        }
+        if (c == "\"" || c == "\047") q = c
+        else if (c == "[" || c == "{") d++
+        else if (c == "]" || c == "}") d--
+        else if (d == 0 && substr(v, i, 3) == " + ") { parts[++np] = substr(v, st, i - st); st = i + 3; i += 2 }
+    }
+    parts[++np] = substr(v, st)
+    for (j = 1; j <= np; j++) {
+        parts[j] = trim(parts[j])
+        if (substr(parts[j], 1, 1) != "{") continue
+        n = inline_items(parts[j], items)
+        if (n < 0) return "<bad>"
+        for (i = 1; i <= n; i++) {
+            e = eq_at(items[i]); if (!e) return "<bad>"
+            nk = split_key(substr(items[i], 1, e - 1), kq)
+            if (nk == 1 && kq[1] == key) return trim(substr(items[i], e + 1))
+        }
+    }
+    return ""
+}
 '
 
 # The ref of <path> on <side> (before or after).
@@ -1720,12 +1751,20 @@ $(grep '^<unreadable>' "$WORK/reject.lines" | cut -f2- | sort -u | sed 's/^/    
             die "cannot read a [patch] table of $f, so a path patch cannot be ruled out; only [patch.<source>] tables with name = { ... } entries or dotted keys, and [patch.<source>.<name>] tables, are read:
 $(grep '^<unparsed>' "$WORK/reject.patch" | cut -f3- | sed 's/^/    /')"
         fi
-        what=$(F="$f" awk -F '\t' '$3 ~ /(^|[{ ,])path[[:space:]]*=/ { print "    " ENVIRON["F"] ": patch." $1 "." $2 " = " $3 }' "$WORK/reject.patch")
+        # The whole value after the second tab (it may hold tabs), read by field.
+        what=$(F="$f" awk -F '\t' "$TOML_KEY_AWK"'{
+            src = $1; name = $2; v = substr($0, length($1) + length($2) + 3); p = field_value(v, "path")
+            if (p != "") print (p == "<bad>" ? "<bad>" : "") "    " ENVIRON["F"] ": patch." src "." name " = " v
+        }' "$WORK/reject.patch")
+        if grep -q '^<bad>' <<<"$what"; then
+            die "cannot read the fields of a [patch] entry of $f, so a path patch cannot be ruled out:
+$(sed -n 's/^<bad>//p' <<<"$what")"
+        fi
         [ -z "$what" ] || bad="$bad
 $what"
         if [ "$f" != Cargo.toml ]; then
             what=$(F="$f" awk -F '\t' "$TOML_KEY_AWK"'
-                $1 == "" { e = eq_at($2); if (e && split_key(substr($2, 1, e - 1), kp) == 1 && kp[1] == "paths") print "    " ENVIRON["F"] ": " $2 }' "$WORK/reject.lines.1")
+                $1 == "" { line = substr($0, length($1) + 2); e = eq_at(line); if (e && split_key(substr(line, 1, e - 1), kp) == 1 && kp[1] == "paths") print "    " ENVIRON["F"] ": " line }' "$WORK/reject.lines.1")
             [ -z "$what" ] || bad="$bad
 $what"
         fi
@@ -1755,12 +1794,23 @@ $(grep -h '^<unparsed>' "$WORK/patch.before" "$WORK/patch.after" | cut -f3- | so
     done
     while IFS="$TAB" read -r src name; do
         [ -n "$name" ] || continue
-        vb=$(S="$src" N="$name" awk -F '\t' '$1 == ENVIRON["S"] && $2 == ENVIRON["N"] { print $3 }' "$WORK/patch.before")
-        va=$(S="$src" N="$name" awk -F '\t' '$1 == ENVIRON["S"] && $2 == ENVIRON["N"] { print $3 }' "$WORK/patch.after")
-        pkgs=$(printf '%s\n%s\n' "$vb" "$va" | sed -n 's/.*package[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')
-        [ -n "$(printf '%s\n%s\n' "$vb" "$va" | grep -v 'package[[:space:]]*=' | sed -n '/./p')" ] \
-            && pkgs="$pkgs
-$name"
+        # The whole value after the second tab: it may hold tabs.
+        vb=$(S="$src" N="$name" awk -F '\t' '$1 == ENVIRON["S"] && $2 == ENVIRON["N"] { print substr($0, length($1) + length($2) + 3) }' "$WORK/patch.before")
+        va=$(S="$src" N="$name" awk -F '\t' '$1 == ENVIRON["S"] && $2 == ENVIRON["N"] { print substr($0, length($1) + length($2) + 3) }' "$WORK/patch.after")
+        # The package of each side that has the entry: its top-level field package written
+        # with double quotes, or the entry name without that field.
+        pkgs=$(V1="$vb" V2="$va" N="$name" awk "$TOML_KEY_AWK"'BEGIN {
+            for (i = 1; i <= 2; i++) {
+                v = ENVIRON["V" i]; if (v == "") continue
+                p = field_value(v, "package")
+                if (p == "<bad>") print "<bad>"
+                else if (p == "") print ENVIRON["N"]
+                else if (p ~ /^"[^"]*"$/) print substr(p, 2, length(p) - 2)
+            }
+        }')
+        if grep -qx '<bad>' <<<"$pkgs"; then
+            die "[patch] $src.$name changed in the root Cargo.toml, but its fields cannot be read; judge the plugin versions by hand."
+        fi
         [ -n "$pkgs" ] || pkgs="$name"
         for pkg in $(printf '%s\n' "$pkgs" | sed -n '/./p' | sort -u); do
             # The pin rule pairs git packages by name only, so two git sources of one name
