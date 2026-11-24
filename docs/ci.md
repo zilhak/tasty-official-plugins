@@ -572,7 +572,8 @@ would leave that range unchecked.
   lock rows of the patched package stay the same, no bump is needed. A quoted key in an
   entry (`{ "path" = ... }`) reads like the bare key. The `path` and `package` of an entry
   are its top-level fields (`field_value` in the script), so a string that mentions them
-  does not count. A patched package in no lock, two
+  does not count; a `package` that is not a plain string in single or double quotes is
+  undecidable. A patched package in no lock, two
   git sources of one package name, a key with a backslash escape, and a `[patch]` spelling
   other than `[patch.<source>]` entries, dotted keys, or `[patch.<source>.<name>]` tables
   are undecidable.

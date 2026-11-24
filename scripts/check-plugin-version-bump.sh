@@ -1797,21 +1797,22 @@ $(grep -h '^<unparsed>' "$WORK/patch.before" "$WORK/patch.after" | cut -f3- | so
         # The whole value after the second tab: it may hold tabs.
         vb=$(S="$src" N="$name" awk -F '\t' '$1 == ENVIRON["S"] && $2 == ENVIRON["N"] { print substr($0, length($1) + length($2) + 3) }' "$WORK/patch.before")
         va=$(S="$src" N="$name" awk -F '\t' '$1 == ENVIRON["S"] && $2 == ENVIRON["N"] { print substr($0, length($1) + length($2) + 3) }' "$WORK/patch.after")
-        # The package of each side that has the entry: its top-level field package written
-        # with double quotes, or the entry name without that field.
+        # The package of each side that has the entry: its top-level field package, a string
+        # in single quotes or in double quotes without a backslash (escapes are not decoded),
+        # or the entry name without that field. A side without the entry adds no name.
         pkgs=$(V1="$vb" V2="$va" N="$name" awk "$TOML_KEY_AWK"'BEGIN {
             for (i = 1; i <= 2; i++) {
                 v = ENVIRON["V" i]; if (v == "") continue
                 p = field_value(v, "package")
                 if (p == "<bad>") print "<bad>"
                 else if (p == "") print ENVIRON["N"]
-                else if (p ~ /^"[^"]*"$/) print substr(p, 2, length(p) - 2)
+                else if (p ~ /^"[^"\\]*"$/ || p ~ /^\047[^\047]*\047$/) print substr(p, 2, length(p) - 2)
+                else print "<bad>"
             }
         }')
         if grep -qx '<bad>' <<<"$pkgs"; then
-            die "[patch] $src.$name changed in the root Cargo.toml, but its fields cannot be read; judge the plugin versions by hand."
+            die "[patch] $src.$name changed in the root Cargo.toml, but the package of the entry cannot be read (a field that is not read, or a package that is not a plain string); judge the plugin versions by hand."
         fi
-        [ -n "$pkgs" ] || pkgs="$name"
         for pkg in $(printf '%s\n' "$pkgs" | sed -n '/./p' | sort -u); do
             # The pin rule pairs git packages by name only, so two git sources of one name
             # would be compared with each other.

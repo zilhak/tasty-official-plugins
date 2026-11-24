@@ -6137,6 +6137,79 @@ fn a_package_rename_in_a_patch_judges_both_packages() {
     );
     f.commit("name a package that is not locked");
     assert_undecidable_with(&f.check(&HEAD_RANGE), "no package nothere is in Cargo.lock");
+
+    // Single quotes name the package as double quotes do, on either side.
+    f.set_patch(
+        &format!("ext = {{ git = \"{url}\", rev = \"{rev}\", package = 'devx' }}\n"),
+        false,
+    );
+    f.commit("name the package in single quotes");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 2, "the side before still names nothere:\n{text}");
+    assert!(
+        text.contains("no package nothere is in Cargo.lock"),
+        "{text}"
+    );
+    f.set_patch(
+        &format!("ext = {{ git = \"{url}\", rev = \"{rev}\", package = 'nothere' }}\n"),
+        false,
+    );
+    f.commit("a package that is not locked, in single quotes");
+    f.set_patch(
+        &format!("ext = {{ git = \"{url}\", rev = \"{rev}\", package = \"devx\" }}\n"),
+        false,
+    );
+    f.commit("back to a locked package, in double quotes");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "no package nothere is in Cargo.lock");
+    f.set_patch(
+        &format!("ext = {{ git = \"{url}\", rev = \"{rev}\", package = 'devx' }}\n"),
+        false,
+    );
+    f.commit("the same package in single quotes");
+    f.set_patch(
+        &format!(
+            "ext = {{ git = \"{url}\", rev = \"{rev}\", package = 'devx', default-features = false }}\n"
+        ),
+        false,
+    );
+    f.commit("single quotes on both sides");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("Cargo.lock locks devx the same"), "{text}");
+    assert!(!text.contains("Cargo.lock locks ext the same"), "{text}");
+
+    // A package that is not a string is not read.
+    f.set_patch(
+        &format!("ext = {{ git = \"{url}\", rev = \"{rev}\", package = 1 }}\n"),
+        false,
+    );
+    f.commit("a package that is no string");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "but the package of the entry cannot be read",
+    );
+}
+
+/// A renamed entry that is added or removed is judged by its package: the side without the
+/// entry adds no name (fork-alias is in no lock).
+#[test]
+fn a_renamed_patch_entry_added_or_removed_is_judged_by_its_package() {
+    let (f, _) = git_patched();
+    let (url, rev) = f.patch_source();
+    let base = f.git_patch(&rev);
+    f.set_patch(
+        &format!("{base}fork-alias = {{ git = \"{url}\", rev = \"{rev}\", package = \"devx\" }}\n"),
+        false,
+    );
+    f.commit("add a renamed entry");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("Cargo.lock locks devx the same"), "{text}");
+    f.set_patch(&base, false);
+    f.commit("remove the renamed entry");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("Cargo.lock locks devx the same"), "{text}");
 }
 
 /// The value of a [patch] entry is read whole, also after a tab inside it: a path field
