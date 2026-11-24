@@ -5999,3 +5999,267 @@ fn staged_mode_rejects_a_path_patch_too() {
     run_git(&f.repo, &["add", "-A"]);
     assert_path_patch_rejected(&f.check(&["--staged"]), "Cargo.toml");
 }
+
+// ── Path names as git writes them ────────────────────────────────────────────
+// The line lists are taken with core.quotePath off, so a name outside ASCII comes as it is.
+// A name with a double quote, a backslash, or a control character is still quoted; it stops
+// the check only where it is judged.
+
+/// The plugin of seed_repo with `rel` (under the plugin) at `before`, then at `after`.
+fn plugin_file_change(rel: &str, before: &str, after: &str) -> (i32, String) {
+    let tmp = seed_repo();
+    let d = tmp.path();
+    write(d, &format!("{PLUGIN}/{rel}"), before);
+    commit_all(d, "add the file");
+    write(d, &format!("{PLUGIN}/{rel}"), after);
+    commit_all(d, "change the file");
+    check(d, &HEAD_RANGE)
+}
+
+#[test]
+fn a_non_ascii_crate_file_change_is_judged() {
+    let (code, text) = plugin_file_change("src/데이터.txt", "1\n", "2\n");
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains(&format!("{PLUGIN}/src/데이터.txt")), "{text}");
+}
+
+#[test]
+fn a_shipped_file_with_a_space_in_its_name_is_compared() {
+    let (code, text) = plugin_file_change("src/my data.txt", "1\n", "2\n");
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains(&format!("{PLUGIN}/src/my data.txt")),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_quoted_file_name_is_undecidable() {
+    let (code, text) = plugin_file_change("src/a\"b.txt", "1\n", "2\n");
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains(&format!("{PLUGIN}/src/a\"b.txt changed")),
+        "{text}"
+    );
+    assert!(text.contains("git prints its name quoted"), "{text}");
+}
+
+/// A file of the plugin crate that is not judged (outside src, lang, assets, and the
+/// manifests) does not stop the check, quoted or not.
+#[test]
+fn a_quoted_document_inside_a_plugin_crate_does_not_stop_the_check() {
+    let tmp = seed_repo();
+    let d = tmp.path();
+    write(d, &format!("{PLUGIN}/README \"stable\".md"), "stable\n");
+    commit_all(d, "add a document");
+    let (code, text) = check(d, &HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}
+
+#[test]
+fn an_unrelated_document_with_a_quoted_name_does_not_stop_the_check() {
+    let tmp = seed_repo();
+    let d = tmp.path();
+    write(d, "docs/What \"stable\" means.md", "stable\n");
+    commit_all(d, "add a document");
+    let (code, text) = check(d, &HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}
+
+/// A file directly in crates/ is an archive input of every plugin, so a quoted name there
+/// stops the check in both modes.
+#[test]
+fn a_quoted_file_directly_under_crates_is_undecidable() {
+    let tmp = seed_repo();
+    let d = tmp.path();
+    write(d, "crates/NOTICE \"stable\".md", "stable\n");
+    run_git(d, &["add", "-A"]);
+    let staged = check(d, &["--staged"]);
+    assert_undecidable_with(&staged, "crates/NOTICE \"stable\".md changed");
+    commit_all(d, "add a file in crates");
+    assert_undecidable_with(
+        &check(d, &HEAD_RANGE),
+        "crates/NOTICE \"stable\".md changed",
+    );
+}
+
+/// Each archive input path is a reason of its own, also with a space in it.
+#[test]
+fn archive_input_paths_with_spaces_get_a_reason_each() {
+    let tmp = seed_repo();
+    let d = tmp.path();
+    write(d, "crates/another.txt", "a\n");
+    write(d, "crates/my data.txt", "b\n");
+    commit_all(d, "add two files in crates");
+    let (code, text) = check(d, &HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    let reasons = reasons_of(&text, "fixture");
+    for path in ["crates/another.txt", "crates/my data.txt"] {
+        assert!(
+            reasons.contains(&format!("{path} (archive input)")),
+            "{path}: {reasons:?}\n{text}"
+        );
+    }
+}
+
+/// Names outside ASCII in the notice set and directly in crates/ are archive inputs as
+/// before; the reason of a file in LICENSES/ is the directory input.
+#[test]
+fn a_non_ascii_archive_input_change_asks_every_plugin() {
+    let f = ArchiveFixture::new();
+    f.write("LICENSES/Ünï.txt", "license\n");
+    f.write("crates/Ünï.md", "one\n");
+    f.commit("add the files");
+    f.write("LICENSES/Ünï.txt", "license, changed\n");
+    f.git(&["add", "-A"]);
+    assert_every_archive_flagged(&f.check(&["--staged"]), "LICENSES/");
+    f.commit("change the license text");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "LICENSES/");
+    f.write("crates/Ünï.md", "two\n");
+    f.git(&["add", "-A"]);
+    assert_every_archive_flagged(&f.check(&["--staged"]), "crates/Ünï.md");
+    f.commit("change the file in crates");
+    assert_every_archive_flagged(&f.check(&HEAD_RANGE), "crates/Ünï.md");
+}
+
+/// The link check of the archive inputs names a link outside ASCII as it is, on the index
+/// (staged) and on a commit (range).
+#[test]
+fn a_non_ascii_link_in_an_archive_input_is_named() {
+    let f = ArchiveFixture::new();
+    std::os::unix::fs::symlink("a.txt", f.repo.join("LICENSES/링크.txt")).expect("link");
+    f.git(&["add", "-A"]);
+    assert_undecidable_with(&f.check(&["--staged"]), "    LICENSES/링크.txt");
+    f.commit("add a link");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), "    LICENSES/링크.txt");
+}
+
+impl PinFixture {
+    /// Moves the directory of tasty-a to `to` in one pin move, then changes its source in a
+    /// second one, so that the last move finds the crate in the same directory on both sides.
+    fn tasty_a_in(&self, to: &str) {
+        run_git(&self.tasty, &["mv", "crates/tasty-a", to]);
+        let t2 = self.tasty_commit("move tasty-a");
+        self.move_pin(&t2);
+        self.commit("move the pin");
+        self.tasty_write(
+            &format!("{to}/src/lib.rs"),
+            &TASTY_A_LIB.replace("    1\n}\n\n#", "    10\n}\n\n#"),
+        );
+        let t3 = self.tasty_commit("change a");
+        self.move_pin(&t3);
+        self.commit("move the pin again");
+    }
+}
+
+#[test]
+fn a_pin_move_of_a_crate_in_a_non_ascii_directory_is_judged() {
+    let f = PinFixture::new();
+    f.tasty_a_in("crates/에이");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "alpha")
+            .iter()
+            .any(|r| r.contains("changed: crates/에이/src/lib.rs")),
+        "{text}"
+    );
+}
+
+/// The package that is looked up has a manifest path that git quotes: undecidable, with the
+/// package named.
+#[test]
+fn a_linked_package_with_a_quoted_manifest_is_undecidable() {
+    let f = PinFixture::new();
+    f.tasty_a_in("crates/tasty \"a\"");
+    let r = f.check(&HEAD_RANGE);
+    assert_undecidable_with(&r, "cannot read the directory of tasty-a in file://");
+    assert!(r.1.contains("git prints its name quoted"), "{}", r.1);
+}
+
+/// A package that no plugin links may have a manifest path that git quotes: the packages
+/// that are looked up are judged as usual.
+#[test]
+fn an_unrelated_package_with_a_quoted_manifest_does_not_stop_the_pin_check() {
+    let f = PinFixture::new();
+    f.tasty_write(
+        "tools/What \"stable\" means/Cargo.toml",
+        "[package]\nname = \"what-stable\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    f.tasty_write("tools/What \"stable\" means/src/lib.rs", "");
+    let t2 = f.tasty_commit("add a tool");
+    f.move_pin(&t2);
+    f.commit("move the pin");
+    f.tasty_write(
+        "crates/tasty-a/src/lib.rs",
+        &TASTY_A_LIB.replace("    1\n}\n\n#", "    10\n}\n\n#"),
+    );
+    let t3 = f.tasty_commit("change a");
+    f.move_pin(&t3);
+    f.commit("move the pin again");
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "alpha")
+            .iter()
+            .any(|r| r.contains("changed: crates/tasty-a/src/lib.rs")),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_non_ascii_helper_reading_outside_its_crate_names_the_path() {
+    let f = PinFixture::new();
+    f.tasty_write("other/x.txt", "data\n");
+    f.tasty_write(
+        "crates/tasty-b/src/도움.rs",
+        "pub const X: &str = include_str!(\"../../../other/x.txt\");\n",
+    );
+    let t2 = f.tasty_commit("read a file outside the crate");
+    f.move_pin(&t2);
+    f.commit("move the pin");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "tasty-b reads other/x.txt outside its crate (crates/tasty-b/src/도움.rs)",
+    );
+}
+
+/// A file name that git quotes cannot be resolved against its crate, so a line of it that
+/// may read another file stops the check, also in a crate at the root of its repository.
+#[test]
+fn a_quoted_helper_name_reading_outside_its_crate_is_undecidable() {
+    let f = PinFixture::new();
+    f.root_crate_source(
+        EXT_MANIFEST,
+        &[
+            (
+                "src/a\"b.rs",
+                "pub const D: &str = include_str!(\"../data.txt\");\n",
+            ),
+            ("data.txt", "1\n"),
+        ],
+    );
+    f.ext_write("README.md", "ext, more\n");
+    f.move_ext_pin();
+    let r = f.check(&HEAD_RANGE);
+    assert_undecidable_with(&r, "ext has a file \"src/a\\\"b.rs\" that may read outside");
+    assert!(r.1.contains("git prints its name quoted"), "{}", r.1);
+}
+
+/// A comment line is no reference, so a quoted document that holds one does not stop the
+/// check.
+#[test]
+fn a_commented_include_in_a_quoted_document_does_not_stop_the_check() {
+    let f = PinFixture::new();
+    f.root_crate_source(
+        EXT_MANIFEST,
+        &[(
+            "docs/What \"stable\" means.md",
+            "// include_str!(\"../data.txt\")\n",
+        )],
+    );
+    f.ext_write("docs/other.md", "more\n");
+    f.move_ext_pin();
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 0, "{text}");
+}

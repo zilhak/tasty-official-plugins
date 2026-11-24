@@ -410,6 +410,9 @@ would leave that range unchecked.
   start that is missing from the clone (after a force push) fails the job.
 - Exit codes: 0 pass or nothing to judge, 1 a plugin needs a version bump, 2 undecidable.
   Only 0 passes.
+- Path names are read as they are, also outside ASCII. A name that git still prints quoted
+  (a double quote, a backslash, or a control character) is undecidable where the check
+  would judge it, and is passed over elsewhere (`git_quotes` in the script).
 - Besides the plugin directories and their path dependencies, the check judges the root
   build inputs. A tasty pin move or a changed `[workspace.dependencies]` entry needs a
   bump of each plugin whose dependency closure holds a changed crate. A crate at the root

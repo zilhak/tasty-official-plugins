@@ -171,13 +171,13 @@ version_line_no() { awk -v re="$VERSION_LINE_RE" '$0 ~ re { print NR; exit }'; }
 archive_blob_id() {  # <side> <path>
     local out
     if [ "$1" = before ]; then
-        out=$(git ls-tree -r "$BEFORE_REV" -- "$2") || { printf '<unreadable %s>' "$1"; return; }
+        out=$(git -c core.quotePath=false ls-tree -r "$BEFORE_REV" -- "$2") || { printf '<unreadable %s>' "$1"; return; }
         out=$(printf '%s\n' "$out" | awk -F '\t' 'NF { split($1, m, " "); print $2 " " m[1] " " m[3] }')
     elif [ "$MODE" = staged ]; then
-        out=$(git ls-files -s -- "$2") || { printf '<unreadable %s>' "$1"; return; }
+        out=$(git -c core.quotePath=false ls-files -s -- "$2") || { printf '<unreadable %s>' "$1"; return; }
         out=$(printf '%s\n' "$out" | awk -F '\t' 'NF { split($1, m, " "); print $2 " " m[1] " " m[2] }')
     else
-        out=$(git ls-tree -r "$AFTER" -- "$2") || { printf '<unreadable %s>' "$1"; return; }
+        out=$(git -c core.quotePath=false ls-tree -r "$AFTER" -- "$2") || { printf '<unreadable %s>' "$1"; return; }
         out=$(printf '%s\n' "$out" | awk -F '\t' 'NF { split($1, m, " "); print $2 " " m[1] " " m[3] }')
     fi
     [ -n "$out" ] || out="<absent>"
@@ -264,15 +264,33 @@ SCAN_ROOT=crates
 RELEASE_PROFILE=dist
 
 # --no-renames lists both paths of a move, and T lists a file that became a symbolic link
-# or the other way round; both can change an archive.
+# or the other way round; both can change an archive. Names outside ASCII come as they are
+# (core.quotePath off); a name with a double quote, a backslash, or a control character is
+# still quoted, so the same lists are also taken with -z, where every name is as it is.
 if [ "$MODE" = staged ]; then
     # The whole difference between the base and the index, not only what is staged on HEAD.
-    CHANGED=$(git diff --cached --name-only --no-renames --diff-filter=ACMRDT "$BASE" -- "$SCAN_ROOT/")
-    OUTSIDE=$(git diff --cached --name-only --no-renames --diff-filter=ACMRDT "$BASE" -- . ":(exclude)$SCAN_ROOT/")
+    CHANGED=$(git -c core.quotePath=false diff --cached --name-only --no-renames --diff-filter=ACMRDT "$BASE" -- "$SCAN_ROOT/")
+    OUTSIDE=$(git -c core.quotePath=false diff --cached --name-only --no-renames --diff-filter=ACMRDT "$BASE" -- . ":(exclude)$SCAN_ROOT/")
+    git diff -z --cached --name-only --no-renames --diff-filter=ACMRDT "$BASE" -- "$SCAN_ROOT/" > "$WORK/changed.z" \
+        || die "cannot list the changed paths."
+    git diff -z --cached --name-only --no-renames --diff-filter=ACMRDT "$BASE" -- . ":(exclude)$SCAN_ROOT/" > "$WORK/outside.z" \
+        || die "cannot list the changed paths."
 else
-    CHANGED=$(git diff --name-only --no-renames --diff-filter=ACMRDT "$BEFORE" "$AFTER" -- "$SCAN_ROOT/")
-    OUTSIDE=$(git diff --name-only --no-renames --diff-filter=ACMRDT "$BEFORE" "$AFTER" -- . ":(exclude)$SCAN_ROOT/")
+    CHANGED=$(git -c core.quotePath=false diff --name-only --no-renames --diff-filter=ACMRDT "$BEFORE" "$AFTER" -- "$SCAN_ROOT/")
+    OUTSIDE=$(git -c core.quotePath=false diff --name-only --no-renames --diff-filter=ACMRDT "$BEFORE" "$AFTER" -- . ":(exclude)$SCAN_ROOT/")
+    git diff -z --name-only --no-renames --diff-filter=ACMRDT "$BEFORE" "$AFTER" -- "$SCAN_ROOT/" > "$WORK/changed.z" \
+        || die "cannot list the changed paths."
+    git diff -z --name-only --no-renames --diff-filter=ACMRDT "$BEFORE" "$AFTER" -- . ":(exclude)$SCAN_ROOT/" > "$WORK/outside.z" \
+        || die "cannot list the changed paths."
 fi
+
+# Whether git quotes <name> even with core.quotePath off: a double quote, a backslash, or a
+# control character. Such a name in a line list does not match any path pattern.
+git_quotes() {
+    case "$1" in *'"'*|*\\*|*[[:cntrl:]]*) return 0 ;; esac
+    return 1
+}
+QUOTED_NOTE="git prints its name quoted (it holds a double quote, a backslash, or a control character), and the path lists of this check do not read quoted names; rename it or judge the plugin versions by hand"
 
 # src/lang/assets are compared whatever the extension, and a .gitattributes in a crate
 # decides how the files it ships are checked out. When this scope or the archive input list
@@ -283,6 +301,19 @@ build_affecting() {
         *) return 1 ;;
     esac
 }
+
+# A name under SCAN_ROOT that git quotes stops the check only where it is judged: a build
+# input of a crate, or a file directly in SCAN_ROOT (an archive input of every plugin). The
+# name is classified as it is, from the -z list.
+while IFS= read -r -d '' f; do
+    git_quotes "$f" || continue
+    case "$f" in
+        "$SCAN_ROOT"/*/*) build_affecting "$f" || continue ;;
+        "$SCAN_ROOT"/?*) ;;
+        *) continue ;;
+    esac
+    die "$f changed, but $QUOTED_NOTE."
+done < "$WORK/changed.z"
 
 # Changes outside SCAN_ROOT also bring in the linked path dependencies.
 # Only repository paths that are not workspace members are added, using the current Cargo graph.
@@ -299,6 +330,12 @@ $f"; fi
 done <<EOF2
 $OUTSIDE
 EOF2
+# Names outside SCAN_ROOT that git quotes and that could be a build input of a path
+# dependency outside the workspace; checked against EXTRA_ROOTS below.
+QUOTED_BUILD=0
+while IFS= read -r -d '' f; do
+    if git_quotes "$f" && build_affecting "$f"; then QUOTED_BUILD=1; fi
+done < "$WORK/outside.z"
 MEMBERS=""; MEMBERS_READ=0
 read_members() {
     [ "$MEMBERS_READ" = 1 ] && return 0
@@ -309,7 +346,7 @@ $(cat "$WORK/metadata.err")"
         | sed -n "s|^\"manifest_path\":\"${ROOT_REAL}/\(.*\)/Cargo.toml\"\$|\1|p")
     MEMBERS_READ=1
 }
-if [ -n "$OUTSIDE_BUILD" ]; then
+if [ -n "$OUTSIDE_BUILD" ] || [ "$QUOTED_BUILD" = 1 ]; then
     for man in "$ROOT/$SCAN_ROOT"/*/tasty-plugin.toml; do
         [ -f "$man" ] || continue
         closure_of "$(basename "$(dirname "$man")")"
@@ -334,6 +371,13 @@ $f"; break ;; esac
     done <<EOF2
 $OUTSIDE_BUILD
 EOF2
+    while IFS= read -r -d '' f; do
+        git_quotes "$f" || continue
+        build_affecting "$f" || continue
+        for r in $EXTRA_ROOTS; do
+            case "$f" in "$r"/*) die "$f changed in the path dependency $r, but $QUOTED_NOTE." ;; esac
+        done
+    done < "$WORK/outside.z"
 fi
 
 # Plugins that must be judged for a reason outside their files: directory, tab, reason; one per line.
@@ -428,20 +472,21 @@ pin_source() {  # <url> <commit>...
     return 1
 }
 
-# Writes "name<TAB>dir" for every package manifest in <src> at <commit> to <file>.
+# Writes "name<TAB>dir" for every package manifest in <src> at <commit> to <file>. The paths
+# are read as they are (-z). A manifest whose path git quotes gets the directory <quoted>,
+# which stops the check only when a package that is looked up has it.
 package_dirs_at() {  # <src> <commit> <file>
     local f n dir
     : > "$3"
-    while IFS= read -r f; do
+    while IFS= read -r -d '' f; do
+        case "$f" in Cargo.toml|*/Cargo.toml) ;; *) continue ;; esac
         n=$(xgit -C "$1" show "$2:$f" | awk '
             /^\[/ { in_pkg = ($0 == "[package]") }
             in_pkg && /^name[[:space:]]*=/ { sub(/^name[[:space:]]*=[[:space:]]*"/, ""); sub(/".*/, ""); print; exit }')
         [ -n "$n" ] || continue
-        dir=$(dirname "$f")
+        if git_quotes "$f"; then dir="<quoted>"; else dir=$(dirname "$f"); fi
         printf '%s\t%s\n' "$n" "$dir" >> "$3"
-    done <<EOF2
-$(xgit -C "$1" ls-tree -r --name-only "$2" | grep -E '(^|/)Cargo\.toml$')
-EOF2
+    done < <(xgit -C "$1" ls-tree -r -z --name-only "$2")
 }
 
 # Sets PKG_DIR to the directory of package <name> in <file>; returns 1 when missing,
@@ -500,7 +545,7 @@ repo_path() {  # <dir> <rel>
 # the root of its repository has the whole repository as its directory.
 pin_check_outside_inputs() {  # <src> <commit> <dir> <name>
     local src="$1" c="$2" dir="$3" name="$4" hits line rest file content lit base resolved fdir
-    hits=$(xgit -C "$src" grep -nE '(include_(str|bytes)!|concat!|rerun-if-changed).*\.\./' "$c" -- \
+    hits=$(xgit -C "$src" -c core.quotePath=false grep -nE '(include_(str|bytes)!|concat!|rerun-if-changed).*\.\./' "$c" -- \
         "$dir" ":(exclude)$dir/tests" ":(exclude)$dir/**/tests.rs" ":(exclude)$dir/**/tests/**" \
         ":(exclude)$dir/benches" ":(exclude)$dir/examples")
     while IFS= read -r line; do
@@ -511,6 +556,8 @@ pin_check_outside_inputs() {  # <src> <commit> <dir> <name>
         content=${content#*:}
         case "$content" in *[![:space:]]*) ;; *) continue ;; esac
         if grep -qE '^[[:space:]]*//' <<<"$content"; then continue; fi
+        # A quoted file name cannot be split from the line or resolved.
+        case "$rest" in '"'*) die "$name has a file $file that may read outside its crate, but $QUOTED_NOTE." ;; esac
         lit=$(printf '%s\n' "$content" | grep -oE '"[^"]*\.\./[^"]*"' | sed -n '1p')
         lit=${lit#\"}; lit=${lit%\"}
         case "$lit" in
@@ -756,6 +803,7 @@ EOF2
             rc=0; package_dir_in "$dirs_new" "$name" || rc=$?
             [ "$rc" -eq 0 ] || die "cannot find the directory of $name in $url at ${new:0:8}$([ "$rc" -eq 2 ] && printf ' (several manifests: %s)' "$(printf '%s' "$PKG_DIR" | tr '\n' ' ')")"
             d_new="$PKG_DIR"
+            [ "$d_new" != "<quoted>" ] || die "cannot read the directory of $name in $url at ${new:0:8}: $QUOTED_NOTE."
             pin_edition "$PIN_SRC" "$new" "$d_new" "$name"
             pin_check_outside_inputs "$PIN_SRC" "$new" "$d_new" "$name"
             reason=""
@@ -764,6 +812,7 @@ EOF2
             else
                 rc=0; package_dir_in "$dirs_old" "$name" || rc=$?
                 d_old="$PKG_DIR"
+                [ "$d_old" != "<quoted>" ] || die "cannot read the directory of $name in $url at ${old:0:8}: $QUOTED_NOTE."
                 if [ "$rc" -ne 0 ] || [ "$d_old" != "$d_new" ]; then
                     reason="moved to $d_new"
                 elif pin_package_changed "$PIN_SRC" "$old" "$new" "$d_new" "$name" "$PIN_EDITION"; then
@@ -1624,6 +1673,15 @@ TAB=$(printf '\t')
 
 # Whether OUTSIDE has <path>, or a path under it when <path> ends with "/".
 outside_touches() {  # <path>
+    local q
+    # A name git quotes does not match in OUTSIDE: stop when it is the path or under it.
+    while IFS= read -r -d '' q; do
+        git_quotes "$q" || continue
+        case "$1" in
+            */) case "$q" in "$1"*) die "$q changed in the archive input $1, but $QUOTED_NOTE." ;; esac ;;
+            *) [ "$q" != "$1" ] || die "the archive input $q changed, but $QUOTED_NOTE." ;;
+        esac
+    done < "$WORK/outside.z"
     case "$1" in
         */) P="$1" awk 'index($0, ENVIRON["P"]) == 1 { f = 1 } END { exit !f }' <<<"$OUTSIDE" ;;
         *) outside_has "$1" ;;
@@ -2046,11 +2104,13 @@ EOF2
 # first: when they differ between the lists, the path counts as changed. A side without a
 # list uses the list of the other side; without a list on either side nothing is judged here.
 judge_archive_inputs() {
-    local kind path changed="" seen=" " a b p f has_b=1 has_a=1
+    local kind path changed="" shown seen=" " a b p f has_b=1 has_a=1
     # A file directly in SCAN_ROOT belongs to no crate. crates/.gitattributes decides how the
     # files of every crate check out, so such a file counts as an archive input.
+    # One path per line: a path may hold spaces.
     while IFS= read -r f; do
-        case "$f" in "$SCAN_ROOT"/*/*) ;; "$SCAN_ROOT"/?*) changed="$changed $f" ;; esac
+        case "$f" in "$SCAN_ROOT"/*/*) ;; "$SCAN_ROOT"/?*) changed="$changed
+$f" ;; esac
     done <<EOF2
 $CHANGED
 EOF2
@@ -2091,21 +2151,30 @@ EOF2
                 fi ;;
             *) die "$ARCHIVE_INPUTS: unknown kind '$kind' for $path." ;;
         esac
-        case "$changed " in *" $path "*) continue ;; esac
-        [ "$a" = "$b" ] || changed="$changed $path"
+        case "$changed
+" in *"
+$path
+"*) continue ;; esac
+        [ "$a" = "$b" ] || changed="$changed
+$path"
     done <<EOF2
 $(cat "$WORK/list.before" "$WORK/list.after")
 EOF2
     [ -n "$changed" ] || return 0
-    changed=${changed# }
+    changed=${changed#
+}
+    # For the messages: the paths joined with ", ".
+    shown=$(printf '%s\n' "$changed" | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')
     for p in $(plugin_dirs); do
         if external_update_needs_bump "$p"; then
-            for path in $changed; do add_dirty "$p" "$path (archive input)"; done
+            while IFS= read -r path; do add_dirty "$p" "$path (archive input)"; done <<EOF2
+$changed
+EOF2
         else
-            note "archive inputs changed ($changed): $RELEASED_NOTE; no further bump needed."
+            note "archive inputs changed ($shown): $RELEASED_NOTE; no further bump needed."
         fi
     done
-    ARCHIVE_SUMMARY="$changed"
+    ARCHIVE_SUMMARY="$shown"
 }
 
 reject_path_patches
@@ -2241,7 +2310,9 @@ $(printf '%s\n' "$CHANGED" | sed -n "s|^\($d/.*\)$|\1|p")"
     files=$(printf '%s\n' "$files" | sed -n '/./p' | sort -u)
     content_changed=0
     changed_list=""
-    for f in $files; do
+    # One path per line: a path may hold spaces.
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
         build_affecting "$f" || continue
         a=$(shipped_sum before "$BEFORE_REV:$f" "$f")
         b=$(shipped_sum after "$(after_ref "$f")" "$f")
@@ -2250,7 +2321,9 @@ $(printf '%s\n' "$CHANGED" | sed -n "s|^\($d/.*\)$|\1|p")"
             changed_list="$changed_list
       $f"
         fi
-    done
+    done <<EOF2
+$files
+EOF2
     extra=$(extra_reasons_of "$base")
     if [ -n "$extra" ]; then
         content_changed=1
