@@ -72,7 +72,8 @@ TASTY_REPO=zilhak/tasty
 # The platforms of a release, as PLATFORMS in release.yml.
 PLATFORMS=(windows-x64 windows-arm64 macos-arm64 linux-x64 linux-arm64)
 # The tags whose manifests have no min_tasty_version, as "<tag> <peeled commit>"; check 8
-# skips them. Empty while no manifest carries the key.
+# skips them. Empty while no manifest carries the key. Keep it on one line, or one entry
+# per line with ")" alone on the last line: the promotion tests rewrite it in those forms.
 UNVALUED_TAGS=()
 
 say() {

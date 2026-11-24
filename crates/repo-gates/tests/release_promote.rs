@@ -199,8 +199,9 @@ fn tree_with(manifest: impl Fn(usize, &str) -> String) -> Tree {
 }
 
 /// Sets UNVALUED_TAGS of the script copy that the runs use to `entries` ("<tag>
-/// <commit>"), whatever the script lists, on one line or over several up to a line `)`.
-/// The tag commit is made already, so its sha stays.
+/// <commit>"), whatever the script lists. It takes the two forms the comment above the
+/// list in the script names: all on one line ending in `)`, or one entry per line with a
+/// line `)` alone at the end. The tag commit is made already, so its sha stays.
 fn list_unvalued(tree: &Tree, entries: &[String]) {
     let path = tree.dir.path().join("scripts/release-promote.sh");
     let script = std::fs::read_to_string(&path).expect("read script copy");
