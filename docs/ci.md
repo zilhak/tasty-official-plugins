@@ -432,7 +432,8 @@ would leave that range unchecked.
   fetched: if it was not fetched after a release, the baseline is older and a second
   update can pass locally; the CI checkout fetches it on every run. `[workspace]` and
   unknown sections are undecidable, and so is a changed `[workspace.dependencies]` line
-  that cannot be read or that no package in `Cargo.lock` answers to. The table names are
+  that cannot be read or that no package in `Cargo.lock` answers to. A changed entry with a
+  line that is not read does not take its key as the package name. The table names are
   read as TOML keys, so quotes and spaces around the dots do not matter (tabs are not
   supported); `dep_entries` in the script decides which tables it reads. A root `Cargo.toml`
   with a multi-line string (`"""` or `'''`), with unbalanced brackets, or with a backslash

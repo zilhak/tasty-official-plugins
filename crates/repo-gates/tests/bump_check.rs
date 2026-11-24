@@ -3129,6 +3129,78 @@ fn an_unreadable_package_field_is_undecidable_not_the_key() {
     }
 }
 
+/// A line of an entry that is not read (here a quoted `package` key, in a dotted key or in
+/// the entry table) may rename its package, so the key does not stand in for the name:
+/// beta links tasty-b through the key tasty-a while alpha links the real tasty-a under
+/// another key, and a change of that entry stops the check.
+#[test]
+fn a_workspace_dependency_with_an_unreadable_package_line_is_undecidable() {
+    for dotted in [true, false] {
+        let f = PinFixture::new();
+        let (url, rev) = (f.tasty_url(), f.pinned_rev());
+        let toml = fs::read_to_string(f.repo.join("Cargo.toml")).expect("read");
+        let line = toml
+            .lines()
+            .find(|l| l.starts_with("tasty-a = "))
+            .expect("tasty-a entry")
+            .to_string();
+        let real = format!("ta = {{ git = \"{url}\", rev = \"{rev}\", package = \"tasty-a\" }}");
+        if dotted {
+            f.edit_root(
+                &line,
+                &format!(
+                    "{real}\ntasty-a.git = \"{url}\"\ntasty-a.rev = \"{rev}\"\n\
+                     tasty-a.\"package\" = \"tasty-b\""
+                ),
+            );
+        } else {
+            f.edit_root(&line, &real);
+            f.edit_root(
+                "[profile.release]",
+                &format!(
+                    "[workspace.dependencies.tasty-a]\ngit = \"{url}\"\nrev = \"{rev}\"\n\
+                     \"package\" = \"tasty-b\"\n\n[profile.release]"
+                ),
+            );
+        }
+        f.edit_file(
+            "crates/tasty-plugin-alpha/Cargo.toml",
+            "tasty-a.workspace = true",
+            "ta.workspace = true",
+        );
+        f.edit_file(
+            "crates/tasty-plugin-beta/Cargo.toml",
+            "tasty-b.workspace = true",
+            "tasty-a.workspace = true",
+        );
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("let beta use tasty-b under the key tasty-a");
+        if dotted {
+            f.edit_root(
+                "tasty-a.\"package\" = \"tasty-b\"\n",
+                "tasty-a.\"package\" = \"tasty-b\"\ntasty-a.default-features = false\n",
+            );
+        } else {
+            f.edit_root(
+                "\"package\" = \"tasty-b\"\n",
+                "\"package\" = \"tasty-b\"\ndefault-features = false\n",
+            );
+        }
+        f.cargo(&["metadata", "--format-version", "1"]);
+        f.commit("turn off its default features");
+
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 2, "dotted: {dotted}:\n{text}");
+        assert!(
+            text.contains(
+                "[workspace.dependencies] tasty-a changed in the root Cargo.toml, but the \
+                 package name of the entry cannot be read"
+            ),
+            "dotted: {dotted}:\n{text}"
+        );
+    }
+}
+
 /// Puts `block` in front of [workspace.dependencies], commits, then turns on feature `x` of
 /// tasty-a and commits again.
 fn multi_line_string_then_feature(block: &str) -> (i32, String) {

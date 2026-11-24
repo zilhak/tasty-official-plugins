@@ -1199,7 +1199,8 @@ toml_lines_body() {
 # the value of <name>. Table names are split as TOML keys, so quotes and spaces around the
 # dots do not matter. A line whose key cannot be read, and a line of a table that
 # judge_root_manifest hands over as [workspace.dependencies] but that is neither of the two
-# shapes, comes out under the key <unparsed>.
+# shapes, comes out under the key <unparsed>; the name of an entry with such a line (when its
+# key can be read) is <unreadable>.
 # The package name of each entry goes to <names file> as "key<TAB>name", read from the
 # value as written (before rev is removed): a field "package" of an inline table, a dotted
 # key name.package, or a line package = ... of the entry table. Without one the name is
@@ -1248,11 +1249,17 @@ dep_entries() {  # <toml_lines file> <names file>
                 if (ns == 2) shape = 1
                 else if (ns == 3) shape = 2
             }
-            if (shape == 0) { print "<unparsed>\t[" $1 "] " body; next }
+            if (shape == 0) {
+                if (ns >= 3 && sp[1] == "workspace" && sp[2] == "dependencies") badname[sp[3]] = 1
+                print "<unparsed>\t[" $1 "] " body; next
+            }
         }
         shape == 1 {
             line = body
             if (!match(line, /^[A-Za-z0-9_-]+([[:space:]]*\.[[:space:]]*[A-Za-z0-9_-]+)*[[:space:]]*=/)) {
+                # The entry of a line that is not read cannot name its package.
+                e = eq_at(line)
+                if (e && split_key(substr(line, 1, e - 1), kq) >= 1) badname[kq[1]] = 1
                 print "<unparsed>\t" line; next
             }
             lhs = substr(line, 1, RLENGTH - 1); val = substr(line, RLENGTH + 1)
@@ -1264,8 +1271,9 @@ dep_entries() {  # <toml_lines file> <names file>
         }
         shape == 2 {
             key = sp[3]
-            if (key !~ /^[A-Za-z0-9_-]+$/) { print "<unparsed>\t[" $1 "] " body; next }
+            if (key !~ /^[A-Za-z0-9_-]+$/) { badname[key] = 1; print "<unparsed>\t[" $1 "] " body; next }
             if (!match(body, /^[A-Za-z0-9_-]+([[:space:]]*\.[[:space:]]*[A-Za-z0-9_-]+)*[[:space:]]*=/)) {
+                badname[key] = 1
                 print "<unparsed>\t[" $1 "] " body; next
             }
             lhs = substr(body, 1, RLENGTH - 1); val = substr(body, RLENGTH + 1)
@@ -1888,7 +1896,7 @@ $(awk -F '\t' '$1 == "<unparsed>"' "$WORK/deps.before" "$WORK/deps.after" | sort
         for side in before after; do
             if [ "$side" = before ]; then pkg="$pb"; else pkg="$pa"; fi
             [ "$pkg" != "<unreadable>" ] \
-                || die "[workspace.dependencies] $key changed in the root Cargo.toml, but the package name of the entry cannot be read on the $side side (escapes are not decoded); judge the plugin versions by hand."
+                || die "[workspace.dependencies] $key changed in the root Cargo.toml, but the package name of the entry cannot be read on the $side side (an escape, or a line of the entry that is not read); judge the plugin versions by hand."
         done
         # plugins_linking resets LINKED, and is called outside command substitution so
         # that die ends the check; the result of each call is kept.
