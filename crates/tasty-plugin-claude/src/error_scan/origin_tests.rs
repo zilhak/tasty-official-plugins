@@ -176,6 +176,25 @@ fn a_redraw_only_reply_keeps_the_observation() {
     );
 }
 
+/// 앞선 일반 오류로 고른 30초 기준은 재그리기만 온 회차에도 그대로다.
+#[test]
+fn a_redraw_only_reply_keeps_an_active_error_threshold() {
+    let host = ScanHost::new("", "active");
+    let mut r = Reader::new();
+    let t0 = Instant::now();
+    let mut s = ErrorScanner::new();
+    scan(&mut s, &host, r.next(all("API Error\n", "normal")), t0);
+    assert!(watch(&s).saw_error);
+    scan(
+        &mut s,
+        &host,
+        r.next(all("redrawn\n", "redraw")),
+        t0 + secs(1),
+    );
+    assert_eq!(watch(&s).last_change, t0);
+    assert!(watch(&s).saw_error, "재그리기가 30초 기준을 끄지 않는다");
+}
+
 #[test]
 fn redrawn_characters_around_an_error_phrase_keep_their_word_boundaries() {
     // 바깥 두 문자만 재그리기.
