@@ -890,6 +890,56 @@ fn shapes_where_a_line_search_misreads_the_top_level_value_are_refused() {
     });
 }
 
+/// Refused by check 8 as unreadable for `reason` when manifest 1 is `shape(base)`, with
+/// `base` holding no min_tasty_version, and the others carry MIN.
+fn assert_unreadable_because(what: &str, reason: &str, shape: impl Fn(&str) -> String) {
+    let t = tree_with(|j, m| {
+        if j == 1 {
+            shape(m)
+        } else {
+            with_min_tasty(m, MIN)
+        }
+    });
+    let name = t.crates[1].clone();
+    run_good(&World::of(t)).assert_check_8(what, &[&name, "cannot be read", reason]);
+}
+
+#[test]
+fn table_headers_are_refused_for_their_first_part() {
+    let quoted = "a quote or backslash in the first part of a table name";
+    // Valid TOML whose quoted table does not spell the key: only the quote rule refuses it.
+    assert_unreadable_because("quoted table beside the value", quoted, |m| {
+        at_end(
+            &with_min_tasty(m, MIN),
+            &[r#"["release-notes"]"#, "probe = 1"],
+        )
+    });
+    // Valid TOML whose escaped table is the top-level key min_tasty_version.
+    assert_unreadable_because("escaped table only", quoted, |m| {
+        at_end(m, &[r#"["min_tasty\u005fversion"]"#, "probe = 1"])
+    });
+    // Valid TOML with the bare table [min_tasty_version] only. The line names the key, so
+    // the rule for lines that name it reports it first; the table rule gives the same
+    // refusal.
+    assert_unreadable_because("bare table only", "min_tasty_version not on a line", |m| {
+        at_end(m, &["[min_tasty_version]", "probe = 1"])
+    });
+}
+
+#[test]
+fn brackets_must_balance_outside_strings() {
+    assert_unreadable_because(
+        "brackets open at the end",
+        "brackets still open at the end of the file",
+        |m| at_end(&with_min_tasty(m, MIN), &["review_note = ["]),
+    );
+    assert_unreadable_because(
+        "a bracket that closes nothing",
+        "a bracket that closes nothing",
+        |m| at_end(&with_min_tasty(m, MIN), &["review_note = ]"]),
+    );
+}
+
 #[test]
 fn a_plain_value_line_is_read_beside_arrays_and_other_lines() {
     // A multi-line array before the first table, with an element like a table header.
