@@ -826,6 +826,18 @@ fn shapes_where_a_line_search_misreads_the_top_level_value_are_refused() {
             ],
         )
     });
+    // The string ends on a line that also reads as a bare key line, so only the multi-line
+    // string itself makes the manifest unreadable.
+    assert_unreadable_everywhere("multi-line string ending on a key line", |m| {
+        before_first_table(
+            m,
+            &[
+                "review_note = \"\"\"",
+                r#"min_tasty_version = "0.15.0""#,
+                "end = 1\"\"\"",
+            ],
+        )
+    });
     assert_unreadable_everywhere("escape in a key", |m| {
         before_first_table(m, &[r#""min_tasty\u005fversion" = "0.15.0""#])
     });
