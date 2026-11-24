@@ -820,6 +820,24 @@ fn a_change_in_a_linked_path_dependency_outside_the_workspace_demands_a_bump() {
     assert_eq!(code, 1, "--range did not find the outside change:\n{text}");
 }
 
+/// A build input of a linked path dependency outside the workspace whose name git quotes
+/// stops the check, on the index (staged) and on a commit (range).
+#[test]
+fn a_quoted_name_in_a_linked_path_dependency_is_undecidable() {
+    let tmp = seed_vendored_workspace();
+    let d = tmp.path();
+    write(d, "vendor/upstream/src/a\"b.rs", "pub fn quoted() {}\n");
+    run_git(d, &["add", "-A"]);
+    let want = "vendor/upstream/src/a\"b.rs changed in the path dependency vendor/upstream, but git prints its name quoted";
+    let (code, text) = check(d, &["--staged"]);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains(want), "{text}");
+    commit_all(d, "feat(upstream): add a file with a quote in its name");
+    let (code, text) = check(d, &["--range", "HEAD^", "HEAD"]);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains(want), "{text}");
+}
+
 #[test]
 fn a_change_in_an_unlinked_path_dependency_outside_the_workspace_does_not() {
     let tmp = seed_vendored_workspace();
@@ -2125,6 +2143,19 @@ fn a_multi_line_string_outside_the_inherited_sections_is_passed_over() {
     assert_eq!(code, 0, "{text}");
     let f = PinFixture::inherited_move(root, AUTHORS, "\"one\"", "\"two\"");
     assert_inherited(&f.check(&HEAD_RANGE), "the inherited authors");
+    // A line in the string that names an inherited section is no table either: neither the
+    // text after it nor a key of the same table after the string is in that section.
+    let root = "\n[workspace.package]\nauthors = [\"one\"]\n\n[workspace.metadata.deb]\n\
+                extended-description = \"\"\"\n[workspace.package]\nThe first line.\n\"\"\"\n\
+                section = \"utils\"\n";
+    for (from, to) in [
+        ("The first line.", "The only line."),
+        ("\"utils\"", "\"misc\""),
+    ] {
+        let f = PinFixture::inherited_move(root, AUTHORS, from, to);
+        let (code, text) = f.check(&HEAD_RANGE);
+        assert_eq!(code, 0, "{from}:\n{text}");
+    }
 }
 
 #[test]
@@ -6744,6 +6775,20 @@ fn a_non_ascii_link_in_an_archive_input_is_named() {
     assert_undecidable_with(&f.check(&["--staged"]), "    LICENSES/링크.txt");
     f.commit("add a link");
     assert_undecidable_with(&f.check(&HEAD_RANGE), "    LICENSES/링크.txt");
+}
+
+/// An archive input whose name git quotes cannot be told apart from the inputs by the path
+/// lists, so it stops the check, on the index (staged) and on a commit (range).
+#[test]
+fn a_quoted_name_in_an_archive_input_is_undecidable() {
+    let f = ArchiveFixture::new();
+    f.write("LICENSES/a\"b.txt", "license\n");
+    f.git(&["add", "-A"]);
+    let want =
+        "LICENSES/a\"b.txt changed in the archive input LICENSES/, but git prints its name quoted";
+    assert_undecidable_with(&f.check(&["--staged"]), want);
+    f.commit("add a license text");
+    assert_undecidable_with(&f.check(&HEAD_RANGE), want);
 }
 
 impl PinFixture {
