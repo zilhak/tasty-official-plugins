@@ -470,7 +470,8 @@ mod tests {
                             out.pixels_per_point,
                         ),
                     }),
-                    Shape::Rect(r) => rects.push((r.rect, r.fill)),
+                    // 화면에 칠해지는 영역은 사각형과 클립의 교차다.
+                    Shape::Rect(r) => rects.push((r.rect.intersect(clipped.clip_rect), r.fill)),
                     _ => {}
                 }
             }
@@ -519,33 +520,36 @@ mod tests {
                     "{name}: '{s}' 유효 글리프 색"
                 );
             }
-            // 행 채움: 본문 글자 위치를 덮는 행 높이 사각형. 본문 전체 바탕(well)은 행 높이가 아니라 빠진다.
-            let row_h = diff_row_h(&theme);
-            let bands_at = |s: &str| -> Vec<Color32> {
-                let c = find(s).rect.center();
+            // 행 채움: 본문 글자 영역과 겹쳐 보이는 채움(사각형 ∩ 클립). 높이와 무관하다.
+            // 본문 전체 바탕(well, bg_app)과 투명 사각형은 행 채움이 아니라 뺀다.
+            let well = theme.bg_app().to_egui();
+            let fills_over = |s: &str| -> Vec<(Rect, Color32)> {
+                let body = find(s).rect;
                 rects
                     .iter()
-                    .filter(|(r, _)| (r.height() - row_h).abs() < 0.5 && r.contains(c))
-                    .map(|(_, fill)| *fill)
+                    .filter(|(_, fill)| *fill != well && fill.a() > 0)
+                    .filter(|(r, _)| {
+                        let o = r.intersect(body);
+                        o.width() > 0.0 && o.height() > 0.0
+                    })
+                    .copied()
                     .collect()
             };
-            assert_eq!(
-                bands_at(HUNK),
-                vec![theme.tint_info_bg().to_egui()],
-                "{name}: hunk 채움"
-            );
-            assert_eq!(
-                bands_at(GONE),
-                vec![theme.tint_danger_bg().to_egui()],
-                "{name}: 삭제 채움"
-            );
-            assert_eq!(
-                bands_at(CAME),
-                vec![theme.tint_success_bg().to_egui()],
-                "{name}: 추가 채움"
-            );
+            for (s, tint, what) in [
+                (HUNK, theme.tint_info_bg().to_egui(), "hunk"),
+                (GONE, theme.tint_danger_bg().to_egui(), "삭제"),
+                (CAME, theme.tint_success_bg().to_egui(), "추가"),
+            ] {
+                let over = fills_over(s);
+                let colors: Vec<Color32> = over.iter().map(|(_, c)| *c).collect();
+                assert_eq!(colors, vec![tint], "{name}: {what} 채움");
+                assert!(
+                    over[0].0.contains_rect(find(s).rect),
+                    "{name}: {what} 채움이 본문 전체를 덮는다"
+                );
+            }
             assert!(
-                bands_at(KEPT).is_empty(),
+                fills_over(KEPT).is_empty(),
                 "{name}: context 행은 채우지 않는다"
             );
         }
