@@ -821,21 +821,34 @@ fn a_change_in_a_linked_path_dependency_outside_the_workspace_demands_a_bump() {
 }
 
 /// A build input of a linked path dependency outside the workspace whose name git quotes
-/// stops the check, on the index (staged) and on a commit (range).
+/// stops the check, on the index (staged) and on a commit (range). The quoted line of a
+/// build.rs or a Cargo.toml ends in a quote and matches no build input pattern, so only the
+/// -z list brings in the path dependency for it.
 #[test]
 fn a_quoted_name_in_a_linked_path_dependency_is_undecidable() {
-    let tmp = seed_vendored_workspace();
-    let d = tmp.path();
-    write(d, "vendor/upstream/src/a\"b.rs", "pub fn quoted() {}\n");
-    run_git(d, &["add", "-A"]);
-    let want = "vendor/upstream/src/a\"b.rs changed in the path dependency vendor/upstream, but git prints its name quoted";
-    let (code, text) = check(d, &["--staged"]);
-    assert_eq!(code, 2, "{text}");
-    assert!(text.contains(want), "{text}");
-    commit_all(d, "feat(upstream): add a file with a quote in its name");
-    let (code, text) = check(d, &["--range", "HEAD^", "HEAD"]);
-    assert_eq!(code, 2, "{text}");
-    assert!(text.contains(want), "{text}");
+    for (path, body) in [
+        ("vendor/upstream/src/a\"b.rs", "pub fn quoted() {}\n"),
+        ("vendor/upstream/a\"b/build.rs", "fn main() {}\n"),
+        (
+            "vendor/upstream/a\"b/Cargo.toml",
+            "[package]\nname = \"quoted\"\nversion = \"0.1.0\"\n",
+        ),
+    ] {
+        let tmp = seed_vendored_workspace();
+        let d = tmp.path();
+        write(d, path, body);
+        run_git(d, &["add", "-A"]);
+        let want = format!(
+            "{path} changed in the path dependency vendor/upstream, but git prints its name quoted"
+        );
+        let (code, text) = check(d, &["--staged"]);
+        assert_eq!(code, 2, "{path}:\n{text}");
+        assert!(text.contains(&want), "{path}:\n{text}");
+        commit_all(d, "feat(upstream): add a file with a quote in its name");
+        let (code, text) = check(d, &["--range", "HEAD^", "HEAD"]);
+        assert_eq!(code, 2, "{path}:\n{text}");
+        assert!(text.contains(&want), "{path}:\n{text}");
+    }
 }
 
 #[test]
