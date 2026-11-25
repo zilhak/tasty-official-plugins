@@ -24,7 +24,10 @@ on:
         required: true
         type: string
       verified_on:
-        description: Platforms the Release was verified on, one line
+        description: >-
+          Platforms where both Tasty releases were verified, as release platform names
+          separated by commas on one line; linux-x64, macos-arm64, and windows-x64 are
+          required, and the other release platforms may be added
         required: true
         type: string
 

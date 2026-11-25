@@ -8,7 +8,11 @@
 # --tag          the plugin Release to promote, such as v0.1.3
 # --min-tasty    the oldest Tasty release the Release supports
 # --new-tasty    the Tasty release that bundles the Release
-# --verified-on  the platforms the Release was verified on, one line
+# --verified-on  the platforms where both Tasty releases were verified with the Release,
+#                on one line: names from PLATFORMS below separated by commas, with spaces
+#                around a name ignored, no empty name, and no name twice. Every name of
+#                REQUIRED_PLATFORMS must be there; each other platform may be added on its
+#                own. The notes carry the value as given.
 #
 # The repository is GH_REPO (owner/name), and gh needs a token that may edit its Releases.
 # Before anything is changed, every check below must pass; the first one that fails ends
@@ -74,6 +78,9 @@ CHECK=scripts/release-check.sh
 TASTY_REPO=zilhak/tasty
 # The platforms of a release, as PLATFORMS in release.yml.
 PLATFORMS=(windows-x64 windows-arm64 macos-arm64 linux-x64 linux-arm64)
+# The platforms --verified-on must name, as "Platforms" in
+# docs/ci.md#verification-before-promotion asks. Change both together.
+REQUIRED_PLATFORMS=(linux-x64 macos-arm64 windows-x64)
 # The tags whose manifests have no min_tasty_version, as "<tag> <peeled commit>"; check 8
 # skips them. These are all the v* tags made before the manifests carried the key; no tag
 # is added after that. Keep it on one line, or one entry per line with ")" alone on the
@@ -124,6 +131,28 @@ fi
 [[ -n "${ON//[[:space:]]/}" ]] || usage "--verified-on is empty"
 # A line break would break the marker block of the notes.
 [[ "$ON" != *$'\n'* && "$ON" != *$'\r'* ]] || usage "--verified-on must be one line"
+# --verified-on names release platforms, each once, with every required one.
+verified=" "
+rest="$ON,"
+while [[ -n "$rest" ]]; do
+  name=${rest%%,*}
+  rest=${rest#*,}
+  name=${name#"${name%%[![:space:]]*}"}
+  name=${name%"${name##*[![:space:]]}"}
+  [[ -n "$name" ]] || usage "--verified-on has an empty platform name: '$ON'"
+  known=""
+  for platform in "${PLATFORMS[@]}"; do
+    [[ "$name" != "$platform" ]] || known=yes
+  done
+  [[ -n "$known" ]] ||
+    usage "--verified-on names '$name', which is not a release platform (${PLATFORMS[*]})"
+  [[ "$verified" != *" $name "* ]] || usage "--verified-on names $name twice"
+  verified="$verified$name "
+done
+for platform in "${REQUIRED_PLATFORMS[@]}"; do
+  [[ "$verified" == *" $platform "* ]] ||
+    usage "--verified-on lacks $platform, which docs/ci.md#verification-before-promotion requires"
+done
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT

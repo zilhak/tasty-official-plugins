@@ -384,11 +384,16 @@ impl World {
     }
 
     fn promoted_notes(&self) -> String {
+        self.promoted_notes_on(ON)
+    }
+
+    /// The notes of the promotion whose --verified-on is `on`.
+    fn promoted_notes_on(&self, on: &str) -> String {
         notes_with(&[
             format!("Commit: {}", self.commit()),
             format!("tasty rev: {TASTY_REV}"),
             format!("Requires Tasty: {MIN} or later"),
-            format!("Verified with Tasty: {MIN} (minimum), {NEW} (bundled) on {ON}"),
+            format!("Verified with Tasty: {MIN} (minimum), {NEW} (bundled) on {on}"),
         ])
     }
 
@@ -1345,6 +1350,76 @@ fn bad_inputs_are_refused_before_any_call() {
         assert_eq!(run.result, 2, "{what}");
         assert!(run.calls.is_empty(), "{what}: {}", run.calls);
     }
+    // Each --verified-on below breaks one rule only, so that each rule is caught on its
+    // own: the required platforms are there unless one is left out on purpose.
+    for (what, on) in [
+        // A line break after a comma, which the platform names alone would take.
+        ("line feed", "linux-x64,\n macos-arm64, windows-x64"),
+        ("carriage return", "linux-x64,\r macos-arm64, windows-x64"),
+        // An empty name, which must not be skipped.
+        ("leading comma", ", linux-x64, macos-arm64, windows-x64"),
+        ("two commas", "linux-x64,, macos-arm64, windows-x64"),
+        ("trailing comma", "linux-x64, macos-arm64, windows-x64,"),
+        // A name that is not a release platform.
+        ("typo", "linux-x64, linux-x86, macos-arm64, windows-x64"),
+        (
+            "names split by a space",
+            "linux-x64, macos-arm64, windows-x64, linux-arm64 windows-arm64",
+        ),
+        (
+            "a name twice",
+            "linux-x64, linux-x64, macos-arm64, windows-x64",
+        ),
+        // A required platform left out.
+        ("no linux-x64", "macos-arm64, windows-x64"),
+        ("no macos-arm64", "linux-x64, windows-x64"),
+        ("no windows-x64", "linux-x64, macos-arm64"),
+        // Unknown and missing at once.
+        ("no commas", "linux-x64 macos-arm64 windows-x64"),
+    ] {
+        let mut args = default_args();
+        args[7] = on;
+        let run = promote(&World::good(), &args);
+        assert_eq!(run.result, 2, "{what}: {:?}", run.result);
+        assert!(run.calls.is_empty(), "{what}: {}", run.calls);
+        assert!(
+            run.result.output.contains("--verified-on "),
+            "{what}: {:?}",
+            run.result
+        );
+    }
+}
+
+#[test]
+fn verified_on_is_written_as_given_and_the_same_inputs_pass_check_0() {
+    for on in [
+        // All five platforms, in another order and with other spaces.
+        "windows-x64,linux-x64 ,  macos-arm64, linux-arm64, windows-arm64",
+        // One optional platform on its own.
+        "linux-x64, macos-arm64, windows-x64, linux-arm64",
+        "linux-x64, macos-arm64, windows-x64, windows-arm64",
+    ] {
+        let mut args = default_args();
+        args[7] = on;
+        let w = World::good();
+        let run = promote(&w, &args);
+        run.assert_promoted(on, false);
+        let notes = run.edited_notes.expect("notes sent with the edit");
+        assert_eq!(
+            notes,
+            format!("{}\n", w.promoted_notes_on(on).trim_end()),
+            "{on}"
+        );
+        assert!(notes.contains(&format!("(bundled) on {on}\n")), "{notes}");
+        // The same inputs once the Release is Latest with those notes.
+        let mut w = World::good();
+        w.latest = ok(format!("{TAG}\n"));
+        w.notes = notes;
+        w.state = ok("false false\n");
+        let run = promote(&w, &args);
+        assert_eq!(run.result, 0, "{on} again: {:?}", run.result);
+        assert!(run.edits().is_empty(), "{on} again: {}", run.calls);
+    }
 }
 
 fn read(rel: &str) -> String {
@@ -1370,6 +1445,15 @@ fn the_promotion_platforms_are_the_release_platforms() {
         .collect();
     assert_eq!(from_promote, from_release);
     assert_eq!(from_release, PLATFORMS);
+    // The platforms --verified-on must name are release platforms.
+    let required: Vec<&str> = line_value(&promote, "REQUIRED_PLATFORMS=(", "release-promote.sh")
+        .trim_end_matches(')')
+        .split_whitespace()
+        .collect();
+    assert!(!required.is_empty());
+    for platform in &required {
+        assert!(PLATFORMS.contains(platform), "{platform} in {required:?}");
+    }
 }
 
 #[test]
