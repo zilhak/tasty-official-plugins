@@ -1249,6 +1249,32 @@ fn check_7_runs_the_list_bins_of_the_tag_commit_not_the_work_tree() {
 }
 
 #[test]
+fn every_sha256sums_line_is_judged_with_or_without_a_final_newline() {
+    let sums = "SHA256SUMS-macos-arm64.txt";
+    // The right list, ending without a newline. The GitHub digest follows the bytes.
+    let mut w = World::good();
+    let list = w.assets[sums].clone();
+    assert_eq!(list.last(), Some(&b'\n'));
+    w.assets
+        .insert(sums.into(), list[..list.len() - 1].to_vec());
+    run_good(&w).assert_promoted("right list without a final newline", false);
+    // The right list, then a line that is no "<sha256>  <file>" without a newline.
+    let mut w = World::good();
+    let mut list = w.assets[sums].clone();
+    list.extend_from_slice(b"junk");
+    w.assets.insert(sums.into(), list);
+    let run = run_good(&w);
+    run.assert_refused("junk last line without a newline");
+    assert!(
+        run.result
+            .output
+            .contains(&format!("check 7: unexpected line in {sums}: 'junk'")),
+        "{:?}",
+        run.result
+    );
+}
+
+#[test]
 fn the_good_world_publishes_the_files_of_a_real_release() {
     let w = World::good();
     // Each list-bins crate on each platform, the two lists per platform, release-meta.toml.
