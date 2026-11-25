@@ -347,6 +347,7 @@ struct OutputWatch {
     /// 현재 조용한 구간에서 알림을 보냈는지. 출력이 바뀌면 초기화한다.
     stall_notified: bool,
     /// 이번 턴의 마지막 출력([`RECENT_ERROR_BYTES`])에 오류가 있었는지. 정지 알림까지 기다릴 시간을 고른다.
+    /// 정지 시계를 다시 세는 회차에만 고르고, 그 밖의 회차는 그대로 둔다([`ErrorScanner::track_output`]).
     saw_error: bool,
     /// 이 조용한 구간에서 상태가 정지 알림을 허용하지 않음(idle·needs_input·exited)을 확인했는지.
     /// 그 상태는 hook 이 보고한 값이라 출력 변화나 이 surface 의 hook 없이는 바뀌지 않으므로,
@@ -745,9 +746,9 @@ impl ErrorScanner {
         }
     }
 
-    /// 재시작 전에 남긴 정지 알림을 되살린다. 누적 창이 빈 상태에서 시작하므로 빈 창의 해시를 기준으로 삼는다.
-    /// 첫 스캔에서 새 출력이 없으면 같은 조용한 구간으로 보고 다시 알리지 않는다. 새 출력이 있으면 해시가 바뀌어
-    /// 평소처럼 다시 센다. 알림 간격은 남긴 시각부터 잇는다.
+    /// 재시작 전에 남긴 정지 알림을 되살린다. 누적 창이 빈 상태에서 시작하므로 빈 창의 해시를 출력 변화의 비교
+    /// 기준으로 삼는다. 첫 스캔이 정지 시계를 다시 세지 않으면 같은 조용한 구간으로 보고 다시 알리지 않는다. 출력
+    /// 변화 판정은 [`ErrorScanner::track_output`]이 한다. 알림 간격은 남긴 시각부터 잇는다.
     pub(crate) fn restore_stall_notice(&mut self, surface_id: u32, at_ms: u64, now: Instant) {
         if self.watch.contains_key(&surface_id) {
             return;
