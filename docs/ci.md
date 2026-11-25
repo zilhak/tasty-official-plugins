@@ -863,7 +863,7 @@ gh workflow run promote.yml --ref main -f tag=vX.Y.Z -f min_tasty=A.B.C \
 | `tag` | The plugin Release to promote |
 | `min_tasty` | The oldest Tasty release the Release supports. It is written as `Requires Tasty: <min_tasty> or later` |
 | `new_tasty` | The Tasty release that bundles the Release |
-| `verified_on` | The platforms of the verification, on one line |
+| `verified_on` | The platforms where both Tasty releases were verified, as release platform names separated by commas. Promotion checks the names and that the required platforms of [Verification before promotion](#verification-before-promotion) are there; the head comment of `scripts/release-promote.sh` gives the form it takes |
 
 The job runs `scripts/release-promote.sh`, which also runs locally with `gh` signed in
 and `GH_REPO` set. It changes nothing unless all of its checks pass; its head comment
@@ -912,7 +912,9 @@ The verification uses the published pre-release files themselves. The bundling h
 the published package of `new_tasty`. When `min_tasty` is older, the pre-release
 archives are installed by hand into the published package of `min_tasty`. The evidence
 goes into the maintainer's release report; the Release notes keep only the versions and
-platforms (`Verified with Tasty`).
+platforms (`Verified with Tasty`). A platform in `verified_on` says that both `min_tasty`
+and `new_tasty` were verified on it (one host when they are the same version). Promotion
+does not check that the verification took place; the report holds it.
 
 - **Hosts.** Evidence that needs a direct install (agent-stream, which has
   `bundle = false`, and every archive put into a `min_tasty` host) comes from a GUI host:
@@ -925,12 +927,16 @@ platforms (`Verified with Tasty`).
   `TASTY_BUILTIN_PLUGINS_DIR` pointing at an empty folder). Unsigned official archives
   need `--allow-unverified`.
 - **Platforms.** At least one platform of each OS family: linux-x64, macos-arm64, and
-  windows-x64. For linux-arm64 and windows-arm64, the download with SHA-256 check and
+  windows-x64. Promotion checks that `verified_on` names these three
+  (`REQUIRED_PLATFORMS` in `scripts/release-promote.sh`, changed together with this
+  list). For linux-arm64 and windows-arm64, the download with SHA-256 check and
   the packaging checks of the Tasty release CI stand in, for bundled plugins only: Tasty
   packaging downloads only plugins with `bundle = true`. For agent-stream, the archive
   check of `publish` on all five platforms covers the files, and install and run are
   verified only on the platforms where it was installed by hand. The report names those
-  platforms and says that linux-arm64 and windows-arm64 have the archive check only.
+  platforms and each platform that had the archive check only. Such a platform stays out
+  of `verified_on`. When both hosts were verified on linux-arm64 or windows-arm64 too,
+  that platform may go into `verified_on`, each one on its own.
 - **Evidence per host and platform.**
   1. The plugin executable and `tasty-plugin.toml` in each installed plugin folder have
      the hash of the same files in the pre-release archive, for bundled and for directly
