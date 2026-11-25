@@ -421,10 +421,9 @@ would leave that range unchecked.
   link without its target counts as changed (`pin_package_changed`). Its tests, benches,
   examples, and Markdown are left out, except a file that shipped code includes
   (`include_paths`). A crate that inherits from the root of its workspace is judged
-  against the inherited sections read as TOML keys, so a comment change there does not
-  count (`pin_root_inherited_changed`). A pinned crate whose `build` names a script next
-  to the manifest of another package, or cannot be read, is undecidable
-  (`pin_check_build_script`). An
+  against the inherited sources of that root (`pin_root_inherited_changed`). A pinned
+  crate whose `build` names a script next to the manifest of another package, or cannot
+  be read, is undecidable (`pin_check_build_script`). An
   update of a crates.io crate in `Cargo.lock` needs one too, unless the plugin is already
   above its version at the tip of `origin/main` (the local `main` only when there is no
   `origin/main`). `main` moves only for releases and hotfixes, so its tip is the baseline.
