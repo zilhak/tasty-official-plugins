@@ -1152,6 +1152,103 @@ fn archives_named_unlike_the_tag_commit_are_refused() {
 }
 
 #[test]
+fn release_meta_must_list_the_plugins_of_the_tag_commit() {
+    // The archives, lists, lock, and hashes are those of the tag commit; only the
+    // [[plugin]] entries of release-meta.toml differ.
+    for what in [
+        "one version differs",
+        "one plugin twice",
+        "one plugin left out",
+    ] {
+        let t = tree();
+        let archived = t.plugins.clone();
+        let mut meta_plugins = t.plugins.clone();
+        match what {
+            "one version differs" => meta_plugins[1].1 = "9.9.9".into(),
+            "one plugin twice" => meta_plugins.push(meta_plugins[0].clone()),
+            _ => {
+                meta_plugins.remove(1);
+            }
+        }
+        let run = run_good(&World::publishing(t, archived, meta_plugins));
+        run.assert_refused(what);
+        assert!(
+            run.result
+                .output
+                .contains("check 7: release-meta.toml lists other plugins"),
+            "{what}: {:?}",
+            run.result
+        );
+    }
+}
+
+/// `manifest` with its first version line, the one an archive name reads, set to
+/// `version`.
+fn with_version(manifest: &str, version: &str) -> String {
+    let mut done = false;
+    let out: String = manifest
+        .lines()
+        .map(|l| {
+            let is_version = l
+                .strip_prefix("version")
+                .is_some_and(|rest| rest.trim_start().starts_with('='));
+            if is_version && !done {
+                done = true;
+                format!("version = \"{version}\"\n")
+            } else {
+                format!("{l}\n")
+            }
+        })
+        .collect();
+    assert!(done, "no version line in\n{manifest}");
+    out
+}
+
+/// Gives the work tree manifests of `tree` the version `version(i, tag commit version)`,
+/// after the tag commit is made: the commit keeps its own versions.
+fn change_work_tree_versions(tree: &Tree, version: impl Fn(usize, &str) -> String) {
+    for (i, crate_name) in tree.crates.iter().enumerate() {
+        let path = tree
+            .dir
+            .path()
+            .join(format!("crates/{crate_name}/tasty-plugin.toml"));
+        let text = std::fs::read_to_string(&path).expect("read work tree manifest");
+        let changed = with_version(&text, &version(i, &tree.plugins[i].1));
+        std::fs::write(&path, changed).expect("write work tree manifest");
+    }
+}
+
+#[test]
+fn check_7_reads_the_manifests_of_the_tag_commit_not_the_work_tree() {
+    // The tag commit has the published versions; the work tree has other ones.
+    let t = tree();
+    change_work_tree_versions(&t, |_, _| "9.9.9".into());
+    run_good(&World::of(t)).assert_promoted("tag commit published, work tree other", false);
+    // The work tree has the published versions; the tag commit has other ones.
+    let t = tree_with(|_, m| with_version(&with_min_tasty(m, MIN), "9.9.9"));
+    let real = tree();
+    change_work_tree_versions(&t, |i, _| real.plugins[i].1.clone());
+    let published = real.plugins.clone();
+    let run = run_good(&World::publishing(t, published.clone(), published));
+    run.assert_refused("work tree published, tag commit other");
+    assert!(run.result.output.contains("check 7: "), "{:?}", run.result);
+}
+
+#[test]
+fn check_7_runs_the_list_bins_of_the_tag_commit_not_the_work_tree() {
+    // The work tree scripts/check.sh lists one plugin crate less than the tag commit.
+    let t = tree();
+    let fewer: Vec<String> = t.crates[1..].to_vec();
+    let script = format!(
+        "#!/usr/bin/env bash\n[[ \"$1\" == list-bins ]] || exit 2\nprintf '%s\\n' {}\n",
+        fewer.join(" ")
+    );
+    support::write_executable(&t.dir.path().join("scripts/check.sh"), script.into_bytes())
+        .expect("write work tree check.sh");
+    run_good(&World::of(t)).assert_promoted("work tree list-bins lists one less", false);
+}
+
+#[test]
 fn the_good_world_publishes_the_files_of_a_real_release() {
     let w = World::good();
     // Each list-bins crate on each platform, the two lists per platform, release-meta.toml.
