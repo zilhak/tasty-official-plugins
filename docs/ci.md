@@ -954,6 +954,57 @@ does not check that the verification took place; the report holds it.
      same check, and the manifest check of item 2, after its direct install on a GUI host.
   4. One basic action per plugin, such as opening its surface kind or running one of its
      CLI commands.
+  5. Each IPC path that this Release has and the previous Release did not, called at
+     least once on the `min_tasty` host and on the `new_tasty` host. The path list is
+     below.
+
+  **New IPC paths (item 5).** The previous Release is the Latest Release when the report
+  is written. Compare its tag commit (the `Commit:` line of its marker block, or the
+  peeled tag for a Release without one) and its tasty rev (the root `Cargo.toml` of that
+  commit) with those of this tag: the `crates/tasty-plugin-*/` diff (sources and
+  `tasty-plugin.toml`) between the two tag commits, and the `crates/tasty-plugin-protocol`
+  and `crates/tasty-plugin-sdk` diff between the two tasty revs. A path counts as new
+  when it is one of these:
+
+  1. A host method a plugin calls (`HostHandle::call` or `notify`, or a plugin helper
+     around them) that is new, or whose sent or returned fields changed. An event key a
+     plugin newly subscribes to or publishes on the SDK bus (`BusHandle`) counts too.
+     `self_invoke` stays inside the plugin; the host calls of the handler it reaches
+     count.
+  2. An `ipc_method` or CLI subcommand that a manifest newly declares (host to plugin).
+  3. A wire message that the protocol or SDK crate changed, or a host method the SDK
+     newly calls on its own.
+  4. A host-to-plugin path with the same method name and wire types whose caller,
+     trigger, or receiving handler is new or changed. A `[[contributes.*]]` declaration
+     that was removed, moved, or replaced by a declaration at run time, and a manifest
+     value that names one, are the leads. Items 1 to 3 do not show it, so look for it on
+     its own.
+
+  The diffs are where the search starts, not the list: a grep of method names misses
+  names on the next line or in variables. Follow each change from its caller or trigger
+  through the wire message to the handler on the other side, and write it down as one
+  path; the same method with another trigger or handler is another path. A wire value
+  that the diff shows but no plugin of this Release sends or receives (such as a value
+  only the host's own popups use) needs no call: the report names it, says that no plugin
+  sends or receives it, and gives the host and plugin code that shows this.
+
+  The report gives the Latest tag it compared with, the two commit and rev pairs, the
+  path list, and the result of each path on each host. Each path has its own result: the
+  success of another path that uses the same method does not stand in for it. With no
+  new path, the report says 0 and gives a count of the same diffs that is not 0, such as
+  the number of changed files. A call that differs by platform (code under `cfg`) is made
+  on that platform. When there is no Latest Release, the report says so and every IPC
+  path of this Release is in the list. A rerun after the edit went through (check 0) uses
+  the report of the first run.
+
+  The Latest Release can change between the report and the promotion. Before the
+  dispatch, wait until every promotion that is running, waiting, or run locally has
+  ended, then check that the Latest Release is still the tag of the report. If it is
+  not, extend the path list and the evidence against the new Latest first. Until the
+  dispatched run ends, maintainers agree among themselves on any other promotion: the
+  concurrency group of `promote.yml` only queues workflow runs, and it does not see the
+  tag a maintainer compared with or a local run. Whether the Latest Release is older than
+  the tag is check 5 of `scripts/release-promote.sh`.
 
 ### Minimum Tasty version
 
