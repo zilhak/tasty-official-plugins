@@ -1,6 +1,8 @@
 //! Claude 터미널 출력의 오류 패턴과 오래 변하지 않는 출력을 감시한다.
 //! surface.read_since_scan_mark의 전용 커서로 새 텍스트를 받아 매칭 창에 누적한다.
 //! 에이전트가 쓰는 mark와 별개이므로 에이전트의 조회가 이 커서를 움직이지 않는다.
+//! 응답에 출처 정보(`text_origins`)가 있으면 OS 크기 적용 뒤 재그리기 텍스트는 정지 시계와
+//! 오류 직후 기준에 넣지 않는다([`TextOrigins`], [`RecentOutput`]).
 //!
 //! launch·spawn·respawn에서 등록하고 폴링 중 대상 상태를 확인한다.
 //! 자식은 surface 존재와 별도로 부모 관계를 확인해 release된 대상도 정리한다.
@@ -122,8 +124,8 @@ pub struct ErrorScanner {
     watch: HashMap<u32, OutputWatch>,
     /// 전용 커서로 받은 텍스트를 누적한 매칭 창. SCAN_WINDOW_MAX를 넘으면 앞에서 자른다.
     window: HashMap<u32, String>,
-    /// 이번 턴의 마지막 출력. RECENT_ERROR_BYTES를 넘으면 앞에서 자르고 새 턴에서 비운다.
-    recent_output: HashMap<u32, String>,
+    /// 이번 턴의 마지막 출력과 그 끊긴 자리, 마지막 스캔 응답의 연속성 값. 새 턴에서 비운다.
+    recent_output: HashMap<u32, RecentOutput>,
     /// surface별 마지막 정지 알림 시각.
     last_stall_notify: HashMap<u32, Instant>,
     /// 백그라운드 작업을 기다리는 surface. 대기 Stop에서 넣고 턴 종료·새 턴·세션 종료에서 뺀다.
@@ -335,12 +337,14 @@ impl BackgroundWait {
 }
 
 /// 누적 창의 해시 변화로 출력 변화를 추정한다. 실제 작업 진행 여부를 확정하지는 않는다.
+/// 출력 변화는 재그리기를 뺀 출력이 기여한 창의 변화다. 응답에 출처 정보가 없으면 창 전체의 변화다
+/// ([`ErrorScanner::track_output`]).
 struct OutputWatch {
-    /// 마지막으로 본 텍스트의 해시.
+    /// 마지막으로 본 창 전체의 해시. 다음 회차의 비교 기준이다.
     fingerprint: u64,
-    /// 지문이 마지막으로 바뀐 시각.
+    /// 출력이 마지막으로 바뀐 시각.
     last_change: Instant,
-    /// 현재 조용한 구간에서 알림을 보냈는지. 창의 해시가 바뀌면 초기화한다.
+    /// 현재 조용한 구간에서 알림을 보냈는지. 출력이 바뀌면 초기화한다.
     stall_notified: bool,
     /// 이번 턴의 마지막 출력([`RECENT_ERROR_BYTES`])에 오류가 있었는지. 정지 알림까지 기다릴 시간을 고른다.
     saw_error: bool,
@@ -367,6 +371,274 @@ fn trim_window(window: &mut String, max: usize) {
         .find(|i| window.is_char_boundary(*i))
         .unwrap_or(window.len());
     window.drain(..cut);
+}
+
+/// 스캔 응답 텍스트 한 부분의 출처. 정의는 tasty `docs/reference/api.md`의 `read_since_scan_mark` 항목이다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Normal,
+    Redraw,
+    Mixed,
+    Unknown,
+}
+
+impl Origin {
+    /// 모르는 값은 출처를 정할 수 없는 것으로 본다.
+    fn parse(value: Option<&serde_json::Value>) -> Self {
+        match value.and_then(serde_json::Value::as_str) {
+            Some("normal") => Self::Normal,
+            Some("redraw") => Self::Redraw,
+            Some("mixed") => Self::Mixed,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// 정지 시계를 깨우는 출력인가. 재그리기만 빠진다.
+    fn wakes_clock(self) -> bool {
+        self != Self::Redraw
+    }
+
+    /// 오류 직후 기준에 쓰는 출력인가. `unknown`은 출처 정보가 없는 응답과 같게 쓴다.
+    fn counts_for_error(self) -> bool {
+        matches!(self, Self::Normal | Self::Unknown)
+    }
+}
+
+/// 스캔 응답의 `text_origins`. 구조 검사를 통과한 것만 만든다.
+struct TextOrigins {
+    /// `text`를 0부터 끝까지 순서대로 빈틈없이 덮는 `(start, end, origin)`.
+    ranges: Vec<(usize, usize, Origin)>,
+    /// 끊긴 자리(폭 0 표시)의 오프셋. 비감소다. 사유는 가리지 않고 모두 끊긴 자리로 본다.
+    gaps: Vec<usize>,
+}
+
+impl TextOrigins {
+    /// 응답의 출처 정보를 읽는다. 키가 없거나 범위가 `text`를 순서대로 빈틈없이 덮지 않거나, 오프셋이 문자 경계가
+    /// 아니거나, 끊긴 자리가 `text` 밖이거나 거꾸로 오면 `None`이다. `None`이면 출처 정보가 없는 응답과 같게 다룬다.
+    fn parse(resp: &serde_json::Value, text: &str) -> Option<Self> {
+        let origins = resp.get("text_origins")?;
+        let offset = |v: &serde_json::Value, key: &str| {
+            v.get(key)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+        };
+        let mut ranges = Vec::new();
+        let mut covered = 0;
+        for r in origins.get("ranges")?.as_array()? {
+            let (start, end) = (offset(r, "start")?, offset(r, "end")?);
+            if start != covered || end < start || !text.is_char_boundary(end) {
+                return None;
+            }
+            ranges.push((start, end, Origin::parse(r.get("origin"))));
+            covered = end;
+        }
+        if covered != text.len() {
+            return None;
+        }
+        let mut gaps: Vec<usize> = Vec::new();
+        for g in origins.get("gaps")?.as_array()? {
+            let at = offset(g, "at")?;
+            // 호스트는 같은 자리에 사유가 다른 표시를 여럿 적으므로 같은 오프셋은 받아들인다.
+            if !text.is_char_boundary(at) || gaps.last().is_some_and(|&prev| at < prev) {
+                return None;
+            }
+            gaps.push(at);
+        }
+        Some(Self { ranges, gaps })
+    }
+
+    /// 재그리기 범위가 있는가. 없으면 정지 시계는 창 전체의 변화와 같다.
+    fn has_redraw(&self) -> bool {
+        self.ranges.iter().any(|r| !r.2.wakes_clock())
+    }
+
+    /// 정지 시계를 깨우는 부분을 순서대로 돌려준다.
+    fn clock_parts<'a>(&'a self, text: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.ranges
+            .iter()
+            .filter(|r| r.2.wakes_clock())
+            .map(move |r| &text[r.0..r.1])
+    }
+}
+
+/// 스캔 응답의 연속성 키. 정의는 tasty `docs/reference/api.md`의 `read_since_scan_mark` 항목이다.
+#[derive(Debug, Default)]
+struct ReadPosition {
+    stream: Option<String>,
+    cursor: Option<u64>,
+    next_cursor: Option<u64>,
+    skipped: Option<u64>,
+}
+
+impl ReadPosition {
+    fn parse(resp: &serde_json::Value) -> Self {
+        let number = |key: &str| resp.get(key).and_then(serde_json::Value::as_u64);
+        Self {
+            stream: resp
+                .get("stream")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            cursor: number("cursor"),
+            next_cursor: number("next_cursor"),
+            skipped: number("skipped"),
+        }
+    }
+
+    /// 다음 응답과 견줄 값. 키가 없으면 `None`이다.
+    fn record(&self) -> Option<ScanContinuity> {
+        Some(ScanContinuity {
+            stream: self.stream.clone()?,
+            next_cursor: self.next_cursor?,
+        })
+    }
+}
+
+/// 마지막 스캔 응답의 연속성 값.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScanContinuity {
+    stream: String,
+    next_cursor: u64,
+}
+
+/// 이번 응답이 앞 응답에 바로 이어지는가. 같은 `stream`에서 앞 `next_cursor`가 이번 `cursor - skipped`와 같을 때만
+/// 그렇다. 보존 한도로 잘리기만 한 읽기는 `skipped`로 보정해 이어진 것으로 본다(잘린 자리는 `trimmed` 표시가 끊는다).
+/// 앞 값이 없거나 키가 빠졌으면 이어짐을 보이지 못한 것이다.
+fn continues(prev: Option<&ScanContinuity>, read: &ReadPosition) -> bool {
+    let Some(prev) = prev else {
+        return false;
+    };
+    read.stream.as_deref() == Some(prev.stream.as_str())
+        && read
+            .cursor
+            .zip(read.skipped)
+            .and_then(|(cursor, skipped)| cursor.checked_sub(skipped))
+            == Some(prev.next_cursor)
+}
+
+/// 오류 직후 기준에 쓰는 이번 턴의 마지막 출력. 재그리기·`mixed` 본문은 넣지 않고 그 자리를 끊긴 자리로 남긴다.
+/// 응답의 끊긴 표시와 앞 응답과의 단절도 끊긴 자리다. 오류 문구는 끊긴 자리를 가로지르지 않는 것만 센다.
+#[derive(Default)]
+struct RecentOutput {
+    /// 오류 직후 기준에 쓰는 출력. [`RECENT_ERROR_BYTES`]를 넘으면 앞에서 자른다.
+    text: String,
+    /// `text` 안의 끊긴 자리. 오프셋 순서이고 한 오프셋에 하나다.
+    breaks: Vec<RecentBreak>,
+    /// 마지막 스캔 응답의 연속성 값. 다음 응답이 이어지는지 견준다.
+    continuity: Option<ScanContinuity>,
+}
+
+/// 끊긴 자리 하나. 빠진 본문의 첫 문자와 끝 문자를 남겨 양옆 출력의 단어 경계를 실제 문자로 정한다.
+struct RecentBreak {
+    at: usize,
+    first: Option<char>,
+    last: Option<char>,
+}
+
+impl RecentOutput {
+    /// 스캔 응답 하나의 텍스트를 더한다. 출처 정보가 없으면 텍스트 전체를 쓰고 끊긴 자리를 두지 않는다.
+    fn take(&mut self, text: &str, origins: Option<&TextOrigins>, read: &ReadPosition) {
+        match origins {
+            None => self.text.push_str(text),
+            Some(origins) => {
+                if !continues(self.continuity.as_ref(), read) {
+                    self.push_break();
+                }
+                let mut gaps = origins.gaps.iter().copied().peekable();
+                for &(start, end, origin) in &origins.ranges {
+                    let mut from = start;
+                    while let Some(at) = gaps.next_if(|&at| at < end) {
+                        self.push_part(&text[from..at], origin);
+                        self.push_break();
+                        from = at;
+                    }
+                    self.push_part(&text[from..end], origin);
+                }
+                for _ in gaps {
+                    self.push_break();
+                }
+            }
+        }
+        self.continuity = read.record();
+        self.trim();
+    }
+
+    fn push_part(&mut self, part: &str, origin: Origin) {
+        if origin.counts_for_error() {
+            self.text.push_str(part);
+            return;
+        }
+        let (Some(first), Some(last)) = (part.chars().next(), part.chars().next_back()) else {
+            return;
+        };
+        self.push_break();
+        let b = self
+            .breaks
+            .last_mut()
+            .expect("push_break leaves a break at the end");
+        b.first.get_or_insert(first);
+        b.last = Some(last);
+    }
+
+    /// 지금 끝에 끊긴 자리를 둔다. 같은 자리에 이미 있으면 그대로 둔다.
+    fn push_break(&mut self) {
+        let at = self.text.len();
+        if self.breaks.last().is_none_or(|b| b.at != at) {
+            self.breaks.push(RecentBreak {
+                at,
+                first: None,
+                last: None,
+            });
+        }
+    }
+
+    /// 앞에서 잘라 [`RECENT_ERROR_BYTES`] 이하로 줄인다. 잘라 낸 출력은 단어 경계 판정에도 쓰지 않는다.
+    fn trim(&mut self) {
+        let before = self.text.len();
+        trim_window(&mut self.text, RECENT_ERROR_BYTES);
+        let cut = before - self.text.len();
+        if cut > 0 {
+            self.breaks.retain(|b| b.at >= cut);
+            for b in &mut self.breaks {
+                b.at -= cut;
+            }
+        }
+    }
+
+    /// 끊긴 자리를 가로지르지 않는 오류 문구가 있는가. 끊긴 자리에는 빠진 본문의 첫·끝 문자를 넣어 단어 경계를
+    /// 실제 문자로 정하고, 매치가 끊긴 자리 사이의 한 구간 안에 들 때만 센다. 끊긴 자리가 매치의 시작점이나
+    /// 끝점에 있는 것은 가로지르는 것이 아니다.
+    fn has_error(&self) -> bool {
+        if self.breaks.is_empty() {
+            return detect_claude_error(&self.text);
+        }
+        let mut hay = String::with_capacity(self.text.len() + self.breaks.len() * 8);
+        let mut segments = Vec::with_capacity(self.breaks.len() + 1);
+        let mut from = 0;
+        for b in &self.breaks {
+            let start = hay.len();
+            hay.push_str(&self.text[from..b.at]);
+            segments.push(start..hay.len());
+            hay.extend(b.first);
+            hay.extend(b.last);
+            from = b.at;
+        }
+        let start = hay.len();
+        hay.push_str(&self.text[from..]);
+        segments.push(start..hay.len());
+
+        let re = claude_error_regex();
+        let mut pos = 0;
+        while let Some(m) = re.find_at(&hay, pos) {
+            // 매치 시작이 든 구간은 시작이 매치 시작 이하인 마지막 구간이다.
+            let i = segments.partition_point(|s| s.start <= m.start());
+            if i > 0 && m.end() <= segments[i - 1].end {
+                return true;
+            }
+            // 가로지른 매치와 겹치는 다른 매치를 놓치지 않도록 한 문자 뒤에서 다시 찾는다.
+            pos = m.start() + hay[m.start()..].chars().next().map_or(1, char::len_utf8);
+        }
+        false
+    }
 }
 
 /// 백그라운드 대기 여부와 오류 유무에 따라 정지 알림까지 기다릴 시간을 고른다.
@@ -667,19 +939,38 @@ impl ErrorScanner {
             .ok()?;
         // 새로 받은 텍스트만으로는 분할된 패턴을 놓칠 수 있어 창에 누적한다.
         let delta = resp.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        // 출처 정보는 여기서 한 번만 해석한다. 없거나 구조가 맞지 않으면 텍스트 전체를 일반 출력으로 본다.
+        let origins = TextOrigins::parse(&resp, delta);
+        let read = ReadPosition::parse(&resp);
         let window = self.window.entry(surface_id).or_default();
+        // 정지 시계는 앞 창에 재그리기를 뺀 부분만 붙인 창으로 잰다. 창이 상한에 차 있으면 창 전체의 변화와
+        // 다를 수 있어 따로 만든다. 재그리기가 없으면 창 전체와 같다.
+        let clock_fingerprint = origins.as_ref().filter(|o| o.has_redraw()).map(|o| {
+            let mut clock_window = window.clone();
+            for part in o.clock_parts(delta) {
+                clock_window.push_str(part);
+            }
+            trim_window(&mut clock_window, SCAN_WINDOW_MAX);
+            output_fingerprint(&clock_window)
+        });
         window.push_str(delta);
         trim_window(window, SCAN_WINDOW_MAX);
+        // 재그리기 화면에도 실제 오류 줄이 있을 수 있어 오류 알림은 창 전체로 찾는다.
         let has_error = detect_claude_error(window);
         let fingerprint = output_fingerprint(window);
         let snippet: String = window.chars().take(DEDUPE_SNIPPET_CHARS).collect();
         let recent = self.recent_output.entry(surface_id).or_default();
-        recent.push_str(delta);
-        trim_window(recent, RECENT_ERROR_BYTES);
+        recent.take(delta, origins.as_ref(), &read);
         // 창에는 오래된 오류도 남으므로 정지 기준은 마지막 출력의 오류만 본다.
-        let recent_error = detect_claude_error(recent);
+        let recent_error = recent.has_error();
         // 오류를 발견하기 전부터 창의 변화를 추적한다.
-        self.track_output(surface_id, fingerprint, now, recent_error);
+        self.track_output(
+            surface_id,
+            fingerprint,
+            clock_fingerprint.unwrap_or(fingerprint),
+            now,
+            recent_error,
+        );
         self.forget_ended_notice(host, surface_id);
 
         let mut fired = None;
@@ -734,16 +1025,20 @@ impl ErrorScanner {
         }
     }
 
-    /// 창의 해시가 바뀌면 조용한 구간을 다시 센다. 같은 창을 다시 해시하지 않도록 값으로 받는다.
+    /// 출력이 바뀌면 조용한 구간을 다시 센다. `fingerprint`는 이번 창 전체의 해시, `clock_fingerprint`는 앞 창에
+    /// 재그리기를 뺀 부분만 붙인 창의 해시다. 앞 창의 해시와 `clock_fingerprint`가 같으면 재그리기만 왔거나 아무것도
+    /// 오지 않은 것이라 관측(시계·알림 여부·기준·상태 확인)을 그대로 두고 비교 기준만 이번 창으로 옮긴다.
+    /// 같은 창을 다시 해시하지 않도록 값으로 받는다.
     fn track_output(
         &mut self,
         surface_id: u32,
         fingerprint: u64,
+        clock_fingerprint: u64,
         now: Instant,
         recent_error: bool,
     ) {
         match self.watch.get_mut(&surface_id) {
-            Some(w) if w.fingerprint == fingerprint => {}
+            Some(w) if w.fingerprint == clock_fingerprint => w.fingerprint = fingerprint,
             Some(w) => {
                 w.fingerprint = fingerprint;
                 w.last_change = now;
@@ -1138,6 +1433,10 @@ pub(crate) fn scan_target_is_alive<H: HostCall>(
 }
 
 #[cfg(test)]
+#[path = "error_scan/origin_tests.rs"]
+mod origin_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1370,9 +1669,12 @@ mod tests {
 
     /// 새 출력·자식 상태를 제공하고 훅 요청을 기록하는 stub.
     /// set_text로 지정한 텍스트는 한 번만 읽히며 이후에는 빈 문자열을 반환한다.
-    struct ScanHost {
+    /// push_scan_reply로 넣은 스캔 응답이 있으면 그것을 먼저 차례로 돌려준다.
+    pub(super) struct ScanHost {
         text: std::cell::RefCell<String>,
-        state: std::cell::RefCell<&'static str>,
+        pub(super) state: std::cell::RefCell<&'static str>,
+        /// 시험이 정한 `surface.read_since_scan_mark` 응답. `None`은 호출 실패다.
+        scan_replies: std::cell::RefCell<std::collections::VecDeque<Option<serde_json::Value>>>,
         fired: std::cell::RefCell<Vec<String>>,
         /// surface meta `claude-background-wait` 값. 없으면 meta 가 없는 것이다.
         wait_meta: Option<String>,
@@ -1386,14 +1688,15 @@ mod tests {
         setting: std::cell::RefCell<Option<serde_json::Value>>,
         setting_fails: std::cell::RefCell<bool>,
         /// `surface.screen_text` 의 화면. 처음 출력과 같게 시작한다.
-        screen: std::cell::RefCell<String>,
+        pub(super) screen: std::cell::RefCell<String>,
     }
 
     impl ScanHost {
-        fn new(text: &str, state: &'static str) -> Self {
+        pub(super) fn new(text: &str, state: &'static str) -> Self {
             Self {
                 text: std::cell::RefCell::new(text.to_string()),
                 state: std::cell::RefCell::new(state),
+                scan_replies: std::cell::RefCell::new(std::collections::VecDeque::new()),
                 fired: std::cell::RefCell::new(Vec::new()),
                 wait_meta: None,
                 meta_sets: std::cell::RefCell::new(Vec::new()),
@@ -1404,8 +1707,12 @@ mod tests {
                 screen: std::cell::RefCell::new(text.to_string()),
             }
         }
+        /// 다음 스캔 응답을 넣는다. `None`은 호출 실패다.
+        pub(super) fn push_scan_reply(&self, reply: Option<serde_json::Value>) {
+            self.scan_replies.borrow_mut().push_back(reply);
+        }
         /// 마지막으로 남긴 정지 알림 meta.
-        fn stall_notice(&self) -> Option<serde_json::Value> {
+        pub(super) fn stall_notice(&self) -> Option<serde_json::Value> {
             self.meta_sets
                 .borrow()
                 .iter()
@@ -1413,16 +1720,16 @@ mod tests {
                 .find(|(k, _)| k == STALL_NOTICE_META_KEY)
                 .and_then(|(_, v)| serde_json::from_str(v).ok())
         }
-        fn count(&self, method: &str) -> usize {
+        pub(super) fn count(&self, method: &str) -> usize {
             self.calls.borrow().iter().filter(|m| *m == method).count()
         }
-        fn set_text(&self, text: &str) {
+        pub(super) fn set_text(&self, text: &str) {
             *self.text.borrow_mut() = text.to_string();
         }
-        fn events(&self) -> Vec<String> {
+        pub(super) fn events(&self) -> Vec<String> {
             self.fired.borrow().clone()
         }
-        fn stalled_count(&self) -> usize {
+        pub(super) fn stalled_count(&self) -> usize {
             self.events().iter().filter(|e| *e == STALLED_EVENT).count()
         }
     }
@@ -1436,6 +1743,13 @@ mod tests {
             self.calls.borrow_mut().push(method.to_string());
             match method {
                 "surface.read_since_scan_mark" => {
+                    if let Some(reply) = self.scan_replies.borrow_mut().pop_front() {
+                        return reply.ok_or_else(|| tasty_plugin_sdk::PluginError::HostCall {
+                            method: method.to_string(),
+                            message: "host down".into(),
+                            code: None,
+                        });
+                    }
                     let delta = std::mem::take(&mut *self.text.borrow_mut());
                     Ok(json!({ "text": delta }))
                 }
