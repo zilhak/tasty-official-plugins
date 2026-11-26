@@ -101,8 +101,10 @@ Codex가 없는 PATH의 별도 검사 프로세스에서 전달된 실행 정보
 
 ### 세션 실행 (전용 app-server)
 
-launch·spawn·respawn·reboot·복원은 모두 플러그인 실행 파일의 `session` 모드(세션 helper)를
-터미널에 실행한다. 명령은 `'<플러그인 폴더>/tasty-plugin-codex' session [--resume <thread>]
+launch·spawn·respawn·reboot과 셸 통합 밖에서 시작한 세션의 저장 복원은 플러그인 실행 파일의
+`session` 모드(세션 helper)를 터미널에 실행한다. 셸 통합에서 시작한 세션의 저장 복원은 같은 helper의
+`terminal resume`으로 실행한다(어느 쪽을 쓰는지는 `src/session/mod.rs`의 `restore_line`이 정한다).
+`session` 모드 명령은 `'<플러그인 폴더>/tasty-plugin-codex' session [--resume <thread>]
 [--prompt-file <파일>] [-- <정책·모델 인자>]` 형태이며 각 인자를 작은따옴표로 감싼다. 셸의
 `codex` alias·function은 이 명령에 영향을 주지 않는다. 프롬프트는 임시 파일로 넘기고 helper가
 읽은 뒤 지운다.
@@ -139,9 +141,10 @@ tmux·SSH 조건은 원래 Codex 동작이다. OSC 52는 텍스트만 나른다.
 
 - 이미 정의된 값은 빈 값도 그대로 물려준다. `0`이나 빈 값을 export해 두었으면 전달이 켜지지
   않는다. helper는 셸이 export한 환경만 보므로 export하지 않은 셸 변수는 없는 것으로 본다.
-- 셸 통합으로 입력한 `codex`(`terminal` 모드)와 launch·spawn·respawn·reboot·복원(`session` 모드)이
-  모두 대상이다. 전용 app-server, RPC proxy, 원래 CLI로 넘기는 실행(helper가 넘기는 유틸리티 명령·
-  명시적 `--remote`·해석할 수 없는 옵션, helper를 거치지 않는 `command codex`)에는 넣지 않는다.
+- 셸 통합으로 입력한 `codex`와 그 세션의 저장 복원(`terminal` 모드), launch·spawn·respawn·reboot과
+  그 밖의 저장 복원(`session` 모드)이 모두 대상이다. 전용 app-server, RPC proxy, 원래 CLI로 넘기는
+  실행(helper가 넘기는 유틸리티 명령·명시적 `--remote`·해석할 수 없는 옵션, helper를 거치지 않는
+  `command codex`)에는 넣지 않는다.
   Windows의 Git for Windows Bash에서도 같다.
 - 이미 실행 중인 TUI에는 소급되지 않는다. 플러그인을 올린 뒤 새로 띄우거나 reboot·복원으로 다시
   띄운 TUI부터 적용된다.
