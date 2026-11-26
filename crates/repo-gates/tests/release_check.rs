@@ -743,17 +743,6 @@ fn the_published_state_step_fails_when_the_tag_became_latest() {
     }
 }
 
-/// The value of a top-level env key of release.yml, such as PLATFORMS.
-fn workflow_env(workflow: &str, key: &str) -> String {
-    let prefix = format!("  {key}: ");
-    workflow
-        .lines()
-        .find_map(|l| l.strip_prefix(&prefix))
-        .unwrap_or_else(|| panic!("release.yml has no env {key}"))
-        .trim_matches('"')
-        .to_string()
-}
-
 /// The step "Verify the release files" runs on the Linux runners of the publish job only,
 /// with GNU tools (find -printf, wc without padding), so its tests are Linux only.
 #[cfg(target_os = "linux")]
@@ -763,6 +752,17 @@ mod release_files {
     /// The platform whose list a case changes.
     const PLATFORM: &str = "linux-x64";
     const STEP: &str = "Verify the release files";
+
+    /// The value of a top-level env key of release.yml, such as PLATFORMS.
+    fn workflow_env(workflow: &str, key: &str) -> String {
+        let prefix = format!("  {key}: ");
+        workflow
+            .lines()
+            .find_map(|l| l.strip_prefix(&prefix))
+            .unwrap_or_else(|| panic!("release.yml has no env {key}"))
+            .trim_matches('"')
+            .to_string()
+    }
 
     fn sha256(path: &Path) -> String {
         let out = std::process::Command::new("sha256sum")
