@@ -153,6 +153,10 @@ pub(crate) fn render_document(input: DocumentInput) -> String {
         find_bindings,
         address_bindings,
     } = input;
+    // 파일 맨 앞의 UTF-8 BOM(U+FEFF) 하나만 뗀다. 남겨 두면 첫 줄의 제목·앞 머리말·들여쓴
+    // 코드가 성립하지 않고 BOM만 있는 파일이 빈 문서로 보이지 않는다. 두 번째 BOM과 본문
+    // 중간의 U+FEFF는 원문 그대로 둔다. 저장된 원문(`MdDoc::content`)은 바꾸지 않는다.
+    let source = source.strip_prefix('\u{FEFF}').unwrap_or(source);
 
     let lang = ui_lang::attr(tr);
     let (body_html, headings) = if remote.as_ref().is_some_and(|r| r.disconnected) {
@@ -2766,6 +2770,98 @@ mod tests {
         assert!(!out.contains("<h2"));
         // 이제 heading 은 자동 슬러그 `id` 를 받는다 — "heading ids + TOC" 절.
         assert!(out.contains(r#"<h1 id="body">Body</h1>"#), "got: {out}");
+    }
+
+    /// 로컬 문서 하나를 `render_document`로 그린다. 앞 BOM은 이 함수가 떼므로 BOM 시험은 여기서 본다.
+    fn local_document(source: &str) -> String {
+        let theme = Theme::with_colors_and_zoom(tasty_themes::mocha_fallback_colors(), false, 1.0);
+        let tr = Translator::default();
+        render_document(DocumentInput {
+            find_bindings: &[],
+            address_bindings: &[],
+            theme: &theme,
+            tr: &tr,
+            file_path: "/a/doc.md",
+            source,
+            load_error: None,
+            base_dir: None,
+            recent: &[],
+            remote: None,
+            large_deferred: false,
+        })
+    }
+
+    /// 문서의 `#tasty-md-body` 안쪽 HTML.
+    fn md_body(html: &str) -> &str {
+        let open = r#"<div id="tasty-md-body">"#;
+        let start = html.find(open).expect("tasty-md-body") + open.len();
+        let end = start + html[start..].find("</div><script>").expect("end of body");
+        &html[start..end]
+    }
+
+    #[test]
+    fn leading_bom_before_a_heading_is_dropped() {
+        let html = local_document("\u{FEFF}# Title\n\nText\n");
+        assert!(
+            md_body(&html).contains(r#"<h1 id="title">Title</h1>"#),
+            "got: {html}"
+        );
+        assert!(html.contains(r##"href="#title""##), "got: {html}");
+    }
+
+    #[test]
+    fn file_holding_only_a_bom_shows_the_empty_state() {
+        let html = local_document("\u{FEFF}");
+        assert!(html.contains("markdown.state.empty"), "got: {html}");
+    }
+
+    #[test]
+    fn leading_whitespace_after_the_bom_is_kept() {
+        let plain = local_document("# Title\n\nText\n");
+        assert!(
+            md_body(&plain).contains(r#"<h1 id="title">Title</h1>"#),
+            "got: {plain}"
+        );
+        let indented = local_document("    indented\n");
+        assert!(
+            md_body(&indented).contains("<pre><code>indented"),
+            "got: {indented}"
+        );
+        let bom_indented = local_document("\u{FEFF}    indented\n");
+        assert!(
+            md_body(&bom_indented).contains("<pre><code>indented"),
+            "got: {bom_indented}"
+        );
+    }
+
+    #[test]
+    fn bom_inside_the_document_is_kept() {
+        let html = local_document("\u{FEFF}# Title\n\nx\u{FEFF}y\n");
+        let body = md_body(&html);
+        assert!(body.contains(r#"<h1 id="title">Title</h1>"#), "got: {html}");
+        assert!(body.contains("x\u{FEFF}y"), "got: {html}");
+
+        let html = local_document("# Title\n\n\u{FEFF}# Still text\n");
+        let body = md_body(&html);
+        assert!(body.contains(r#"<h1 id="title">Title</h1>"#), "got: {html}");
+        assert!(body.contains("<p>\u{FEFF}# Still text</p>"), "got: {html}");
+    }
+
+    #[test]
+    fn only_one_leading_bom_is_dropped() {
+        let html = local_document("\u{FEFF}\u{FEFF}# Title\n");
+        let body = md_body(&html);
+        assert!(!body.contains("<h1"), "got: {html}");
+        assert!(body.contains("<p>\u{FEFF}# Title</p>"), "got: {html}");
+    }
+
+    #[test]
+    fn yaml_frontmatter_after_a_leading_bom_is_hidden() {
+        let html = local_document("\u{FEFF}---\nkey: value\n---\n\n# Body\n");
+        let body = md_body(&html);
+        assert!(!body.contains("key: value"), "got: {html}");
+        assert!(!body.contains("<h2"), "got: {html}");
+        assert!(body.contains(r#"<h1 id="body">Body</h1>"#), "got: {html}");
     }
 
     #[test]

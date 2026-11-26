@@ -984,6 +984,28 @@ fn temp_md(tag: &str, body: &[u8]) -> std::path::PathBuf {
     path
 }
 
+/// 읽은 원문은 앞 BOM까지 그대로 저장한다. BOM은 그릴 때만 하나 뗀다.
+#[test]
+fn reading_keeps_leading_boms_in_the_stored_source() {
+    for body in ["\u{FEFF}\u{FEFF}# Title\n", "\u{FEFF}"] {
+        let path = temp_md("bom", body.as_bytes());
+        let mut doc = MdDoc::new(Some(path.to_string_lossy().into_owned()));
+        assert!(doc.load_error.is_none());
+        assert!(!doc.content.is_empty());
+        assert_eq!(doc.content, body);
+        doc.content.clear();
+        doc.force_reload();
+        assert!(doc.load_error.is_none());
+        assert_eq!(doc.content, body);
+        let _ = std::fs::remove_file(&path); // best-effort 정리 — 실패 무시(테스트 결과 무관).
+
+        let mut remote = MdDoc::new_remote("/r/bom.md".into());
+        remote.remote.as_mut().unwrap().pending = Some(1);
+        assert!(remote.apply_remote_result(content_result(1, 1, true, body)));
+        assert_eq!(remote.content, body);
+    }
+}
+
 /// 확인을 기다리거나 취소한 문서는 파일이 바뀌어도 감시로 읽지 않는다.
 #[test]
 fn watch_does_not_read_a_document_waiting_for_the_large_file_answer() {
