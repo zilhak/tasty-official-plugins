@@ -130,6 +130,24 @@ helper는 그 터미널의 cwd와 환경에서 다음 순서로 실행한다.
 7. TUI가 끝나면 `exited`를 기록하고 서버를 종료한 뒤 TUI의 종료 코드로 끝난다. 서버가 끝나면
    4의 연결도 닫힌다.
 
+**복사 전달(`HERDR_ENV`).** 네이티브 클립보드 복사가 성공한 평상시 로컬 세션에서 Codex는 OSC 52를
+내지 않는다. 그러면 Tasty가 복사를 보지 못해 복사 토스트와 원격 attach 클라이언트 전달이 없다.
+그래서 helper는 자기 환경에 `HERDR_ENV`가 없을 때만 자기가 띄우는 TUI(6단계와 아래 native TUI)에
+`HERDR_ENV=1`을 준다. Codex 0.163.0부터는 이 값이면 네이티브 복사 뒤에도 OSC 52 전달을 함께
+시도한다. 네이티브 복사를 막거나 대체하지 않는다. 네이티브 복사가 실패할 때의 OSC 52 대체와
+tmux·SSH 조건은 원래 Codex 동작이다. OSC 52는 텍스트만 나른다.
+
+- 이미 정의된 값은 빈 값도 그대로 물려준다. `0`이나 빈 값을 export해 두었으면 전달이 켜지지
+  않는다. helper는 셸이 export한 환경만 보므로 export하지 않은 셸 변수는 없는 것으로 본다.
+- 셸 통합으로 입력한 `codex`(`terminal` 모드)와 launch·spawn·respawn·reboot·복원(`session` 모드)이
+  모두 대상이다. 전용 app-server, RPC proxy, 원래 CLI로 넘기는 실행(helper가 넘기는 유틸리티 명령·
+  명시적 `--remote`·해석할 수 없는 옵션, helper를 거치지 않는 `command codex`)에는 넣지 않는다.
+  Windows의 Git for Windows Bash에서도 같다.
+- 이미 실행 중인 TUI에는 소급되지 않는다. 플러그인을 올린 뒤 새로 띄우거나 reboot·복원으로 다시
+  띄운 TUI부터 적용된다.
+- 정본: `src/session/helper.rs`의 `supply_herdr_env`(`SessionCommands::tui`에서 부른다), 시험
+  `only_the_tui_gets_herdr_env_and_only_when_it_is_unset`와 `tests/herdr_env.rs`.
+
 **재개 정책.** Codex 0.154 TUI는 `--remote`로 기존 thread를 재개할 때 승인·sandbox 재정의
 (`-a`·`-s`·`--dangerously-bypass-approvals-and-sandbox`)가 있으면 "Permission overrides are not
 supported when resuming a remote task."로 시작을 멈춘다. 재정의 없이 재개하면 서버는 그 thread의
@@ -239,6 +257,8 @@ install과 uninstall이 지워 같은 스크립트를 두 번 읽지 않게 한�
 대화형 터미널에서 입력한 `codex`·`codex resume`은 플러그인의 `terminal` 모드로 연결된다.
 Codex 도구 안의 실행, 비대화형 stdin, `command codex`, 유틸리티 명령과 명시적 `--remote`는
 원래 CLI로 실행한다. uninstall은 통합 파일도 제거한다.
+셸 통합으로 실행한 TUI에도 [복사 전달](#세션-실행-전용-app-server)의 `HERDR_ENV` 보충이
+적용된다. install이 만드는 스크립트는 바뀌지 않고 실행 중인 Codex에는 소급되지 않는다.
 
 자동 연결은 프롬프트, `resume`의 ID·이름·선택기 및 `--last`·`--all`·`--include-non-interactive`,
 승인(`-a`/`--ask-for-approval`), sandbox(`-s`/`--sandbox`), 모델(`-m`/`--model`),
@@ -709,6 +729,7 @@ tasty codex result <event_id>
 - Given Codex 부모 A의 자식 X When Claude 부모가 X에 tell Then 전송 전에 A로 가는 경로를 지우고 이미 기록한 결과는 남긴다.
 - Given 두 workspace에 자식이 나뉜 Codex 부모 When `--workspace` 없이 children·broadcast Then 호스트에 보내지 않고 workspace를 고르라고 알린다. `--workspace`를 주면 요청을 한 번 보낸다. 두 workspace가 같은 창이면 각 자식이 한 번씩 받고, 다른 창이면 지정한 workspace의 창에 있는 자식만 받는다.
 - Given claim을 만드는 도중 플러그인이 끝나 빈 claim이 남음 When 다시 시작하거나 같은 키를 다시 기록 Then 이벤트를 지우지 않고 claim을 고친다.
+- Given helper 환경에 `HERDR_ENV`가 없음 When `terminal`·`session` 모드가 서버와 TUI를 띄움 Then TUI는 `HERDR_ENV=1`을 받고 전용 app-server는 받지 않는다. 값이 정의돼 있으면(빈 값 포함) 서버와 TUI 모두 그 값을 그대로 받는다.
 - Given 전용 app-server가 시작하지 못함 When helper 실행 Then TUI를 시작하지 않고 실패를 알리며 embedded·공유 서버로 내려가지 않는다.
 - Given 승인·sandbox 정책이 있는 reboot·탭 복원 When helper가 기존 thread를 재개 Then TUI에는 정책 인자를 넘기지 않고, 소유 서버의 `thread/resume`이 적용한 정책을 TUI가 붙은 뒤에도 서버가 유지한다.
 - Given 소유 서버가 재개를 거부하거나 요청한 정책과 다른 값으로 응답 When helper 실행 Then 서버를 정리하고 `failed`와 사유를 남기며 TUI를 시작하지 않는다.
