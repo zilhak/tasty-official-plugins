@@ -29,6 +29,8 @@ const RESUME_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const GEN_ENV: &str = "TASTY_CODEX_GEN";
 /// TUI가 WebSocket token을 읽는 환경변수 이름.
 const REMOTE_TOKEN_ENV: &str = "TASTY_CODEX_REMOTE_TOKEN";
+/// TUI에만 보충하는 Codex의 Herdr 인식 환경변수([`supply_herdr_env`]).
+const HERDR_ENV: &str = "HERDR_ENV";
 
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Args {
@@ -601,9 +603,16 @@ fn entry(raw: &[String], native: bool) -> i32 {
     #[cfg(not(unix))]
     let probe = ws_ready();
     let relay_token = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let commands = SessionCommands {
+        execution: &execution,
+        opened: &opened,
+        args: &args,
+        token: token.as_deref(),
+        prompt: prompt.as_deref(),
+    };
     let result = run_lifecycle_with(
         &opened.state_dir,
-        server_command_with(&opened, execution.command()),
+        commands.server(),
         probe,
         READY_TIMEOUT,
         |url| {
@@ -643,26 +652,57 @@ fn entry(raw: &[String], native: bool) -> i32 {
                 ..Prepared::default()
             })
         },
-        |url| {
-            if let Some(native) = &args.native {
-                let mut cmd = execution.command();
-                cmd.args(["--remote", url, "--remote-auth-token-env", REMOTE_TOKEN_ENV]);
-                set_relay_auth(&mut cmd, &relay_token);
-                cmd.args(&native.tui);
-                return cmd;
-            }
-            let mut cmd = tui_command_with(
-                url,
-                token.as_deref(),
-                &args,
-                prompt.as_deref(),
-                execution.command(),
-            );
-            set_relay_auth(&mut cmd, &relay_token);
-            cmd
-        },
+        |url| commands.tui(url, &relay_token),
     );
     exit_code(result, &report)
+}
+
+/// [`entry`]가 전용 서버와 TUI에 넘기는 명령. 시험도 이 조립을 그대로 부른다.
+struct SessionCommands<'a> {
+    execution: &'a tasty_utils::execution::ExecutionContext,
+    opened: &'a Opened,
+    args: &'a Args,
+    token: Option<&'a str>,
+    prompt: Option<&'a str>,
+}
+
+impl SessionCommands<'_> {
+    /// 전용 app-server. 환경은 helper 것을 그대로 물려준다.
+    fn server(&self) -> Command {
+        server_command_with(self.opened, self.execution.command())
+    }
+
+    /// `terminal`(native)·`session` 두 갈래의 TUI. 두 갈래가 합쳐진 뒤 [`supply_herdr_env`]를 한
+    /// 번 적용한다.
+    fn tui(&self, url: &str, relay_token: &std::sync::Mutex<Option<String>>) -> Command {
+        let mut cmd = match &self.args.native {
+            Some(native) => {
+                let mut cmd = self.execution.command();
+                cmd.args(["--remote", url, "--remote-auth-token-env", REMOTE_TOKEN_ENV]);
+                cmd.args(&native.tui);
+                cmd
+            }
+            None => tui_command_with(
+                url,
+                self.token,
+                self.args,
+                self.prompt,
+                self.execution.command(),
+            ),
+        };
+        set_relay_auth(&mut cmd, relay_token);
+        supply_herdr_env(&mut cmd);
+        cmd
+    }
+}
+
+/// Codex는 `HERDR_ENV=1`이면 네이티브 복사가 성공해도 OSC 52 터미널 전달을 함께 시도한다. 그래야
+/// Tasty가 복사를 보고 토스트·원격 attach 전달을 한다. helper 환경에 이 변수가 없을 때만 TUI에
+/// `1`을 준다. 정의된 값은 빈 값이나 UTF-8이 아닌 값도 상속으로 그대로 둔다.
+fn supply_herdr_env(cmd: &mut Command) {
+    if std::env::var_os(HERDR_ENV).is_none() {
+        cmd.env(HERDR_ENV, "1");
+    }
 }
 
 static RELAY_TOKEN_POISON_REPORTED: std::sync::atomic::AtomicBool =
@@ -1135,6 +1175,123 @@ mod tests {
             cmd.get_envs()
                 .any(|(k, v)| k == GEN_ENV && v == Some(std::ffi::OsStr::new("0123456789abcdef")))
         );
+    }
+
+    /// 시험 실행 파일을 다시 띄운 자식이 운영 조립([`SessionCommands`])과 [`native_passthrough`]로
+    /// 가짜 `codex`를 실행하고, 부모가 각 실행이 받은 `HERDR_ENV`를 바이트로 비교한다. 환경은 부모가
+    /// 자식 `Command`에만 정하므로 프로세스 전역 환경을 바꾸지 않는다. 가짜 `codex`는 마지막 인자를
+    /// 이름으로 `HERDR_ENV`와 관계없는 변수 하나를 함께 기록한다.
+    #[cfg(unix)]
+    #[test]
+    fn only_the_tui_gets_herdr_env_and_only_when_it_is_unset() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        use std::os::unix::fs::PermissionsExt;
+        const NAME: &str =
+            "session::helper::tests::only_the_tui_gets_herdr_env_and_only_when_it_is_unset";
+        const CHILD_ENV: &str = "TASTY_TEST_HERDR_CHILD";
+        const PEER: &str = "TASTY_TEST_HERDR_PEER";
+        if let Some(dir) = std::env::var_os(CHILD_ENV) {
+            let dir = PathBuf::from(dir);
+            let execution = tasty_utils::execution::ExecutionContext::capture("codex").unwrap();
+            let opened = Opened {
+                generation: "0123456789abcdef".into(),
+                state_dir: dir.clone(),
+                listen: "server".into(),
+                token_file: None,
+            };
+            let native = Args {
+                native: super::super::native_args::parse(&s(&["tui-native"])).unwrap(),
+                ..Args::default()
+            };
+            assert!(native.native.is_some());
+            let session = Args::default();
+            let relay_token = std::sync::Mutex::new(None);
+            let [native, session] = [&native, &session].map(|args| SessionCommands {
+                execution: &execution,
+                opened: &opened,
+                args,
+                token: None,
+                prompt: Some("tui-session"),
+            });
+            for mut cmd in [
+                session.server(),
+                native.tui("unix:///x/s.sock", &relay_token),
+                session.tui("unix:///x/s.sock", &relay_token),
+            ] {
+                let status = cmd.status().unwrap();
+                assert!(status.success(), "{cmd:?}: {status}");
+            }
+            // Unix는 exec로 이 프로세스를 대체한다. 돌아오면 실행하지 못한 것이다.
+            let code = native_passthrough(&s(&["passthrough"]));
+            panic!("passthrough returned {code}");
+        }
+        let cases: [Option<&[u8]>; 6] = [
+            None,
+            Some(b"1"),
+            Some(b"0"),
+            Some(b""),
+            Some(b"yes"),
+            Some(b"\xff"),
+        ];
+        for value in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let codex = bin.join("codex");
+            let out = dir.path().join("out");
+            std::fs::create_dir(&out).unwrap();
+            std::fs::write(
+                &codex,
+                format!(
+                    "#!/bin/sh\nfor last; do :; done\nf={out}/\"$last\"\n\
+                     if [ -n \"${{HERDR_ENV+x}}\" ]; then printf 'set:%s' \"$HERDR_ENV\" > \"$f.herdr\"; \
+                     else printf unset > \"$f.herdr\"; fi\n\
+                     printf '%s' \"${{{PEER}-unset}}\" > \"$f.peer\"\n",
+                    out = super::super::command::sh_quote(&out.to_string_lossy()),
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let mut path = std::ffi::OsString::from(&bin);
+            path.push(":");
+            path.push(std::env::var_os("PATH").unwrap_or_default());
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .args(["--exact", NAME])
+                .env(CHILD_ENV, dir.path())
+                .env(PEER, "peer")
+                .env("PATH", path);
+            match value {
+                Some(v) => child.env(HERDR_ENV, std::ffi::OsStr::from_bytes(v)),
+                None => child.env_remove(HERDR_ENV),
+            };
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{value:?}: {output:?}");
+            let supplied = match value {
+                Some(v) => [b"set:".as_slice(), v].concat(),
+                None => b"set:1".to_vec(),
+            };
+            let inherited = match value {
+                Some(v) => [b"set:".as_slice(), v].concat(),
+                None => b"unset".to_vec(),
+            };
+            for (name, expected) in [
+                ("tui-native", &supplied),
+                ("tui-session", &supplied),
+                ("server", &inherited),
+                ("passthrough", &inherited),
+            ] {
+                let herdr = std::fs::read(out.join(format!("{name}.herdr")))
+                    .unwrap_or_else(|e| panic!("{value:?} {name}: {e}: {output:?}"));
+                assert_eq!(
+                    OsString::from_vec(herdr),
+                    OsString::from_vec(expected.clone()),
+                    "{value:?} {name}"
+                );
+                let peer = std::fs::read(out.join(format!("{name}.peer"))).unwrap();
+                assert_eq!(peer, b"peer", "{value:?} {name}: 관계없는 변수도 그대로");
+            }
+        }
     }
 
     #[test]

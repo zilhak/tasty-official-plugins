@@ -383,6 +383,24 @@ mod path_tests {
             !dir.join(LEGACY_SHELL_INTEGRATION_FILE).exists(),
             "no double sourcing"
         );
+        // HERDR_ENV는 helper가 TUI에만 준다. 셸 통합은 사용자 셸에 export하지 않는다.
+        assert!(
+            !script.contains("HERDR_ENV"),
+            "no shell-wide export: {script}"
+        );
+
+        // 재설치는 같은 파일 하나를 같은 내용으로 덮어쓴다.
+        install_shell_integration_in(&dir, "/bin/helper").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join(SHELL_INTEGRATION_FILE)).unwrap(),
+            script
+        );
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, [SHELL_INTEGRATION_FILE, "other.sh"]);
 
         std::fs::write(dir.join(LEGACY_SHELL_INTEGRATION_FILE), "legacy").unwrap();
         remove_shell_integration_in(&dir).unwrap();
