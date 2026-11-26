@@ -287,7 +287,7 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
     steps:
-      # For scripts/release-check.sh, which reads the release notes.
+      # For scripts/release-check.sh, which reads the SHA-256 lists and the release notes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -305,16 +305,29 @@ jobs:
         run: |
           rm -rf "$DIST"
           mkdir -p "$DIST"
+          lists="$RUNNER_TEMP/release-lists"
+          rm -rf "$lists"
+          mkdir -p "$lists"
           expected=1
           for platform in $PLATFORMS; do
             dir="$ARTIFACTS/plugins-$platform"
             [[ -d "$dir" ]] || { echo "::error::missing artifact plugins-$platform"; exit 1; }
+            # Every line of the SHA-256 list is judged as promotion (check 7) judges it;
+            # release-check.sh reports a bad list itself.
+            scripts/release-check.sh sums "$dir/SHA256SUMS-$platform.txt" publish > "$lists/sums-$platform.txt" || exit 1
+            # The list names each archive of the artifact once, and no other file.
+            cut -d' ' -f1 "$lists/sums-$platform.txt" | sort > "$lists/listed-$platform.txt"
+            find "$dir" -maxdepth 1 -name "*-$platform.tar.gz" -printf '%f\n' | sort > "$lists/archives-$platform.txt"
+            if ! diff "$lists/listed-$platform.txt" "$lists/archives-$platform.txt" > "$lists/diff-$platform.txt"; then
+              sed 's/^/  /' "$lists/diff-$platform.txt"
+              echo "::error::$platform: SHA256SUMS-$platform.txt lists other files than the archives of the artifact (< list, > artifact)"
+              exit 1
+            fi
             (cd "$dir" && sha256sum -c "SHA256SUMS-$platform.txt")
-            archives=$(find "$dir" -maxdepth 1 -name "*-$platform.tar.gz" | wc -l)
-            listed=$(wc -l < "$dir/SHA256SUMS-$platform.txt")
+            archives=$(wc -l < "$lists/archives-$platform.txt")
             rows=$(($(wc -l < "$dir/plugins-$platform.tsv") - 1))
-            if [[ "$archives" != "$PLUGIN_COUNT" || "$listed" != "$PLUGIN_COUNT" || "$rows" != "$PLUGIN_COUNT" ]]; then
-              echo "::error::$platform: $archives archives, $listed hashes, $rows TSV rows; expected $PLUGIN_COUNT each"
+            if [[ "$archives" != "$PLUGIN_COUNT" || "$rows" != "$PLUGIN_COUNT" ]]; then
+              echo "::error::$platform: $archives archives, $rows TSV rows; expected $PLUGIN_COUNT each"
               exit 1
             fi
             cp "$dir"/* "$DIST/"

@@ -2,7 +2,8 @@
 //! scripts/release-promote.sh share: the SemVer form of a tag, the marker block at the
 //! end of the Release notes, and the lines of a SHA256SUMS list. These tests run the
 //! script on notes, release-meta.toml files, and lists in a temporary folder, and check
-//! that release.yml calls it where a tag release settles and checks its notes.
+//! that release.yml calls it where a tag release settles and checks its notes. They also
+//! run the step of the publish job that checks the release files.
 
 #![cfg(unix)]
 
@@ -540,6 +541,7 @@ fn release_workflow_settles_and_checks_the_notes_with_the_shared_script() {
     let publish = job(&wf, "publish");
     for needle in [
         "uses: actions/checkout@",
+        "scripts/release-check.sh sums ",
         "scripts/release-check.sh prepare ",
         "scripts/release-check.sh verify ",
         "gh release edit \"$TAG\" --draft=false --prerelease --notes-file ",
@@ -738,5 +740,262 @@ fn the_published_state_step_fails_when_the_tag_became_latest() {
         assert_eq!(r.code == 0, want_ok, "{what}: {r:?}");
         assert!(!r.output.contains("fake gh: no reply"), "{what}: {r:?}");
         assert!(fake.edits().is_empty(), "{what}: {}", fake.calls());
+    }
+}
+
+/// The value of a top-level env key of release.yml, such as PLATFORMS.
+fn workflow_env(workflow: &str, key: &str) -> String {
+    let prefix = format!("  {key}: ");
+    workflow
+        .lines()
+        .find_map(|l| l.strip_prefix(&prefix))
+        .unwrap_or_else(|| panic!("release.yml has no env {key}"))
+        .trim_matches('"')
+        .to_string()
+}
+
+/// The step "Verify the release files" runs on the Linux runners of the publish job only,
+/// with GNU tools (find -printf, wc without padding), so its tests are Linux only.
+#[cfg(target_os = "linux")]
+mod release_files {
+    use super::*;
+
+    /// The platform whose list a case changes.
+    const PLATFORM: &str = "linux-x64";
+    const STEP: &str = "Verify the release files";
+
+    fn sha256(path: &Path) -> String {
+        let out = std::process::Command::new("sha256sum")
+            .arg(path)
+            .output()
+            .expect("run sha256sum");
+        assert!(out.status.success(), "sha256sum {}", path.display());
+        String::from_utf8_lossy(&out.stdout)[..64].to_string()
+    }
+
+    /// The downloaded artifacts of a tag run, as the package and release-meta jobs make
+    /// them, for the platforms and plugin count of release.yml.
+    struct Artifacts {
+        dir: tempfile::TempDir,
+        workflow: String,
+        platforms: String,
+        count: usize,
+    }
+
+    impl Artifacts {
+        fn new() -> Self {
+            let workflow =
+                std::fs::read_to_string(support::repo_file(".github/workflows/release.yml"))
+                    .expect("read release.yml");
+            let platforms = workflow_env(&workflow, "PLATFORMS");
+            let count: usize = workflow_env(&workflow, "PLUGIN_COUNT")
+                .parse()
+                .expect("PLUGIN_COUNT");
+            assert!(platforms.split_whitespace().any(|p| p == PLATFORM));
+            let a = Self {
+                dir: tempfile::tempdir().expect("temp dir"),
+                workflow,
+                platforms,
+                count,
+            };
+            for platform in a.platforms.split_whitespace() {
+                let dir = a.artifacts().join(format!("plugins-{platform}"));
+                std::fs::create_dir_all(&dir).expect("artifact dir");
+                let mut list = String::new();
+                let mut tsv = String::from("id\tversion\tplatform\tfile\tsha256\n");
+                for i in 0..count {
+                    let (id, version) = (format!("com.tasty.p{i}"), format!("0.1.{i}"));
+                    let file = format!("{id}-{version}-{platform}.tar.gz");
+                    let path = dir.join(&file);
+                    std::fs::write(&path, format!("{file}\n")).expect("archive");
+                    let hash = sha256(&path);
+                    list.push_str(&format!("{hash}  {file}\n"));
+                    tsv.push_str(&format!("{id}\t{version}\t{platform}\t{file}\t{hash}\n"));
+                }
+                std::fs::write(dir.join(format!("SHA256SUMS-{platform}.txt")), list).expect("list");
+                std::fs::write(dir.join(format!("plugins-{platform}.tsv")), tsv).expect("tsv");
+            }
+            let meta = a.artifacts().join("release-meta");
+            std::fs::create_dir_all(&meta).expect("meta dir");
+            let mut text = format!(
+                "schema = 1\n\n[release]\nrepository = \"{REPO}\"\ntag = \"{TAG}\"\n\
+                 commit = \"{COMMIT}\"\ntasty_rev = \"{TASTY_REV}\"\n"
+            );
+            for i in 0..count {
+                text.push_str(&format!(
+                    "\n[[plugin]]\nid = \"com.tasty.p{i}\"\nversion = \"0.1.{i}\"\nbundle = true\n"
+                ));
+            }
+            std::fs::write(meta.join("release-meta.toml"), text).expect("meta");
+            a
+        }
+
+        fn artifacts(&self) -> PathBuf {
+            self.dir.path().join("artifacts")
+        }
+
+        fn platform_dir(&self) -> PathBuf {
+            self.artifacts().join(format!("plugins-{PLATFORM}"))
+        }
+
+        fn list_path(&self) -> PathBuf {
+            self.platform_dir()
+                .join(format!("SHA256SUMS-{PLATFORM}.txt"))
+        }
+
+        /// The lines of the list of PLATFORM, without their newlines.
+        fn lines(&self) -> Vec<String> {
+            std::fs::read_to_string(self.list_path())
+                .expect("read list")
+                .lines()
+                .map(String::from)
+                .collect()
+        }
+
+        fn set_list(&self, text: &str) {
+            std::fs::write(self.list_path(), text).expect("write list");
+        }
+
+        fn dist(&self) -> PathBuf {
+            self.dir.path().join("dist")
+        }
+
+        /// Runs the step as GitHub runs a bash step, from the repository root.
+        fn run(&self) -> Split {
+            let script = self.dir.path().join("step.sh");
+            std::fs::write(&script, run_block(&self.workflow, STEP)).expect("write step");
+            let temp = self.dir.path().join("runner-temp");
+            std::fs::create_dir_all(&temp).expect("runner temp");
+            let out = support::git_env::command("bash")
+                .args(["--noprofile", "--norc", "-eo", "pipefail"])
+                .arg(&script)
+                .current_dir(support::repo_root())
+                .env("TAG", TAG)
+                .env("COMMIT", COMMIT)
+                .env("PLATFORMS", &self.platforms)
+                .env("PLUGIN_COUNT", self.count.to_string())
+                .env("ARTIFACTS", self.artifacts())
+                .env("DIST", self.dist())
+                .env("RUNNER_TEMP", &temp)
+                .output()
+                .expect("run the step");
+            Split::new(&out)
+        }
+    }
+
+    fn joined(lines: &[String]) -> String {
+        lines.iter().map(|l| format!("{l}\n")).collect()
+    }
+
+    #[test]
+    fn the_verify_step_takes_right_lists_with_or_without_a_final_newline() {
+        for (what, newline) in [("final newline", true), ("no final newline", false)] {
+            let a = Artifacts::new();
+            if !newline {
+                let list = joined(&a.lines());
+                a.set_list(list.trim_end_matches('\n'));
+            }
+            let r = a.run();
+            assert_eq!(r.run, 0, "{what}");
+            let files = std::fs::read_dir(a.dist()).expect("dist").count();
+            let platforms = a.platforms.split_whitespace().count();
+            assert_eq!(files, platforms * (a.count + 2) + 1, "{what}: {:?}", r.run);
+        }
+    }
+
+    #[test]
+    fn the_verify_step_refuses_a_list_that_promotion_refuses() {
+        let probe = Artifacts::new();
+        let l = probe.lines();
+        let hash_of = |line: &str| line[..64].to_string();
+        let file_of = |line: &str| line[66..].to_string();
+        let tsv = probe.platform_dir().join(format!("plugins-{PLATFORM}.tsv"));
+        let cases: Vec<(&str, String)> = vec![
+            ("c3 one line, then junk", format!("{}\njunk\n", l[0])),
+            ("c5 blank line", {
+                let mut v = l.clone();
+                v.insert(1, String::new());
+                joined(&v)
+            }),
+            ("c6 a line twice, one archive missing", {
+                let mut v = l.clone();
+                v[1] = l[0].clone();
+                joined(&v)
+            }),
+            ("c7 the TSV listed, one archive missing", {
+                let mut v = l.clone();
+                v[1] = format!("{}  plugins-{PLATFORM}.tsv", sha256(&tsv));
+                joined(&v)
+            }),
+            ("c8 CRLF", joined(&l).replace('\n', "\r\n")),
+            ("c9 binary mark", {
+                let mut v = l.clone();
+                v[0] = format!("{} *{}", hash_of(&l[0]), file_of(&l[0]));
+                joined(&v)
+            }),
+            ("c10 path", {
+                let mut v = l.clone();
+                v[1] = format!("{}  ./{}", hash_of(&l[1]), file_of(&l[1]));
+                joined(&v)
+            }),
+            ("c11 every archive and one twice", {
+                let mut v = l.clone();
+                v.push(l[0].clone());
+                joined(&v)
+            }),
+            ("c12 one hash of another archive", {
+                let mut v = l.clone();
+                v[0] = format!("{}  {}", hash_of(&l[1]), file_of(&l[0]));
+                joined(&v)
+            }),
+        ];
+        let runs: Vec<(&str, Split)> = cases
+            .into_iter()
+            .map(|(what, list)| {
+                let a = Artifacts::new();
+                a.set_list(&list);
+                (what, a.run())
+            })
+            .collect();
+        // Every case that was not refused, named at once.
+        let taken: Vec<&str> = runs
+            .iter()
+            .filter(|(_, r)| r.run.code != 1)
+            .map(|(what, _)| *what)
+            .collect();
+        assert!(taken.is_empty(), "not refused: {taken:?}");
+        for (what, r) in &runs {
+            assert!(r.run.output.contains(PLATFORM), "{what}: {:?}", r.run);
+        }
+        // Only the list of the platform is missing.
+        let a = Artifacts::new();
+        std::fs::remove_file(a.list_path()).expect("remove list");
+        let r = a.run();
+        assert_eq!(r.run, 1, "missing list");
+        r.assert_one_message("missing list");
+        assert!(
+            r.stderr.contains("publish: ")
+                && r.stderr.contains(&format!("SHA256SUMS-{PLATFORM}.txt")),
+            "missing list: {:?}",
+            r.stderr
+        );
+    }
+
+    #[test]
+    fn the_verify_step_reports_a_bad_line_once() {
+        // c2: the right list, then a line that is no "<sha256>  <file>", without a newline.
+        let a = Artifacts::new();
+        let list = format!("{}junk", joined(&a.lines()));
+        a.set_list(&list);
+        let r = a.run();
+        assert_eq!(r.run, 1);
+        r.assert_one_message("junk last line");
+        assert!(
+            r.stderr.contains(&format!(
+                "publish: unexpected line in SHA256SUMS-{PLATFORM}.txt: 'junk'"
+            )),
+            "{:?}",
+            r.stderr
+        );
     }
 }
