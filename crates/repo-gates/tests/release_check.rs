@@ -911,7 +911,12 @@ mod release_files {
         let file_of = |line: &str| line[66..].to_string();
         let tsv = probe.platform_dir().join(format!("plugins-{PLATFORM}.tsv"));
         let cases: Vec<(&str, String)> = vec![
-            ("c3 one line, then junk", format!("{}\njunk\n", l[0])),
+            // As many lines as archives, so a count of lines alone takes it.
+            ("c3 the last line replaced by junk", {
+                let mut v = l[..l.len() - 1].to_vec();
+                v.push("junk".into());
+                joined(&v)
+            }),
             ("c5 blank line", {
                 let mut v = l.clone();
                 v.insert(1, String::new());

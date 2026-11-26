@@ -305,7 +305,7 @@ jobs:
         run: |
           rm -rf "$DIST"
           mkdir -p "$DIST"
-          lists="$RUNNER_TEMP/release-lists"
+          lists="${RUNNER_TEMP:?}/release-lists"
           rm -rf "$lists"
           mkdir -p "$lists"
           expected=1
