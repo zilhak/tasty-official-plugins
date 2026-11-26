@@ -463,6 +463,7 @@ impl World {
 
 struct Run {
     result: GateRun,
+    stderr: String,
     calls: String,
     edits: Vec<String>,
     edited_notes: Option<String>,
@@ -524,6 +525,7 @@ fn promote(world: &World, args: &[&str]) -> Run {
         .expect("run scripts/release-promote.sh");
     Run {
         result: GateRun::from_output(&out),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         calls: fake.calls(),
         edits: fake.edits(),
         edited_notes: fake.edited_notes(),
@@ -1277,6 +1279,15 @@ fn every_sha256sums_line_is_judged_with_or_without_a_final_newline() {
         "{:?}",
         run.result
     );
+    // One message: release-check.sh sums reports the line, and check 7 adds none.
+    let errors = run
+        .result
+        .output
+        .lines()
+        .filter(|l| l.starts_with("error: ") || l.starts_with("::error::"))
+        .count();
+    assert_eq!(errors, 1, "{:?}", run.result);
+    assert_eq!(run.stderr.lines().count(), 1, "{:?}", run.stderr);
 }
 
 #[test]

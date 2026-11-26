@@ -356,14 +356,9 @@ for platform in "${PLATFORMS[@]}"; do
   while read -r id version; do
     echo "$id-$version-$platform.tar.gz" >>"$expected"
   done <"$plugins"
-  # SHA256SUMS lists exactly the expected archives of the platform. A last line without a
-  # final newline is judged too.
-  : >"$WORK/sums.txt"
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^([0-9a-f]{64})\ \ ([^[:space:]/]+)$ ]] ||
-      fail "check 7: unexpected line in SHA256SUMS-$platform.txt: '$line'"
-    echo "${BASH_REMATCH[2]} ${BASH_REMATCH[1]}" >>"$WORK/sums.txt"
-  done <"$sums"
+  # SHA256SUMS lists exactly the expected archives of the platform. release-check.sh sums
+  # judges every line, as the publish job does, and reports a bad one itself.
+  "$CHECK" sums "$sums" "check 7" >"$WORK/sums.txt" || exit 1
   if ! diff <(cut -d' ' -f1 "$WORK/sums.txt" | sort) \
     <(while read -r id version; do echo "$id-$version-$platform.tar.gz"; done <"$plugins" | sort) \
     >"$WORK/sums.diff"; then

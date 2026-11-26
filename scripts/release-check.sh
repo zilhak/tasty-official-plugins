@@ -33,6 +33,13 @@
 #       Prints NOTES with the pending line replaced by the promoted lines.
 #   scripts/release-check.sh promoted NOTES MIN NEW VERIFIED_ON
 #       The marker block already holds exactly the promoted lines for these inputs.
+#   scripts/release-check.sh sums LIST CONTEXT
+#       Prints "<file> <sha256>" for each line of the SHA256SUMS list LIST, in its order.
+#       Every line, a last line without a final newline too, must be "<sha256>  <file>":
+#       64 lowercase hex digits, two spaces, and a file name without spaces or slashes
+#       (SUMS_RE below). A list that is missing, not a regular file, or not readable, a list
+#       with a NUL byte, and a list with any other line fail with one message that starts
+#       with CONTEXT and names the list. Promotion (check 7) and the publish job call it.
 #   scripts/release-check.sh latest
 #       Prints the tag of the Latest Release of GH_REPO, or nothing when the repository
 #       reads and has no Latest Release. Any other failure to read fails.
@@ -63,6 +70,7 @@ usage() {
 
 SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 SHA_RE='^[0-9a-f]{40}$'
+SUMS_RE='^([0-9a-f]{64})  ([^[:space:]/]+)$'
 
 is_semver() {
   [[ "$1" =~ $SEMVER_RE ]]
@@ -240,6 +248,24 @@ promoted() {
   [[ "$(block_lines "Verified with Tasty")" == "$(verified_line "$min" "$new" "$on")" ]] || return 1
 }
 
+# The pairs of the SHA256SUMS list $1, judged line by line. $2 starts every message.
+sums() {
+  local file=$1 context=$2 name line
+  local -a out=()
+  name=${file##*/}
+  [[ -f "$file" && -r "$file" ]] || fail "$context: cannot read $name"
+  # read -d '' succeeds only when it finds a NUL. A plain read drops a NUL (bash 5) or ends
+  # the line there (bash 3.2), so a NUL is refused before the lines are read.
+  if IFS= read -r -d '' line <"$file"; then
+    fail "$context: $name has a NUL byte"
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ $SUMS_RE ]] || fail "$context: unexpected line in $name: '$line'"
+    out+=("${BASH_REMATCH[2]} ${BASH_REMATCH[1]}")
+  done <"$file"
+  if ((${#out[@]} > 0)); then printf '%s\n' "${out[@]}"; fi
+}
+
 lower() {
   printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'
 }
@@ -307,11 +333,15 @@ case "$cmd" in
     [[ $# -eq 4 ]] || usage "usage: release-check.sh promoted NOTES MIN NEW VERIFIED_ON"
     promoted "$@"
     ;;
+  sums)
+    [[ $# -eq 2 ]] || usage "usage: release-check.sh sums LIST CONTEXT"
+    sums "$1" "$2"
+    ;;
   latest)
     [[ $# -eq 0 ]] || usage "usage: release-check.sh latest"
     latest
     ;;
   *)
-    usage "usage: release-check.sh semver|tag|semver-lt|pending-line|marker|prepare|verify|promote|promoted|latest ..."
+    usage "usage: release-check.sh semver|tag|semver-lt|pending-line|marker|prepare|verify|promote|promoted|sums|latest ..."
     ;;
 esac

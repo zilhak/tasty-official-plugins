@@ -1,8 +1,8 @@
 //! scripts/release-check.sh holds the release checks that release.yml and
-//! scripts/release-promote.sh share: the SemVer form of a tag, and the marker block at the
-//! end of the Release notes. These tests run the script on notes and release-meta.toml
-//! files in a temporary folder, and check that release.yml calls it where a tag release
-//! settles and checks its notes.
+//! scripts/release-promote.sh share: the SemVer form of a tag, the marker block at the
+//! end of the Release notes, and the lines of a SHA256SUMS list. These tests run the
+//! script on notes, release-meta.toml files, and lists in a temporary folder, and check
+//! that release.yml calls it where a tag release settles and checks its notes.
 
 #![cfg(unix)]
 
@@ -304,6 +304,202 @@ fn pending_line_takes_only_one_tasty_commit() {
         1
     );
     assert_eq!(run(&["pending-line", ""]), 1);
+}
+
+const SUM_A: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const SUM_B: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+const LIST: &str = "SHA256SUMS-linux-x64.txt";
+const CONTEXT: &str = "a context";
+
+/// A run whose stderr is also kept on its own.
+struct Split {
+    run: GateRun,
+    stderr: String,
+}
+
+impl Split {
+    fn new(out: &std::process::Output) -> Self {
+        Self {
+            run: GateRun::from_output(out),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    }
+
+    /// Exactly one message: one line of all the output starts as `say` starts a message,
+    /// and stderr is that one line.
+    fn assert_one_message(&self, what: &str) {
+        let errors = self
+            .run
+            .output
+            .lines()
+            .filter(|l| l.starts_with("error: ") || l.starts_with("::error::"))
+            .count();
+        assert_eq!(errors, 1, "{what}: {:?}", self.run);
+        assert_eq!(
+            self.stderr.lines().count(),
+            1,
+            "{what}: stderr {:?}",
+            self.stderr
+        );
+    }
+}
+
+fn run_sums(list: &Path) -> Split {
+    let out = support::git_env::command("bash")
+        .arg(support::repo_file("scripts/release-check.sh"))
+        .args(["sums", p(list), CONTEXT])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("run scripts/release-check.sh sums");
+    Split::new(&out)
+}
+
+fn good_list() -> String {
+    format!("{SUM_A}  a-0.1.0-linux-x64.tar.gz\n{SUM_B}  b-0.1.0-linux-x64.tar.gz\n")
+}
+
+/// Refused with one message that starts with the context and names the list.
+fn assert_sums_refused(r: &Split, what: &str, needle: &str) {
+    assert_eq!(r.run, 1, "{what}");
+    r.assert_one_message(what);
+    // Nothing on stdout: the caller gets no pairs from a refused list.
+    assert_eq!(r.run.output, r.stderr, "{what}");
+    assert!(
+        r.stderr.contains(&format!("{CONTEXT}: ")) && r.stderr.contains(LIST),
+        "{what}: {:?}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains(needle),
+        "{what}: no {needle:?} in {:?}",
+        r.stderr
+    );
+}
+
+#[test]
+fn sums_prints_each_file_and_hash_with_or_without_a_final_newline() {
+    let f = Files::new();
+    let want = format!("a-0.1.0-linux-x64.tar.gz {SUM_A}\nb-0.1.0-linux-x64.tar.gz {SUM_B}\n");
+    let r = run_sums(&f.write(LIST, &good_list()));
+    assert_eq!(r.run, 0);
+    assert_eq!(r.run.output, want);
+    let r = run_sums(&f.write(LIST, good_list().trim_end_matches('\n')));
+    assert_eq!(r.run, 0);
+    assert_eq!(r.run.output, want);
+}
+
+#[test]
+fn sums_refuses_every_other_line_with_one_message() {
+    let f = Files::new();
+    let good = good_list();
+    let upper = SUM_A.to_uppercase();
+    let short = &SUM_A[1..];
+    let cases: Vec<(&str, String)> = vec![
+        ("junk last line without a newline", format!("{good}junk")),
+        (
+            "blank line",
+            format!("{SUM_A}  a-0.1.0-linux-x64.tar.gz\n\n{SUM_B}  b-0.1.0-linux-x64.tar.gz\n"),
+        ),
+        ("blank last line", format!("{good}\n")),
+        ("one space", format!("{SUM_A} a-0.1.0-linux-x64.tar.gz\n")),
+        ("tab", format!("{SUM_A}\ta-0.1.0-linux-x64.tar.gz\n")),
+        (
+            "binary mark",
+            format!("{SUM_A} *a-0.1.0-linux-x64.tar.gz\n"),
+        ),
+        ("path", format!("{SUM_A}  ./a-0.1.0-linux-x64.tar.gz\n")),
+        ("CRLF", good.replace('\n', "\r\n")),
+        (
+            "uppercase hex",
+            format!("{upper}  a-0.1.0-linux-x64.tar.gz\n"),
+        ),
+        (
+            "63 hex digits",
+            format!("{short}  a-0.1.0-linux-x64.tar.gz\n"),
+        ),
+        (
+            "65 hex digits",
+            format!("{SUM_A}0  a-0.1.0-linux-x64.tar.gz\n"),
+        ),
+        (
+            "BSD tag form",
+            format!("SHA256 (a-0.1.0-linux-x64.tar.gz) = {SUM_A}\n"),
+        ),
+        (
+            "trailing space",
+            format!("{SUM_A}  a-0.1.0-linux-x64.tar.gz \n"),
+        ),
+    ];
+    let runs: Vec<(&str, Split)> = cases
+        .into_iter()
+        .map(|(what, list)| (what, run_sums(&f.write(LIST, &list))))
+        .collect();
+    // Every case that was not refused, named at once.
+    let taken: Vec<&str> = runs
+        .iter()
+        .filter(|(_, r)| r.run.code != 1)
+        .map(|(what, _)| *what)
+        .collect();
+    assert!(taken.is_empty(), "not refused: {taken:?}");
+    for (what, r) in &runs {
+        assert_sums_refused(r, what, "unexpected line in ");
+    }
+}
+
+#[test]
+fn sums_refuses_a_list_with_a_nul_byte() {
+    let f = Files::new();
+    let good = good_list();
+    for (what, list) in [
+        (
+            "NUL after an archive name",
+            good.replacen(".tar.gz\n", ".tar.gz\0\n", 1),
+        ),
+        ("NUL alone on the last line", format!("{good}\0")),
+    ] {
+        let path = f.dir.path().join(LIST);
+        std::fs::write(&path, list.as_bytes()).expect("write");
+        let r = run_sums(&path);
+        assert_sums_refused(&r, what, "NUL");
+    }
+}
+
+fn running_as_root() -> bool {
+    let out = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .expect("run id -u");
+    String::from_utf8_lossy(&out.stdout).trim() == "0"
+}
+
+#[test]
+fn sums_refuses_a_list_it_cannot_read_with_one_message() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Files::new();
+    let r = run_sums(&f.dir.path().join(LIST));
+    assert_sums_refused(&r, "missing list", "cannot read ");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let list = dir.path().join(LIST);
+    std::fs::create_dir(&list).expect("mkdir");
+    let r = run_sums(&list);
+    assert_sums_refused(&r, "directory as the list", "cannot read ");
+    // A regular file without read permission. root reads it anyway, so the case is skipped.
+    if running_as_root() {
+        eprintln!("running as root: the unreadable list case is skipped");
+        return;
+    }
+    let path = f.write(LIST, &good_list());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let r = run_sums(&path);
+    assert_sums_refused(&r, "unreadable list", "cannot read ");
+}
+
+#[test]
+fn sums_takes_a_list_and_a_context() {
+    let f = Files::new();
+    let list = f.write(LIST, &good_list());
+    assert_eq!(run(&["sums", p(&list)]), 2);
+    assert_eq!(run(&["sums", p(&list), CONTEXT, "x"]), 2);
 }
 
 /// The text of one job of release.yml, from its key to the next job key.
