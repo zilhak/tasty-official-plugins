@@ -392,7 +392,7 @@ mod tests {
                 lines: vec![
                     line(DiffLineKind::Context, KEPT, Some(10), Some(20)),
                     line(DiffLineKind::Deletion, GONE, Some(11), None),
-                    line(DiffLineKind::Addition, CAME, None, Some(31)),
+                    line(DiffLineKind::Addition, CAME, None, Some(21)),
                 ],
             }],
         }
@@ -510,7 +510,7 @@ mod tests {
                 ("10", ctx_ink.number, theme.text_muted().to_egui()),
                 ("20", ctx_ink.number, theme.text_muted().to_egui()),
                 ("11", del.number, theme.text_muted_raised().to_egui()),
-                ("31", add.number, theme.text_muted_raised().to_egui()),
+                ("21", add.number, theme.text_muted_raised().to_egui()),
             ];
             for (s, ink, token) in expected {
                 assert_eq!(ink, token, "{name}: '{s}' 행 잉크와 토큰");
