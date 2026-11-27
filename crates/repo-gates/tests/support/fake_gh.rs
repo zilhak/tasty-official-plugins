@@ -2,7 +2,8 @@
 //! lists, copies files for `release download`, and records `release edit` with the notes
 //! file it was given. A call the table does not hold prints "fake gh: no reply" and fails,
 //! so a test also pins which reads a script makes. An entry can answer only the n-th call
-//! with its arguments, and only before or after the first `release edit`.
+//! with its arguments, and only before or after the first `release edit`. A downloaded
+//! copy of an asset named with `Fake::unreadable` loses its read permission.
 //! The script runs under bash 3.2, as the macOS CI runner has it.
 
 use std::collections::BTreeMap;
@@ -27,7 +28,10 @@ if [[ "$1 ${2:-}" == "release download" ]]; then
     n=$(basename "$f")
     for p in "${pats[@]}"; do
       # shellcheck disable=SC2053
-      if [[ "$n" == $p ]]; then cp "$f" "$out/"; fi
+      if [[ "$n" == $p ]]; then
+        cp "$f" "$out/"
+        if [[ -e "$d/unreadable/$n" ]]; then chmod 000 "$out/$n"; fi
+      fi
     done
   done
   exit 0
@@ -138,6 +142,13 @@ impl Fake {
             std::fs::write(r.join("code"), e.reply.code.to_string()).expect("code");
         }
         Self { dir }
+    }
+
+    /// `release download` leaves its copy of the asset `name` without read permission.
+    pub fn unreadable(&self, name: &str) {
+        let marks = self.dir.path().join("unreadable");
+        std::fs::create_dir_all(&marks).expect("unreadable dir");
+        std::fs::write(marks.join(name), "").expect("unreadable mark");
     }
 
     pub fn dir(&self) -> &Path {

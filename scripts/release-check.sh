@@ -40,6 +40,16 @@
 #       (SUMS_RE below). A list that is missing, not a regular file, or not readable, a list
 #       with a NUL byte, and a list with any other line fail with one message that starts
 #       with CONTEXT and names the list. Promotion (check 7) and the publish job call it.
+#   scripts/release-check.sh rows TSV PAIRS PLATFORM CONTEXT
+#       Prints "<id> <version>" for each row of the plugins-PLATFORM.tsv list TSV, in its
+#       order. PAIRS is the output of sums for SHA256SUMS-PLATFORM.txt and must not be
+#       empty. The first line of TSV is the header line that scripts/package-plugin.sh
+#       writes, byte for byte. Every other line, a last line without a final newline too,
+#       is a row of exactly five columns split at each tab: id, version, PLATFORM, the file
+#       <id>-<version>-PLATFORM.tar.gz, and its sha256. There is at least one row, and the
+#       (file, sha256) pairs of the rows are those of PAIRS, each as many times. TSV is
+#       read as sums reads a list. Any other TSV fails with one message that starts with
+#       CONTEXT and names TSV. Promotion (check 7) and the publish job call it.
 #   scripts/release-check.sh latest
 #       Prints the tag of the Latest Release of GH_REPO, or nothing when the repository
 #       reads and has no Latest Release. Any other failure to read fails.
@@ -71,6 +81,7 @@ usage() {
 SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 SHA_RE='^[0-9a-f]{40}$'
 SUMS_RE='^([0-9a-f]{64})  ([^[:space:]/]+)$'
+TSV_HEADER=$'id\tversion\tplatform\tfile\tsha256'
 
 is_semver() {
   [[ "$1" =~ $SEMVER_RE ]]
@@ -248,10 +259,9 @@ promoted() {
   [[ "$(block_lines "Verified with Tasty")" == "$(verified_line "$min" "$new" "$on")" ]] || return 1
 }
 
-# The pairs of the SHA256SUMS list $1, judged line by line. $2 starts every message.
-sums() {
+# Fails unless $1 is a readable regular file without a NUL byte. $2 starts the message.
+readable_list() {
   local file=$1 context=$2 name line
-  local -a out=()
   name=${file##*/}
   [[ -f "$file" && -r "$file" ]] || fail "$context: cannot read $name"
   # read -d '' succeeds only when it finds a NUL. A plain read drops a NUL (bash 5) or ends
@@ -259,11 +269,58 @@ sums() {
   if IFS= read -r -d '' line <"$file"; then
     fail "$context: $name has a NUL byte"
   fi
+}
+
+# The pairs of the SHA256SUMS list $1, judged line by line. $2 starts every message.
+sums() {
+  local file=$1 context=$2 name line
+  local -a out=()
+  name=${file##*/}
+  readable_list "$file" "$context"
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ $SUMS_RE ]] || fail "$context: unexpected line in $name: '$line'"
     out+=("${BASH_REMATCH[2]} ${BASH_REMATCH[1]}")
   done <"$file"
   if ((${#out[@]} > 0)); then printf '%s\n' "${out[@]}"; fi
+}
+
+# The rows of the TSV list $1 of platform $3, judged against the sums pairs $2. $4 starts
+# every message.
+rows() {
+  local tsv=$1 pairs=$2 platform=$3 context=$4 name bad line rest n=0 tab=$'\t'
+  local -a cols out=() files=()
+  name=${tsv##*/}
+  bad="$context: $name does not list the archives of SHA256SUMS-$platform.txt"
+  readable_list "$tsv" "$context"
+  [[ -f "$pairs" && -r "$pairs" ]] || fail "$context: cannot read ${pairs##*/}"
+  [[ -s "$pairs" ]] || fail "$context: ${pairs##*/} has no archives to check $name against"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    if ((n == 1)); then
+      [[ "$line" == "$TSV_HEADER" ]] || fail "$bad (line 1 is not the header line)"
+      continue
+    fi
+    # Split at each tab: IFS=$'\t' read would merge empty columns.
+    cols=()
+    rest=$line
+    while [[ "$rest" == *"$tab"* ]]; do
+      cols+=("${rest%%"$tab"*}")
+      rest=${rest#*"$tab"}
+    done
+    cols+=("$rest")
+    ((${#cols[@]} == 5)) || fail "$bad (line $n has ${#cols[@]} columns, not 5)"
+    [[ "${cols[2]}" == "$platform" ]] || fail "$bad (line $n is not for $platform)"
+    [[ "${cols[3]}" == "${cols[0]}-${cols[1]}-$platform.tar.gz" ]] ||
+      fail "$bad (line $n names a file that is not <id>-<version>-$platform.tar.gz)"
+    out+=("${cols[0]} ${cols[1]}")
+    files+=("${cols[3]} ${cols[4]}")
+  done <"$tsv"
+  ((n > 0)) || fail "$bad (no header line)"
+  ((${#out[@]} > 0)) || fail "$bad (no rows)"
+  # The same pairs, each as many times: compared sorted, duplicates kept.
+  [[ "$(printf '%s\n' "${files[@]}" | LC_ALL=C sort)" == "$(LC_ALL=C sort "$pairs")" ]] ||
+    fail "$bad (other files or hashes)"
+  printf '%s\n' "${out[@]}"
 }
 
 lower() {
@@ -337,11 +394,15 @@ case "$cmd" in
     [[ $# -eq 2 ]] || usage "usage: release-check.sh sums LIST CONTEXT"
     sums "$1" "$2"
     ;;
+  rows)
+    [[ $# -eq 4 ]] || usage "usage: release-check.sh rows TSV PAIRS PLATFORM CONTEXT"
+    rows "$1" "$2" "$3" "$4"
+    ;;
   latest)
     [[ $# -eq 0 ]] || usage "usage: release-check.sh latest"
     latest
     ;;
   *)
-    usage "usage: release-check.sh semver|tag|semver-lt|pending-line|marker|prepare|verify|promote|promoted|sums|latest ..."
+    usage "usage: release-check.sh semver|tag|semver-lt|pending-line|marker|prepare|verify|promote|promoted|sums|rows|latest ..."
     ;;
 esac

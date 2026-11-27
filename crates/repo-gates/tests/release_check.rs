@@ -503,6 +503,214 @@ fn sums_takes_a_list_and_a_context() {
     assert_eq!(run(&["sums", p(&list), CONTEXT, "x"]), 2);
 }
 
+const TSV: &str = "plugins-linux-x64.tsv";
+const PAIRS: &str = "sums-linux-x64.txt";
+const TSV_HEADER: &str = "id\tversion\tplatform\tfile\tsha256";
+const SUM_C: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+/// The rows of three archives of linux-x64, without newlines.
+fn good_rows() -> Vec<String> {
+    [("a", SUM_A), ("b", SUM_B), ("c", SUM_C)]
+        .iter()
+        .map(|(id, sum)| format!("{id}\t0.1.0\tlinux-x64\t{id}-0.1.0-linux-x64.tar.gz\t{sum}"))
+        .collect()
+}
+
+/// A TSV of the header line and `rows`, each line with a newline.
+fn tsv_of(rows: &[String]) -> String {
+    std::iter::once(TSV_HEADER.to_string())
+        .chain(rows.iter().cloned())
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+/// The sums pairs of the three archives of `good_rows`.
+fn good_pairs() -> String {
+    format!(
+        "a-0.1.0-linux-x64.tar.gz {SUM_A}\nb-0.1.0-linux-x64.tar.gz {SUM_B}\n\
+         c-0.1.0-linux-x64.tar.gz {SUM_C}\n"
+    )
+}
+
+fn run_rows(tsv: &Path, pairs: &Path) -> Split {
+    let out = support::git_env::command("bash")
+        .arg(support::repo_file("scripts/release-check.sh"))
+        .args(["rows", p(tsv), p(pairs), "linux-x64", CONTEXT])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("run scripts/release-check.sh rows");
+    Split::new(&out)
+}
+
+/// Refused with one message that starts with the context and holds `needle`.
+fn assert_rows_refused(r: &Split, what: &str, needle: &str) {
+    assert_eq!(r.run, 1, "{what}");
+    r.assert_one_message(what);
+    // Nothing on stdout: the caller gets no rows from a refused TSV.
+    assert_eq!(r.run.output, r.stderr, "{what}");
+    assert!(
+        r.stderr.contains(&format!("{CONTEXT}: ")),
+        "{what}: {:?}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains(needle),
+        "{what}: no {needle:?} in {:?}",
+        r.stderr
+    );
+}
+
+#[test]
+fn rows_prints_the_id_and_version_of_each_row_in_its_order() {
+    let f = Files::new();
+    let pairs = f.write(PAIRS, &good_pairs());
+    let want = "a 0.1.0\nb 0.1.0\nc 0.1.0\n";
+    let r = run_rows(&f.write(TSV, &tsv_of(&good_rows())), &pairs);
+    assert_eq!(r.run, 0, "final newline");
+    assert_eq!(r.run.output, want, "final newline");
+    let tsv = tsv_of(&good_rows());
+    let r = run_rows(&f.write(TSV, tsv.trim_end_matches('\n')), &pairs);
+    assert_eq!(r.run, 0, "no final newline");
+    assert_eq!(r.run.output, want, "no final newline");
+    let mut rows = good_rows();
+    rows.reverse();
+    let r = run_rows(&f.write(TSV, &tsv_of(&rows)), &pairs);
+    assert_eq!(r.run, 0, "other order");
+    assert_eq!(r.run.output, "c 0.1.0\nb 0.1.0\na 0.1.0\n", "other order");
+}
+
+#[test]
+fn rows_refuses_a_tsv_that_does_not_list_the_pairs() {
+    let f = Files::new();
+    let pairs = f.write(PAIRS, &good_pairs());
+    let g = good_rows();
+    let with = |i: usize, row: String| {
+        let mut v = g.clone();
+        v[i] = row;
+        tsv_of(&v)
+    };
+    let cases: Vec<(&str, String)> = vec![
+        ("empty file", String::new()),
+        ("header line only", tsv_of(&[])),
+        ("a row twice, one row missing", with(1, g[0].clone())),
+        ("the last row once more", {
+            let mut v = g.clone();
+            v.push(g[2].clone());
+            tsv_of(&v)
+        }),
+        ("one row missing and a blank last line", {
+            format!("{}\n", tsv_of(&g[..2]))
+        }),
+        ("a blank line between rows", {
+            let mut v = g.clone();
+            v.insert(1, String::new());
+            tsv_of(&v)
+        }),
+        ("another hash", with(0, g[0].replace(SUM_A, SUM_C))),
+        (
+            "another platform column",
+            with(0, g[0].replacen("\tlinux-x64\t", "\tlinux-arm64\t", 1)),
+        ),
+        ("another id column", with(0, g[0].replacen("a\t", "x\t", 1))),
+        (
+            "another version column",
+            with(0, g[0].replacen("\t0.1.0\t", "\t0.2.0\t", 1)),
+        ),
+        ("CRLF", tsv_of(&g).replace('\n', "\r\n")),
+        (
+            "rows without the header line",
+            g.iter().map(|l| format!("{l}\n")).collect(),
+        ),
+        (
+            "junk header line",
+            tsv_of(&g).replacen(TSV_HEADER, "junk", 1),
+        ),
+        (
+            "space after the header line",
+            tsv_of(&g).replacen(TSV_HEADER, &format!("{TSV_HEADER} "), 1),
+        ),
+        ("a sixth column", with(1, format!("{}\textra", g[1]))),
+    ];
+    let runs: Vec<(&str, Split)> = cases
+        .into_iter()
+        .map(|(what, tsv)| (what, run_rows(&f.write(TSV, &tsv), &pairs)))
+        .collect();
+    // Every case that was not refused, named at once.
+    let taken: Vec<&str> = runs
+        .iter()
+        .filter(|(_, r)| r.run.code != 1)
+        .map(|(what, _)| *what)
+        .collect();
+    assert!(taken.is_empty(), "not refused: {taken:?}");
+    for (what, r) in &runs {
+        assert_rows_refused(
+            r,
+            what,
+            &format!("{TSV} does not list the archives of SHA256SUMS-linux-x64.txt"),
+        );
+    }
+}
+
+#[test]
+fn rows_refuses_empty_or_missing_pairs() {
+    let f = Files::new();
+    let empty = f.write(PAIRS, "");
+    // Both sides empty would agree: an empty pairs file is refused before any row.
+    for (what, tsv) in [
+        ("empty pairs, right TSV", tsv_of(&good_rows())),
+        ("empty pairs, header line only", tsv_of(&[])),
+    ] {
+        let r = run_rows(&f.write(TSV, &tsv), &empty);
+        assert_rows_refused(&r, what, PAIRS);
+    }
+    let tsv = f.write(TSV, &tsv_of(&good_rows()));
+    let r = run_rows(&tsv, &f.dir.path().join("missing-pairs.txt"));
+    assert_rows_refused(&r, "missing pairs", "cannot read missing-pairs.txt");
+}
+
+#[test]
+fn rows_refuses_a_tsv_it_cannot_read_with_one_message() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Files::new();
+    let pairs = f.write(PAIRS, &good_pairs());
+    let path = f.dir.path().join(TSV);
+    let tsv = tsv_of(&good_rows()).replacen('\n', "\0\n", 2);
+    std::fs::write(&path, tsv.as_bytes()).expect("write");
+    let r = run_rows(&path, &pairs);
+    assert_rows_refused(
+        &r,
+        "NUL at the end of a row",
+        &format!("{TSV} has a NUL byte"),
+    );
+    let dir = tempfile::tempdir().expect("temp dir");
+    let r = run_rows(&dir.path().join(TSV), &pairs);
+    assert_rows_refused(&r, "missing TSV", &format!("cannot read {TSV}"));
+    std::fs::create_dir(dir.path().join(TSV)).expect("mkdir");
+    let r = run_rows(&dir.path().join(TSV), &pairs);
+    assert_rows_refused(&r, "directory as the TSV", &format!("cannot read {TSV}"));
+    // root reads the file anyway, so the case is skipped.
+    if running_as_root() {
+        eprintln!("running as root: the unreadable TSV case is skipped");
+        return;
+    }
+    let path = f.write(TSV, &tsv_of(&good_rows()));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let r = run_rows(&path, &pairs);
+    assert_rows_refused(&r, "unreadable TSV", &format!("cannot read {TSV}"));
+}
+
+#[test]
+fn rows_takes_a_tsv_pairs_a_platform_and_a_context() {
+    let f = Files::new();
+    let tsv = f.write(TSV, &tsv_of(&good_rows()));
+    let pairs = f.write(PAIRS, &good_pairs());
+    assert_eq!(run(&["rows", p(&tsv), p(&pairs), "linux-x64"]), 2);
+    assert_eq!(
+        run(&["rows", p(&tsv), p(&pairs), "linux-x64", CONTEXT, "x"]),
+        2
+    );
+}
+
 /// The text of one job of release.yml, from its key to the next job key.
 fn job(workflow: &str, name: &str) -> String {
     let start = workflow

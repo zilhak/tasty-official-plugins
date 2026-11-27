@@ -366,13 +366,12 @@ for platform in "${PLATFORMS[@]}"; do
     fail "check 7: SHA256SUMS-$platform.txt lists other archives than $commit packages (< list, > tag commit)"
   fi
   cat "$WORK/sums.txt" >>"$archives"
-  # The TSV has one row per expected archive (columns: id, version, platform, file, sha256),
-  # with the hash of SHA256SUMS.
-  if ! diff <(awk -F'\t' 'NR > 1 { print $1 " " $2 " " $3 " " $4 " " $5 }' "$tsv" | sort) \
-    <(while read -r id version; do
-      file="$id-$version-$platform.tar.gz"
-      echo "$id $version $platform $file $(awk -v n="$file" '$1 == n { print $2 }' "$WORK/sums.txt")"
-    done <"$plugins" | sort) >/dev/null; then
+  # The TSV has one row per archive of SHA256SUMS, with its hash. release-check.sh rows
+  # judges the rows, as the publish job does, and reports a bad TSV itself. The id and
+  # version of the rows are those of the tag commit: an id with a hyphen could otherwise
+  # be split another way and still name the same file.
+  "$CHECK" rows "$tsv" "$WORK/sums.txt" "$platform" "check 7" >"$WORK/rows.txt" || exit 1
+  if ! diff <(LC_ALL=C sort "$WORK/rows.txt") <(LC_ALL=C sort "$plugins") >/dev/null; then
     fail "check 7: plugins-$platform.tsv does not list the archives of SHA256SUMS-$platform.txt"
   fi
 done

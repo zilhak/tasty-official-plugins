@@ -251,6 +251,8 @@ struct World {
     assets: BTreeMap<String, Vec<u8>>,
     /// Digests that differ from the file content, by name.
     digests: BTreeMap<String, String>,
+    /// Published files whose downloaded copies cannot be read.
+    unreadable: Vec<String>,
 }
 
 fn archive_name(plugin: &Plugin, platform: &str) -> String {
@@ -298,6 +300,7 @@ impl World {
             meta_plugins,
             assets: BTreeMap::new(),
             digests: BTreeMap::new(),
+            unreadable: Vec::new(),
         };
         w.notes = notes_with(&w.good_block());
         let mut archives = BTreeMap::new();
@@ -515,6 +518,9 @@ impl Run {
 
 fn promote(world: &World, args: &[&str]) -> Run {
     let fake = Fake::new(&world.entries(), &world.assets);
+    for name in &world.unreadable {
+        fake.unreadable(name);
+    }
     let mut cmd = support::git_env::command("bash");
     cmd.arg(world.tree.dir.path().join("scripts/release-promote.sh"))
         .args(args)
@@ -1288,6 +1294,180 @@ fn every_sha256sums_line_is_judged_with_or_without_a_final_newline() {
         .count();
     assert_eq!(errors, 1, "{:?}", run.result);
     assert_eq!(run.stderr.lines().count(), 1, "{:?}", run.stderr);
+}
+
+const TSV_X64: &str = "plugins-linux-x64.tsv";
+
+/// The published TSV list of linux-x64, as text.
+fn tsv_of(w: &World) -> String {
+    String::from_utf8(w.assets[TSV_X64].clone()).expect("utf-8 TSV")
+}
+
+/// Publishes `text` as the TSV list of linux-x64. The GitHub digest follows the bytes.
+fn set_tsv(w: &mut World, text: impl Into<Vec<u8>>) {
+    w.assets.insert(TSV_X64.into(), text.into());
+}
+
+/// Exactly one message, and stderr is that one line.
+fn assert_one_message(run: &Run, what: &str) {
+    let errors = run
+        .result
+        .output
+        .lines()
+        .filter(|l| l.starts_with("error: ") || l.starts_with("::error::"))
+        .count();
+    assert_eq!(errors, 1, "{what}: {:?}", run.result);
+    assert_eq!(run.stderr.lines().count(), 1, "{what}: {:?}", run.stderr);
+}
+
+fn running_as_root() -> bool {
+    let out = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .expect("run id -u");
+    String::from_utf8_lossy(&out.stdout).trim() == "0"
+}
+
+#[test]
+fn check_7_judges_the_tsv_rows_with_the_shared_script() {
+    let script = read("scripts/release-promote.sh");
+    assert!(
+        script.contains("\"$CHECK\" rows \"$tsv\" "),
+        "release-promote.sh does not call release-check.sh rows"
+    );
+}
+
+#[test]
+fn a_tsv_list_without_a_final_newline_is_taken() {
+    let mut w = World::good();
+    let tsv = tsv_of(&w);
+    set_tsv(&mut w, tsv.trim_end_matches('\n'));
+    run_good(&w).assert_promoted("TSV without a final newline", false);
+}
+
+#[test]
+fn a_tsv_list_with_a_row_twice_is_reported_once() {
+    let mut w = World::good();
+    let tsv = tsv_of(&w);
+    let mut lines: Vec<&str> = tsv.lines().collect();
+    lines[2] = lines[1];
+    set_tsv(&mut w, lines.join("\n") + "\n");
+    let run = run_good(&w);
+    run.assert_refused("a row twice, one row missing");
+    assert!(
+        run.result.output.contains(&format!(
+            "check 7: {TSV_X64} does not list the archives of SHA256SUMS-linux-x64.txt"
+        )),
+        "{:?}",
+        run.result
+    );
+    assert_one_message(&run, "a row twice, one row missing");
+}
+
+#[test]
+fn a_tsv_row_must_name_the_id_and_version_of_the_tag_commit() {
+    // The file column stays; the id with a hyphen is split another way.
+    let mut w = World::good();
+    let (id, version) = w
+        .archived
+        .iter()
+        .find(|(id, _)| id.contains('-'))
+        .cloned()
+        .expect("a plugin id with a hyphen");
+    let (head, tail) = id.rsplit_once('-').expect("hyphen");
+    let file = format!("{id}-{version}-linux-x64.tar.gz");
+    let tsv = tsv_of(&w);
+    let old = format!("{id}\t{version}\tlinux-x64\t{file}\t");
+    let new = format!("{head}\t{tail}-{version}\tlinux-x64\t{file}\t");
+    assert!(tsv.contains(&old), "{tsv}");
+    set_tsv(&mut w, tsv.replace(&old, &new));
+    let run = run_good(&w);
+    run.assert_refused("id split at another hyphen");
+    assert!(
+        run.result
+            .output
+            .contains(&format!("check 7: {TSV_X64} does not list the archives")),
+        "{:?}",
+        run.result
+    );
+    assert_one_message(&run, "id split at another hyphen");
+}
+
+#[test]
+fn a_tsv_list_with_a_nul_byte_is_refused() {
+    let mut w = World::good();
+    let tsv = tsv_of(&w).replacen('\n', "\0\n", 2);
+    set_tsv(&mut w, tsv);
+    let run = run_good(&w);
+    run.assert_refused("NUL");
+    assert!(
+        run.result
+            .output
+            .contains(&format!("check 7: {TSV_X64} has a NUL byte")),
+        "{:?}",
+        run.result
+    );
+    assert_one_message(&run, "NUL");
+}
+
+#[test]
+fn a_tsv_list_that_cannot_be_read_is_reported_once() {
+    // root reads the file anyway, so the case is skipped.
+    if running_as_root() {
+        eprintln!("running as root: the unreadable TSV case is skipped");
+        return;
+    }
+    let mut w = World::good();
+    w.unreadable.push(TSV_X64.into());
+    let run = run_good(&w);
+    run.assert_refused("unreadable TSV");
+    assert!(
+        run.stderr
+            .contains(&format!("check 7: cannot read {TSV_X64}")),
+        "{:?}",
+        run.result
+    );
+    assert_one_message(&run, "unreadable TSV");
+}
+
+#[test]
+fn a_tsv_list_needs_the_header_line_and_five_columns() {
+    let header = "id\tversion\tplatform\tfile\tsha256\n";
+    let cases: Vec<(&str, Box<dyn Fn(&str) -> String>)> = vec![
+        (
+            "junk header line",
+            Box::new(move |t: &str| t.replacen(header, "junk\n", 1)),
+        ),
+        (
+            "space after the header line",
+            Box::new(move |t: &str| {
+                t.replacen(header, "id\tversion\tplatform\tfile\tsha256 \n", 1)
+            }),
+        ),
+        (
+            "a sixth column",
+            Box::new(|t: &str| {
+                let mut lines: Vec<String> = t.lines().map(String::from).collect();
+                lines[1].push_str("\textra");
+                lines.join("\n") + "\n"
+            }),
+        ),
+    ];
+    for (what, change) in cases {
+        let mut w = World::good();
+        let tsv = tsv_of(&w);
+        let changed = change(&tsv);
+        assert_ne!(changed, tsv, "{what}");
+        set_tsv(&mut w, changed);
+        let run = run_good(&w);
+        run.assert_refused(what);
+        assert!(
+            run.result.output.contains(&format!("check 7: {TSV_X64} ")),
+            "{what}: {:?}",
+            run.result
+        );
+        assert_one_message(&run, what);
+    }
 }
 
 #[test]
