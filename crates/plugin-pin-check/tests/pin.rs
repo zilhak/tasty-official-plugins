@@ -4,7 +4,9 @@
 //! manifest requires the same minimum Tasty, and that each
 //! plugin's PLUGIN_ID constant matches its manifest id, and that no package comes
 //! from a path outside the repository or from a path [patch] in the committed
-//! manifest and cargo config, which a clean clone cannot build.
+//! manifest and cargo config, which a clean clone cannot build. It also ties the
+//! Lucide and Feather license texts and the Lucide version to tasty at the pin, and the
+//! Lucide row of THIRD_PARTY_LICENSES.md to the plugins that link tasty-icons.
 //!
 //! The source checks read Cargo.lock, which is what the build uses.
 
@@ -464,6 +466,334 @@ fn egui_family_matches_the_tasty_lock_at_the_pin() {
             show_versions(&tasty_versions)
         );
     }
+}
+
+const NOTICE_INVENTORY: &str = "THIRD_PARTY_LICENSES.md";
+const LUCIDE_TEXT: &str = "LICENSES/Lucide-ISC.txt";
+const FEATHER_TEXT: &str = "LICENSES/Feather-MIT.txt";
+
+/// The pin whose tasty checkout predates tasty's icon license texts. Only at this pin may
+/// the checkout lack both texts; remove it, and the blob and version constants below, when
+/// the pin moves.
+const PIN_WITHOUT_ICON_TEXTS: &str = "ed10dc4eacf24b87f1398d227da5f1352ba79949";
+
+/// `git hash-object --no-filters` of tasty's texts at 49a2911ad5, the first tasty commit
+/// with both texts and the Lucide row, for the pin above.
+const LUCIDE_BLOB_AT_TASTY: &str = "325e8ff0aae2dde3134c1ceed780a11d7bd8f544";
+const FEATHER_BLOB_AT_TASTY: &str = "1f4f4336baff1185dc78ae9e78cac46628dcc869";
+
+/// The Version cell of tasty's Lucide row at 49a2911ad5, for the pin above.
+const LUCIDE_VERSION_AT_TASTY: &str = "lucide-static 0.460.0";
+
+/// The trimmed cells of the single table row of `text` whose first cell starts with
+/// "Lucide". `what` names the file in errors.
+fn lucide_row(text: &str, what: &str) -> Result<Vec<String>, String> {
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|l| l.trim_start().starts_with("| Lucide"))
+        .collect();
+    let [row] = rows.as_slice() else {
+        return Err(format!(
+            "{what}: expected one table row for Lucide, found {}",
+            rows.len()
+        ));
+    };
+    let cells: Vec<String> = row
+        .trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|c| c.trim().to_owned())
+        .collect();
+    if cells.len() < 5 {
+        return Err(format!("{what}: the Lucide row has {} cells", cells.len()));
+    }
+    Ok(cells)
+}
+
+/// The plugin names in the "Included in" cell of the Lucide row, such as
+/// "a, b, and c plugins (...)": the list before the first " plugin".
+fn plugins_named_in(cell: &str) -> BTreeSet<String> {
+    let list = cell.split_once(" plugin").map_or(cell, |(list, _)| list);
+    list.replace(" and ", ",")
+        .split(',')
+        .map(|n| n.trim().trim_start_matches("and ").trim())
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// `git hash-object --no-filters` of a file, read only.
+fn git_blob_id(path: &Path) -> Result<String, String> {
+    let out = Command::new("git")
+        .args(["hash-object", "--no-filters"])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("run git hash-object: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git hash-object {} failed: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))
+}
+
+/// What is wrong with this repository's icon license texts and Lucide version against
+/// the tasty checkout at `pin`. An empty list means they agree.
+fn icon_notice_problems(repo: &Path, checkout: &Path, pin: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let ours = match std::fs::read_to_string(repo.join(NOTICE_INVENTORY))
+        .map_err(|e| format!("read {NOTICE_INVENTORY}: {e}"))
+        .and_then(|t| lucide_row(&t, NOTICE_INVENTORY))
+    {
+        Ok(cells) => cells,
+        Err(e) => return vec![e],
+    };
+    let our_version = &ours[1];
+    let texts = [LUCIDE_TEXT, FEATHER_TEXT];
+    let present: Vec<bool> = texts.iter().map(|t| checkout.join(t).is_file()).collect();
+    match (present[0], present[1]) {
+        (true, true) => {
+            for text in texts {
+                match (
+                    read_bytes(&repo.join(text)),
+                    read_bytes(&checkout.join(text)),
+                ) {
+                    (Ok(a), Ok(b)) if a == b => {}
+                    (Ok(_), Ok(_)) => problems.push(format!(
+                        "{text} differs from the tasty checkout at the pin {pin}"
+                    )),
+                    (Err(e), _) | (_, Err(e)) => problems.push(e),
+                }
+            }
+            match std::fs::read_to_string(checkout.join(NOTICE_INVENTORY))
+                .map_err(|e| format!("read the tasty {NOTICE_INVENTORY}: {e}"))
+                .and_then(|t| lucide_row(&t, "the tasty THIRD_PARTY_LICENSES.md"))
+            {
+                Ok(theirs) if &theirs[1] == our_version => {}
+                Ok(theirs) => problems.push(format!(
+                    "the Lucide version {our_version:?} differs from {:?} in tasty at the pin {pin}",
+                    theirs[1]
+                )),
+                Err(e) => problems.push(e),
+            }
+        }
+        (false, false) if pin == PIN_WITHOUT_ICON_TEXTS => {
+            for (text, blob) in [
+                (LUCIDE_TEXT, LUCIDE_BLOB_AT_TASTY),
+                (FEATHER_TEXT, FEATHER_BLOB_AT_TASTY),
+            ] {
+                match git_blob_id(&repo.join(text)) {
+                    Ok(id) if id == blob => {}
+                    Ok(id) => problems.push(format!(
+                        "{text} has blob {id}, not tasty's {blob} at 49a2911ad5"
+                    )),
+                    Err(e) => problems.push(e),
+                }
+            }
+            if our_version != LUCIDE_VERSION_AT_TASTY {
+                problems.push(format!(
+                    "the Lucide version {our_version:?} is not tasty's {LUCIDE_VERSION_AT_TASTY:?}"
+                ));
+            }
+        }
+        (false, false) => problems.push(format!(
+            "the tasty checkout at the pin {pin} has neither {LUCIDE_TEXT} nor {FEATHER_TEXT}; \
+             only the pin {PIN_WITHOUT_ICON_TEXTS} may lack them"
+        )),
+        _ => {
+            let missing: Vec<&str> = texts
+                .iter()
+                .zip(&present)
+                .filter(|(_, p)| !**p)
+                .map(|(t, _)| *t)
+                .collect();
+            problems.push(format!(
+                "the tasty checkout at the pin {pin} has only one icon license text; {} is missing",
+                missing.join(", ")
+            ));
+        }
+    }
+    problems
+}
+
+/// The icon license texts and the Lucide version match tasty at the pin.
+#[test]
+fn icon_license_texts_match_tasty_at_the_pin() {
+    let problems = icon_notice_problems(&workspace_root(), &tasty_checkout(), &pinned_rev());
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// Whether the normal and build dependencies of `package`, resolved for that package alone
+/// on every target, include tasty-icons. Uses the call of `closure_of` in
+/// scripts/check-plugin-version-bump.sh.
+fn links_tasty_icons(package: &str) -> bool {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let out = Command::new(cargo)
+        .args([
+            "tree",
+            "-p",
+            package,
+            "-e",
+            "normal,build",
+            "--target",
+            "all",
+        ])
+        .args(["--prefix", "none", "--offline", "--locked"])
+        .current_dir(workspace_root())
+        .output()
+        .expect("run cargo tree");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        let why = if stderr.contains("failed to download") {
+            "a crate for some target is not downloaded"
+        } else {
+            "cargo tree failed"
+        };
+        panic!(
+            "{package}: {why}. This test reads the dependencies of every target offline; \
+             run cargo fetch --locked first. cargo's stderr:\n{stderr}"
+        );
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l.split_whitespace().next() == Some("tasty-icons"))
+}
+
+/// The Lucide row names the plugins whose own normal and build dependencies include
+/// tasty-icons.
+#[test]
+fn lucide_row_names_the_plugins_that_link_tasty_icons() {
+    let crates = workspace_root().join("crates");
+    let mut plugins = 0;
+    let mut linking = BTreeSet::new();
+    for plugin in script_plugins() {
+        if !crates.join(&plugin).join("tasty-plugin.toml").exists() {
+            continue;
+        }
+        plugins += 1;
+        if links_tasty_icons(&plugin) {
+            let short = plugin.strip_prefix(PLUGIN_PREFIX).unwrap_or(&plugin);
+            linking.insert(short.to_owned());
+        }
+    }
+    assert_eq!(plugins, 8, "expected eight plugin manifests");
+    let row = lucide_row(&read_root_file(NOTICE_INVENTORY), NOTICE_INVENTORY)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        plugins_named_in(&row[3]),
+        linking,
+        "the Lucide row of {NOTICE_INVENTORY} and the plugins that link tasty-icons"
+    );
+}
+
+/// A scratch folder under the target dir that stands in for a tasty checkout.
+struct FakeCheckout(PathBuf);
+
+impl FakeCheckout {
+    fn new(name: &str) -> Self {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("icon-notice-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("LICENSES")).expect("create the fake checkout");
+        Self(dir)
+    }
+
+    fn write(&self, rel: &str, bytes: &[u8]) {
+        std::fs::write(self.0.join(rel), bytes).expect("write into the fake checkout");
+    }
+
+    /// Both texts as this repository has them and a tasty-style Lucide row with `version`.
+    fn with_texts_and_version(name: &str, version: &str) -> Self {
+        let fake = Self::new(name);
+        for text in [LUCIDE_TEXT, FEATHER_TEXT] {
+            fake.write(
+                text,
+                &read_bytes(&workspace_root().join(text)).expect("read"),
+            );
+        }
+        fake.write(
+            NOTICE_INVENTORY,
+            format!("| Lucide (with Feather) | {version} | ISC | tasty | x |\n").as_bytes(),
+        );
+        fake
+    }
+}
+
+impl Drop for FakeCheckout {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn our_lucide_version() -> String {
+    lucide_row(&read_root_file(NOTICE_INVENTORY), NOTICE_INVENTORY)
+        .unwrap_or_else(|e| panic!("{e}"))[1]
+        .clone()
+}
+
+#[test]
+fn a_later_pin_with_the_same_texts_and_version_passes() {
+    let fake = FakeCheckout::with_texts_and_version("same", &our_lucide_version());
+    let other_pin = "0".repeat(40);
+    assert_eq!(
+        icon_notice_problems(&workspace_root(), &fake.0, &other_pin),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_pin_with_only_one_icon_text_fails() {
+    let fake = FakeCheckout::new("one");
+    fake.write(
+        LUCIDE_TEXT,
+        &read_bytes(&workspace_root().join(LUCIDE_TEXT)).expect("read"),
+    );
+    let problems = icon_notice_problems(&workspace_root(), &fake.0, PIN_WITHOUT_ICON_TEXTS);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains(FEATHER_TEXT), "{problems:?}");
+}
+
+#[test]
+fn a_pin_whose_icon_text_differs_fails() {
+    let fake = FakeCheckout::with_texts_and_version("bytes", &our_lucide_version());
+    let mut text = read_bytes(&workspace_root().join(FEATHER_TEXT)).expect("read");
+    text.push(b'\n');
+    fake.write(FEATHER_TEXT, &text);
+    let problems = icon_notice_problems(&workspace_root(), &fake.0, &"0".repeat(40));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains(FEATHER_TEXT), "{problems:?}");
+}
+
+#[test]
+fn a_pin_whose_lucide_version_differs_fails() {
+    let fake = FakeCheckout::with_texts_and_version("version", "lucide-static 0.461.0");
+    let problems = icon_notice_problems(&workspace_root(), &fake.0, &"0".repeat(40));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("0.461.0"), "{problems:?}");
+}
+
+#[test]
+fn a_pin_other_than_the_exception_without_icon_texts_fails() {
+    let fake = FakeCheckout::new("none");
+    let problems = icon_notice_problems(&workspace_root(), &fake.0, &"0".repeat(40));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("neither"), "{problems:?}");
+}
+
+#[test]
+fn plugin_names_are_read_from_the_included_in_cell() {
+    let names = |cell: &str| plugins_named_in(cell).into_iter().collect::<Vec<_>>();
+    assert_eq!(
+        names("clipboard-viewer, git-viewer, image, and markdown plugins (those whose own)"),
+        ["clipboard-viewer", "git-viewer", "image", "markdown"]
+    );
+    assert_eq!(names("image and markdown plugins"), ["image", "markdown"]);
+    assert_eq!(names("markdown plugin"), ["markdown"]);
 }
 
 /// Rust files under crates/*/src: 147 measured on 2026-11-14 at 25f4750.
