@@ -379,3 +379,18 @@ impl Painted {
         }
     }
 }
+
+/// 글자 도형의 정점 색이 잉크 `token`을 포함하고, 그 밖의 색은 `TRANSPARENT`뿐이어야 한다.
+/// egui가 글리프 가장자리에 투명 정점을 더 내도 판별은 그대로다. 이 단언이 egui 갱신 뒤 깨지면
+/// 실패 메시지의 정점 색 목록으로 잉크가 바뀐 것인지, 가장자리 정점 색이 새로 생긴 것인지 먼저 가른다.
+pub(super) fn assert_glyph_ink(ctx_msg: &str, text: &PaintedText, token: Color32) {
+    let colors = &text.glyph_colors;
+    assert!(
+        colors.contains(&token)
+            && colors
+                .iter()
+                .all(|c| *c == token || *c == Color32::TRANSPARENT),
+        "{ctx_msg}: '{}' 유효 글리프 색 {colors:?}, 잉크 {token:?}",
+        text.text
+    );
+}

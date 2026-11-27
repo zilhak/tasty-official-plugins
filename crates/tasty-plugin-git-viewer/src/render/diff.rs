@@ -455,11 +455,7 @@ mod tests {
             ];
             for (s, ink, token) in expected {
                 assert_eq!(ink, token, "{name}: '{s}' 행 잉크와 토큰");
-                assert_eq!(
-                    find(s).glyph_colors,
-                    vec![token],
-                    "{name}: '{s}' 유효 글리프 색"
-                );
+                paint_probe::assert_glyph_ink(name, find(s), token);
             }
             // 행 채움: 본문 전체 바탕(well, bg_app) 위에 그 행 tint가 한 겹 칠해진다. context 행은 well뿐이다.
             let well = theme.bg_app().to_egui();
