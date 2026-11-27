@@ -510,16 +510,46 @@ fn lucide_row(text: &str, what: &str) -> Result<Vec<String>, String> {
     Ok(cells)
 }
 
-/// The plugin names in the "Included in" cell of the Lucide row, such as
-/// "a, b, and c plugins (...)": the list before the first " plugin".
-fn plugins_named_in(cell: &str) -> BTreeSet<String> {
-    let list = cell.split_once(" plugin").map_or(cell, |(list, _)| list);
-    list.replace(" and ", ",")
-        .split(',')
-        .map(|n| n.trim().trim_start_matches("and ").trim())
-        .filter(|n| !n.is_empty())
-        .map(str::to_owned)
-        .collect()
+/// What follows the plugin list in the "Included in" cell of the Lucide row.
+const LUCIDE_CELL_SUFFIX: &str =
+    " plugins (those whose own normal and build dependencies include tasty-icons)";
+
+/// A list of names as English writes it: "a", "a and b", or "a, b, and c".
+fn english_list(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
+/// The plugin names in the "Included in" cell of the Lucide row. The whole cell must be
+/// the list of names, written as `english_list` writes it, followed by
+/// `LUCIDE_CELL_SUFFIX`, so text added anywhere in the cell fails.
+fn plugins_named_in(cell: &str) -> Result<BTreeSet<String>, String> {
+    let list = cell.strip_suffix(LUCIDE_CELL_SUFFIX).ok_or_else(|| {
+        format!(
+            "the Lucide row's Included in cell {cell:?} does not end with {LUCIDE_CELL_SUFFIX:?}"
+        )
+    })?;
+    let names: Vec<&str> = list
+        .split(", ")
+        .flat_map(|n| n.split(" and "))
+        .map(|n| n.strip_prefix("and ").unwrap_or(n))
+        .collect();
+    let plain = |n: &&str| {
+        !n.is_empty()
+            && n.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
+    if !names.iter().all(plain) || english_list(&names) != list {
+        return Err(format!(
+            "the Lucide row's Included in cell {cell:?} is not a plain list of plugin names \
+             followed by {LUCIDE_CELL_SUFFIX:?}"
+        ));
+    }
+    Ok(names.into_iter().map(str::to_owned).collect())
 }
 
 /// `git hash-object --no-filters` of a file, read only.
@@ -686,7 +716,7 @@ fn lucide_row_names_the_plugins_that_link_tasty_icons() {
     let row = lucide_row(&read_root_file(NOTICE_INVENTORY), NOTICE_INVENTORY)
         .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
-        plugins_named_in(&row[3]),
+        plugins_named_in(&row[3]).unwrap_or_else(|e| panic!("{e}")),
         linking,
         "the Lucide row of {NOTICE_INVENTORY} and the plugins that link tasty-icons"
     );
@@ -787,13 +817,41 @@ fn a_pin_other_than_the_exception_without_icon_texts_fails() {
 
 #[test]
 fn plugin_names_are_read_from_the_included_in_cell() {
-    let names = |cell: &str| plugins_named_in(cell).into_iter().collect::<Vec<_>>();
+    let names = |list: &str| {
+        plugins_named_in(&format!("{list}{LUCIDE_CELL_SUFFIX}"))
+            .map(|set| set.into_iter().collect::<Vec<_>>())
+    };
     assert_eq!(
-        names("clipboard-viewer, git-viewer, image, and markdown plugins (those whose own)"),
-        ["clipboard-viewer", "git-viewer", "image", "markdown"]
+        names("clipboard-viewer, git-viewer, image, and markdown"),
+        Ok(vec![
+            "clipboard-viewer".to_owned(),
+            "git-viewer".to_owned(),
+            "image".to_owned(),
+            "markdown".to_owned()
+        ])
     );
-    assert_eq!(names("image and markdown plugins"), ["image", "markdown"]);
-    assert_eq!(names("markdown plugin"), ["markdown"]);
+    assert_eq!(
+        names("image and markdown"),
+        Ok(vec!["image".to_owned(), "markdown".to_owned()])
+    );
+    assert_eq!(names("markdown"), Ok(vec!["markdown".to_owned()]));
+}
+
+/// Text added to the cell, after the suffix or inside the list, fails instead of being
+/// dropped.
+#[test]
+fn text_added_to_the_included_in_cell_fails() {
+    let row = "clipboard-viewer, git-viewer, image, and markdown";
+    for cell in [
+        format!("{row}{LUCIDE_CELL_SUFFIX}, plus the claude plugin"),
+        format!("{row}, plus the claude{LUCIDE_CELL_SUFFIX}"),
+        format!("{row} plugins, and claude{LUCIDE_CELL_SUFFIX}"),
+        format!("clipboard-viewer, git-viewer, image and markdown{LUCIDE_CELL_SUFFIX}"),
+        format!("{row} plugins"),
+        LUCIDE_CELL_SUFFIX.to_owned(),
+    ] {
+        assert!(plugins_named_in(&cell).is_err(), "{cell:?} was accepted");
+    }
 }
 
 /// Rust files under crates/*/src: 147 measured on 2026-11-14 at 25f4750.
