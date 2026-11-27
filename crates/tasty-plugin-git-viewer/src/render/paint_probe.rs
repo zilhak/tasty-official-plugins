@@ -1,7 +1,8 @@
 //! 렌더 시험 도우미. 한 프레임의 출력 도형을 칠하는 순서대로 하나씩 테셀레이트하고,
-//! 글자 영역 안의 점마다 그 점을 덮는 단색 삼각형의 색을 칠한 순서대로 쌓는다.
-//! 도형 종류와 무관하게 실제로 칠해지는 삼각형을 보므로 사각형이 아닌 채움, 알파 0 가산 채움,
-//! 다른 채움에 가려진 채움도 스택에 드러난다.
+//! 글자 영역 안의 점마다 그 점을 덮는 단색 삼각형의 색을 칠한 순서대로 쌓은 뒤,
+//! 마지막 불투명 층부터 위의 층만 남긴 스택을 기대 스택과 비교한다.
+//! 도형 종류와 무관하게 실제로 칠해지는 삼각형을 보므로 사각형이 아닌 채움과 알파 0 가산 채움은
+//! 스택에 층으로 더해지고, 나중 불투명 채움에 가려진 채움은 스택에서 빠져 기대 스택과 달라진다.
 
 use egui::epaint::{ClippedPrimitive, ClippedShape, Primitive, WHITE_UV};
 use egui::{Color32, Pos2, Rect, Shape, TextureId, vec2};
@@ -199,14 +200,30 @@ fn triangles(mesh: &egui::epaint::Mesh) -> impl Iterator<Item = [usize; 3]> + '_
         .map(|c| [c[0] as usize, c[1] as usize, c[2] as usize])
 }
 
+/// 클립 rect를 egui `Debug`처럼 줄이지 않고 적는다.
+fn clip_str(r: Rect) -> String {
+    format!("({}, {})-({}, {})", r.min.x, r.min.y, r.max.x, r.max.y)
+}
+
+/// 스택 층 하나: (색, 도형 번호, 그 primitive의 클립).
+type Layer = (Color32, usize, Rect);
+
+fn layers_str(layers: &[Layer]) -> String {
+    let parts: Vec<String> = layers
+        .iter()
+        .map(|(c, i, clip)| format!("({c:?}, 도형 {i}, 클립 {})", clip_str(*clip)))
+        .collect();
+    format!("[{}]", parts.join(", "))
+}
+
 /// 영역 하나에서 고른 탐침 점과 그 점의 채움 스택.
 pub(super) struct Probe {
     pub(super) region: &'static str,
     /// 고른 후보의 순번(0이 첫 후보).
     pub(super) candidate: usize,
     pub(super) point: Pos2,
-    /// 칠한 순서의 (색, 도형 번호). 마지막 불투명 층 앞은 버렸다.
-    pub(super) layers: Vec<(Color32, usize)>,
+    /// 칠한 순서의 (색, 도형 번호, 클립). 마지막 불투명 층 앞은 버렸다.
+    pub(super) layers: Vec<Layer>,
 }
 
 impl Painted {
@@ -234,7 +251,7 @@ impl Painted {
     }
 
     /// 점 `p`를 내부에 엄밀히 품고 그 primitive의 클립 안인 삼각형마다 한 층씩, 칠한 순서대로 쌓는다.
-    fn layers_at(&self, ctx_msg: &str, p: Pos2) -> Vec<(Color32, usize)> {
+    fn layers_at(&self, ctx_msg: &str, p: Pos2) -> Vec<Layer> {
         let mut layers = Vec::new();
         for shape in &self.shapes {
             for prim in &shape.prims {
@@ -258,21 +275,22 @@ impl Painted {
                     let Some(color) = flat_color(mesh, tri) else {
                         panic!(
                             "{ctx_msg}: 탐침 {p:?}를 덮는 도형 {}의 삼각형 {pos:?}가 단색이 아니다 \
-                             (texture {:?}, uv {:?}, 색 {:?})",
+                             (texture {:?}, uv {:?}, 색 {:?}, 클립 {})",
                             shape.index,
                             mesh.texture_id,
                             tri.map(|i| mesh.vertices[i].uv),
                             tri.map(|i| mesh.vertices[i].color),
+                            clip_str(prim.clip_rect),
                         )
                     };
                     // epaint는 정확히 TRANSPARENT인 채움만 건너뛴다. 알파 0이라도 RGB가 있으면 더해진다.
                     if color != Color32::TRANSPARENT {
-                        layers.push((color, shape.index));
+                        layers.push((color, shape.index, prim.clip_rect));
                     }
                 }
             }
         }
-        if let Some(last_opaque) = layers.iter().rposition(|(c, _)| c.a() == 255) {
+        if let Some(last_opaque) = layers.iter().rposition(|(c, _, _)| c.a() == 255) {
             layers.drain(..last_opaque);
         }
         layers
@@ -316,18 +334,20 @@ impl Painted {
             // egui의 `Debug`는 소수 한 자리로 줄이므로 좌표를 그대로 적는다.
             let (x, y) = (probe.point.x, probe.point.y);
             println!(
-                "{ctx_msg}: {} 탐침 후보 {} ({x}, {y}), 층 {:?}",
-                probe.region, probe.candidate, probe.layers
+                "{ctx_msg}: {} 탐침 후보 {} ({x}, {y}), 층 {}",
+                probe.region,
+                probe.candidate,
+                layers_str(&probe.layers)
             );
-            let colors: Vec<Color32> = probe.layers.iter().map(|(c, _)| *c).collect();
+            let colors: Vec<Color32> = probe.layers.iter().map(|(c, _, _)| *c).collect();
             assert_eq!(
                 colors,
                 expected,
-                "{ctx_msg}: {} 탐침 ({x}, {y})(후보 {})의 채움 스택. 층(색, 도형 번호) {:?}, \
+                "{ctx_msg}: {} 탐침 ({x}, {y})(후보 {})의 채움 스택. 층(색, 도형 번호, 클립) {}, \
                  본문 ({}, {})-({}, {}), ppp {}",
                 probe.region,
                 probe.candidate,
-                probe.layers,
+                layers_str(&probe.layers),
                 body.min.x,
                 body.min.y,
                 body.max.x,
