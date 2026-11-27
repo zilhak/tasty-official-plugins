@@ -326,8 +326,9 @@ rows() {
   done <"$tsv"
   ((n > 0)) || fail "$bad (no header line)"
   ((${#out[@]} > 0)) || fail "$bad (no rows)"
-  # The same pairs, each as many times: compared sorted, duplicates kept.
-  [[ "$(printf '%s\n' "${files[@]}" | LC_ALL=C sort)" == "$(LC_ALL=C sort "$pairs")" ]] ||
+  # The same pairs, each as many times: compared sorted, duplicates kept. PAIRS is read
+  # through a redirection, so a path such as - or -x is still that file.
+  [[ "$(printf '%s\n' "${files[@]}" | LC_ALL=C sort)" == "$(LC_ALL=C sort <"$pairs")" ]] ||
     fail "$bad (other files or hashes)"
   printf '%s\n' "${out[@]}"
 }

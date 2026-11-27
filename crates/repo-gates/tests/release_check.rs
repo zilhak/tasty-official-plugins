@@ -700,6 +700,46 @@ fn rows_refuses_a_tsv_it_cannot_read_with_one_message() {
 }
 
 #[test]
+fn rows_reads_a_pairs_path_that_starts_with_a_hyphen_as_that_file() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let f = Files::new();
+    f.write(TSV, &tsv_of(&good_rows()));
+    // "-pairs" holds the right pairs: an option to sort would refuse them.
+    f.write("-pairs", &good_pairs());
+    // "-" holds other hashes, and stdin holds the right pairs: stdin is never read.
+    f.write("-", &good_pairs().replace(SUM_A, SUM_C));
+    let rows = |pairs: &str, stdin: &str| {
+        let mut child = support::git_env::command("bash")
+            .arg(support::repo_file("scripts/release-check.sh"))
+            .args(["rows", TSV, pairs, "linux-x64", CONTEXT])
+            .current_dir(f.dir.path())
+            .env_remove("GITHUB_ACTIONS")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run scripts/release-check.sh rows");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(stdin.as_bytes())
+            .expect("write stdin");
+        Split::new(&child.wait_with_output().expect("wait"))
+    };
+    let r = rows("-pairs", "");
+    assert_eq!(r.run, 0, "-pairs");
+    assert_eq!(r.run.output, "a 0.1.0\nb 0.1.0\nc 0.1.0\n", "-pairs");
+    let r = rows("-", &good_pairs());
+    assert_rows_refused(
+        &r,
+        "- with other hashes",
+        &format!("{TSV} does not list the archives of SHA256SUMS-linux-x64.txt"),
+    );
+}
+
+#[test]
 fn rows_takes_a_tsv_pairs_a_platform_and_a_context() {
     let f = Files::new();
     let tsv = f.write(TSV, &tsv_of(&good_rows()));
