@@ -308,15 +308,26 @@ fn a_removed_redraw_escape_breaks_an_error_phrase() {
 #[test]
 fn a_removed_redraw_escape_between_two_replies_breaks_an_error_phrase() {
     let host = ScanHost::new("", "active");
-    let mut r = Reader::new();
     let t0 = Instant::now();
     let mut s = ErrorScanner::new();
-    scan(&mut s, &host, r.next(all("API ", "normal")), t0);
-    let t1 = t0 + secs(1);
     scan(
         &mut s,
         &host,
-        r.next(with_origins("", &[], &[(0, "redraw_removed")])),
+        at(all("API ", "normal"), STREAM, 0, 4, 0),
+        t0,
+    );
+    let t1 = t0 + secs(1);
+    // 호스트가 `ESC[2J`만 지운 회차는 텍스트가 비어도 원문 4바이트를 소비한다.
+    scan(
+        &mut s,
+        &host,
+        at(
+            with_origins("", &[], &[(0, "redraw_removed")]),
+            STREAM,
+            4,
+            8,
+            0,
+        ),
         t1,
     );
     assert_eq!(
@@ -324,7 +335,12 @@ fn a_removed_redraw_escape_between_two_replies_breaks_an_error_phrase() {
         t0,
         "표시만 온 회차는 시계를 깨우지 않는다"
     );
-    scan(&mut s, &host, r.next(all("Error", "normal")), t1 + secs(1));
+    scan(
+        &mut s,
+        &host,
+        at(all("Error", "normal"), STREAM, 8, 13, 0),
+        t1 + secs(1),
+    );
     assert!(!error_threshold(&s));
 }
 
@@ -384,12 +400,22 @@ fn two_marks_at_one_offset_are_a_valid_reply() {
     let mut r = Reader::new();
     let t0 = Instant::now();
     let mut s = observed(&host, &mut r, t0);
-    let reply = with_origins(
-        "screen",
-        &[(0, 6, "redraw")],
-        &[(0, "trimmed"), (0, "redraw_removed")],
+    // 보존 한도로 앞 1바이트를 잃고 보존 버퍼 1 MiB 끝까지 읽은 꼴이다. 남은 원문은 선두의 재그리기 escape가
+    // 지워져 `screen`만 남았고, 잘린 자리와 지워진 escape가 같은 오프셋에 표시된다.
+    let mut reply = at(
+        with_origins(
+            "screen",
+            &[(0, 6, "redraw")],
+            &[(0, "trimmed"), (0, "redraw_removed")],
+        ),
+        STREAM,
+        7,
+        1_048_583,
+        1,
     );
-    scan(&mut s, &host, r.next(reply), t0 + secs(5));
+    reply["retention_start"] = json!(7);
+    assert_eq!(reply["raw_bytes"], json!(1_048_576));
+    scan(&mut s, &host, reply, t0 + secs(5));
     assert_eq!(
         watch(&s).last_change,
         t0,
@@ -418,7 +444,9 @@ fn a_reply_without_origins_counts_all_text_as_before() {
     }
 }
 
-/// 호스트는 출처 항목(ranges + gaps) 합이 4,096을 넘을 때만 `text_origins`를 뺀다.
+/// 호스트의 항목 수 상한은 출처 항목(ranges + gaps) 합이 4,096을 넘을 때만 `text_origins`를 뺀다. gaps 배치는
+/// tasty `crates/tasty-terminal/src/scan_origins_tests.rs`의 `too_many_entries_omit_the_origins_but_keep_the_text`와
+/// 같은 원문 꼴이다.
 #[test]
 fn origins_at_the_host_entry_limit_are_used_and_a_reply_past_it_counts_as_before() {
     let text = format!("{}\nAPI Error\n", "x".repeat(4095));
