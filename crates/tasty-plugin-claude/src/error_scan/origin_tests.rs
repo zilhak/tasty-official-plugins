@@ -195,6 +195,29 @@ fn a_redraw_only_reply_keeps_an_active_error_threshold() {
     assert!(watch(&s).saw_error, "재그리기가 30초 기준을 끄지 않는다");
 }
 
+/// 재그리기가 앞 오류 문구의 단어 경계를 없애 이번 최근 출력만으로는 오류가 아니어도, 재그리기만 온 회차는 앞에서
+/// 고른 30초 기준을 다시 고르지 않는다.
+#[test]
+fn a_redraw_only_reply_keeps_the_error_threshold_even_when_it_breaks_the_phrase() {
+    let host = ScanHost::new("", "active");
+    let mut r = Reader::new();
+    let t0 = Instant::now();
+    let mut s = ErrorScanner::new();
+    scan(&mut s, &host, r.next(all("API Error", "normal")), t0);
+    assert!(watch(&s).saw_error);
+    scan(&mut s, &host, r.next(all("s", "redraw")), t0 + secs(1));
+    assert_eq!(
+        watch(&s).last_change,
+        t0,
+        "재그리기만 온 회차는 시계를 깨우지 않는다"
+    );
+    // 대조: 재그리기 `s`가 `Error` 뒤의 단어 경계를 없애 최근 출력에는 오류가 없다.
+    assert!(!error_threshold(&s));
+    assert!(watch(&s).saw_error, "30초 기준을 다시 고르지 않는다");
+    scan(&mut s, &host, r.idle(), t0 + STALL_QUIET);
+    assert_eq!(host.stalled_count(), 1, "30초에 알린다");
+}
+
 #[test]
 fn redrawn_characters_around_an_error_phrase_keep_their_word_boundaries() {
     // 바깥 두 문자만 재그리기.
@@ -527,6 +550,28 @@ fn a_front_cut_at_a_redraw_break_is_a_string_start() {
         ]),
         "마지막 일반 부분이 출처 생략 응답으로 따로 옴"
     );
+}
+
+/// 4 KiB 절단 뒤에도 창 안에 남은 끊긴 자리는 그대로 문구를 끊는다.
+#[test]
+fn a_break_left_in_the_window_after_a_front_cut_still_breaks_an_error_phrase() {
+    let text = format!("{}API zError", ".".repeat(4096));
+    assert_eq!(text.len(), 4106);
+    // 일반 부분은 재그리기 `z`를 뺀 4,105바이트라 앞 9바이트가 잘리고, `z` 자리는 창 안에 남는다.
+    assert_eq!(text.len() - 1 - RECENT_ERROR_BYTES, 9);
+    assert!(!error_threshold_after([with_origins(
+        &text,
+        &[
+            (0, 4100, "normal"),
+            (4100, 4101, "redraw"),
+            (4101, 4106, "normal")
+        ],
+        &[],
+    )]));
+    // 대조: 같은 절단에서 끊긴 자리가 없으면 문구가 창 안에 남아 센다.
+    let joined = format!("{}API Error", ".".repeat(4096));
+    assert_eq!(joined.len() - RECENT_ERROR_BYTES, 9);
+    assert!(error_threshold_after([all(&joined, "normal")]));
 }
 
 // ── stream 바뀜·응답 유실·호출 실패 ───────────────────────────────────
