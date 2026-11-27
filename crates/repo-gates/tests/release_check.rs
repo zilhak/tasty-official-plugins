@@ -750,6 +750,7 @@ fn release_workflow_settles_and_checks_the_notes_with_the_shared_script() {
     for needle in [
         "uses: actions/checkout@",
         "scripts/release-check.sh sums ",
+        "scripts/release-check.sh rows ",
         "scripts/release-check.sh prepare ",
         "scripts/release-check.sh verify ",
         "gh release edit \"$TAG\" --draft=false --prerelease --notes-file ",
@@ -1064,6 +1065,58 @@ mod release_files {
             std::fs::write(self.list_path(), text).expect("write list");
         }
 
+        fn tsv_path(&self) -> PathBuf {
+            self.platform_dir().join(format!("plugins-{PLATFORM}.tsv"))
+        }
+
+        /// The lines of the TSV of PLATFORM (the header line first), without newlines.
+        fn tsv_lines(&self) -> Vec<String> {
+            std::fs::read_to_string(self.tsv_path())
+                .expect("read TSV")
+                .lines()
+                .map(String::from)
+                .collect()
+        }
+
+        fn set_tsv(&self, text: &str) {
+            std::fs::write(self.tsv_path(), text).expect("write TSV");
+        }
+
+        /// The archives and hashes that the SHA256SUMS list of `platform` names.
+        fn listed(&self, platform: &str) -> Vec<(String, String)> {
+            let list = self
+                .artifacts()
+                .join(format!("plugins-{platform}/SHA256SUMS-{platform}.txt"));
+            std::fs::read_to_string(list)
+                .expect("read list")
+                .lines()
+                .map(|l| (l[66..].to_string(), l[..64].to_string()))
+                .collect()
+        }
+
+        /// DIST holds exactly the verified files: per platform the archives of its
+        /// SHA256SUMS list with those hashes and the two lists, and release-meta.toml.
+        fn assert_dist_is_verified(&self, what: &str) {
+            let mut want = vec!["release-meta.toml".to_string()];
+            for platform in self.platforms.split_whitespace() {
+                want.push(format!("SHA256SUMS-{platform}.txt"));
+                want.push(format!("plugins-{platform}.tsv"));
+                for (name, hash) in self.listed(platform) {
+                    assert_eq!(sha256(&self.dist().join(&name)), hash, "{what}: {name}");
+                    want.push(name);
+                }
+            }
+            want.sort();
+            let mut got: Vec<String> = std::fs::read_dir(self.dist())
+                .expect("dist")
+                .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+                .collect();
+            got.sort();
+            assert_eq!(got, want, "{what}");
+            let platforms = self.platforms.split_whitespace().count();
+            assert_eq!(got.len(), platforms * (self.count + 2) + 1, "{what}");
+        }
+
         fn dist(&self) -> PathBuf {
             self.dir.path().join("dist")
         }
@@ -1190,6 +1243,135 @@ mod release_files {
             r.stderr.contains("publish: ")
                 && r.stderr.contains(&format!("SHA256SUMS-{PLATFORM}.txt")),
             "missing list: {:?}",
+            r.stderr
+        );
+    }
+
+    #[test]
+    fn the_verify_step_takes_right_tsv_lists() {
+        let cases: Vec<(&str, Box<dyn Fn(&[String]) -> String>)> = vec![
+            ("final newline", Box::new(|l: &[String]| joined(l))),
+            (
+                "no final newline",
+                Box::new(|l: &[String]| joined(l).trim_end_matches('\n').to_string()),
+            ),
+            (
+                "rows in another order",
+                Box::new(|l: &[String]| {
+                    let mut v = l.to_vec();
+                    v[1..].reverse();
+                    joined(&v)
+                }),
+            ),
+        ];
+        for (what, change) in cases {
+            let a = Artifacts::new();
+            a.set_tsv(&change(&a.tsv_lines()));
+            let r = a.run();
+            assert_eq!(r.run, 0, "{what}");
+            a.assert_dist_is_verified(what);
+        }
+    }
+
+    #[test]
+    fn the_verify_step_refuses_a_tsv_that_promotion_refuses() {
+        let probe = Artifacts::new();
+        let l = probe.tsv_lines();
+        let with = |i: usize, row: String| {
+            let mut v = l.clone();
+            v[i] = row;
+            joined(&v)
+        };
+        let hash_of = |row: &str| row.rsplit('\t').next().expect("hash").to_string();
+        let cases: Vec<(&str, String)> = vec![
+            ("t3 empty file", String::new()),
+            ("t4 header line only", joined(&l[..1])),
+            ("t5 a row twice, one row missing", with(2, l[1].clone())),
+            (
+                "t6 one hash of another archive",
+                with(1, l[1].replace(&hash_of(&l[1]), &hash_of(&l[2]))),
+            ),
+            ("t7 one row missing and a blank last line", {
+                format!("{}\n", joined(&l[..l.len() - 1]))
+            }),
+            (
+                "t8 another platform column",
+                with(
+                    1,
+                    l[1].replacen(&format!("\t{PLATFORM}\t"), "\tlinux-arm64\t", 1),
+                ),
+            ),
+            ("t9 CRLF", joined(&l).replace('\n', "\r\n")),
+            ("t11 a sixth column", with(1, format!("{}\textra", l[1]))),
+            ("t12 junk header line", with(0, "junk".into())),
+            ("t14 NUL at the end of a row", {
+                let mut v = l.clone();
+                v[1].push('\0');
+                joined(&v)
+            }),
+            ("t15 the last row once more", {
+                let mut v = l.clone();
+                v.push(l[l.len() - 1].clone());
+                joined(&v)
+            }),
+            ("t16 rows only, one twice", {
+                let mut v = l[1..].to_vec();
+                v.push(l[1].clone());
+                joined(&v)
+            }),
+            (
+                "t17 another id column",
+                with(1, l[1].replacen("com.tasty.p0\t", "com.tasty.px\t", 1)),
+            ),
+            ("t18 a blank line between rows", {
+                let mut v = l.clone();
+                v.insert(2, String::new());
+                joined(&v)
+            }),
+            (
+                "t19 another version column",
+                with(1, l[1].replacen("\t0.1.0\t", "\t0.2.0\t", 1)),
+            ),
+            ("space after the header line", with(0, format!("{} ", l[0]))),
+        ];
+        let runs: Vec<(&str, Split)> = cases
+            .into_iter()
+            .map(|(what, tsv)| {
+                let a = Artifacts::new();
+                a.set_tsv(&tsv);
+                (what, a.run())
+            })
+            .collect();
+        // Every case that was not refused, named at once.
+        let taken: Vec<&str> = runs
+            .iter()
+            .filter(|(_, r)| r.run.code != 1)
+            .map(|(what, _)| *what)
+            .collect();
+        assert!(taken.is_empty(), "not refused: {taken:?}");
+        for (what, r) in &runs {
+            assert!(r.run.output.contains(PLATFORM), "{what}: {:?}", r.run);
+        }
+        // release-check.sh reports the TSV once, and the step adds no message.
+        let (what, r) = &runs[2];
+        r.assert_one_message(what);
+        assert!(
+            r.stderr.contains(&format!(
+                "publish: plugins-{PLATFORM}.tsv does not list the archives of SHA256SUMS-{PLATFORM}.txt"
+            )),
+            "{what}: {:?}",
+            r.stderr
+        );
+        // t13: only the TSV of the platform is missing.
+        let a = Artifacts::new();
+        std::fs::remove_file(a.tsv_path()).expect("remove TSV");
+        let r = a.run();
+        assert_eq!(r.run, 1, "t13 missing TSV");
+        r.assert_one_message("t13 missing TSV");
+        assert!(
+            r.stderr
+                .contains(&format!("publish: cannot read plugins-{PLATFORM}.tsv")),
+            "t13 missing TSV: {:?}",
             r.stderr
         );
     }

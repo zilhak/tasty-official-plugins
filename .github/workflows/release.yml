@@ -287,16 +287,19 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
     steps:
-      # For scripts/release-check.sh, which reads the SHA-256 lists and the release notes.
+      # For scripts/release-check.sh, which reads the SHA-256 lists, the TSV lists, and the
+      # release notes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: ${{ runner.temp }}/release-artifacts
 
-      # Checks every SHA-256 list and the expected files, then gathers the files
-      # to upload in one folder: per platform, 8 archives, SHA256SUMS-<platform>.txt
-      # and plugins-<platform>.tsv, plus one release-meta.toml.
+      # Checks every SHA-256 list and the expected files, and every TSV list
+      # against its SHA-256 list as promotion (check 7) does, then gathers the
+      # files to upload in one folder: per platform, 8 archives,
+      # SHA256SUMS-<platform>.txt and plugins-<platform>.tsv, plus one
+      # release-meta.toml.
       - name: Verify the release files
         env:
           ARTIFACTS: ${{ runner.temp }}/release-artifacts
@@ -324,10 +327,12 @@ jobs:
               exit 1
             fi
             (cd "$dir" && sha256sum -c "SHA256SUMS-$platform.txt")
+            # The TSV lists the archives and hashes of the SHA-256 list, judged as
+            # promotion (check 7) judges it; release-check.sh reports a bad TSV itself.
+            scripts/release-check.sh rows "$dir/plugins-$platform.tsv" "$lists/sums-$platform.txt" "$platform" publish > "$lists/rows-$platform.txt" || exit 1
             archives=$(wc -l < "$lists/archives-$platform.txt")
-            rows=$(($(wc -l < "$dir/plugins-$platform.tsv") - 1))
-            if [[ "$archives" != "$PLUGIN_COUNT" || "$rows" != "$PLUGIN_COUNT" ]]; then
-              echo "::error::$platform: $archives archives, $rows TSV rows; expected $PLUGIN_COUNT each"
+            if [[ "$archives" != "$PLUGIN_COUNT" ]]; then
+              echo "::error::$platform: $archives archives; expected $PLUGIN_COUNT"
               exit 1
             fi
             cp "$dir"/* "$DIST/"
