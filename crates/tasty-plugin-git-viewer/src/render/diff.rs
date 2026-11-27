@@ -280,9 +280,9 @@ fn diff_line(ui: &mut egui::Ui, theme: &Theme, row: DiffRow<'_>, row_w: f32) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::paint_probe::{self, Painted};
     use super::*;
-    use egui::epaint::ClippedShape;
-    use egui::{Pos2, Shape};
+    use egui::Pos2;
     use tasty_git_core::DiffHunk;
 
     fn mocha() -> Theme {
@@ -398,43 +398,12 @@ mod tests {
         }
     }
 
-    /// 출력에 그려진 글자 도형 하나.
-    struct PaintedText {
-        text: String,
-        rect: Rect,
-        /// 실제 테셀레이터가 낸 정점 색의 종류. galley 색, override·fallback, 도형 opacity가 모두 반영된다.
-        /// 밑줄·배경이 없는 글자 도형이라 정점은 모두 글리프다.
-        glyph_colors: Vec<Color32>,
-        opacity_factor: f32,
-    }
-
-    fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
-        match shape {
-            Shape::Vec(v) => v.iter().for_each(|s| flatten(s, out)),
-            s => out.push(s.clone()),
-        }
-    }
-
-    fn tessellated_colors(ctx: &egui::Context, clipped: ClippedShape, ppp: f32) -> Vec<Color32> {
-        let mut out: Vec<Color32> = Vec::new();
-        for prim in ctx.tessellate(vec![clipped], ppp) {
-            if let egui::epaint::Primitive::Mesh(mesh) = prim.primitive {
-                for v in &mesh.vertices {
-                    if !out.contains(&v.color) {
-                        out.push(v.color);
-                    }
-                }
-            }
-        }
-        out
-    }
-
     fn paint_frame(
         ctx: &egui::Context,
         theme: &Theme,
         diff: &DiffData,
         width_cache: &mut Option<(f32, f32)>,
-    ) -> (Vec<PaintedText>, Vec<(Rect, Color32)>) {
+    ) -> Painted {
         let tr = Translator::load(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lang"),
             "en",
@@ -451,51 +420,23 @@ mod tests {
                     draw_diff(ui, theme, &tr, diff, width_cache, area);
                 });
         });
-        let (mut texts, mut rects) = (Vec::new(), Vec::new());
-        for clipped in &out.shapes {
-            let mut shapes = Vec::new();
-            flatten(&clipped.shape, &mut shapes);
-            for shape in shapes {
-                match &shape {
-                    Shape::Text(t) => texts.push(PaintedText {
-                        text: t.galley.text().to_owned(),
-                        rect: t.galley.rect.translate(t.pos.to_vec2()),
-                        opacity_factor: t.opacity_factor,
-                        glyph_colors: tessellated_colors(
-                            ctx,
-                            ClippedShape {
-                                clip_rect: clipped.clip_rect,
-                                shape: shape.clone(),
-                            },
-                            out.pixels_per_point,
-                        ),
-                    }),
-                    // 화면에 칠해지는 영역은 사각형과 클립의 교차다.
-                    Shape::Rect(r) => rects.push((r.rect.intersect(clipped.clip_rect), r.fill)),
-                    _ => {}
-                }
-            }
-        }
-        (texts, rects)
+        paint_probe::collect(ctx, &out)
     }
 
     /// 그리기 호출이 `diff_row_ink`의 값을 쓴다. 같은 Context·diff·너비 캐시로 Mocha 다음 Latte를 그리고,
     /// 프레임마다 그 테마로 글자의 유효 글리프 색·불투명도와 행별 채움을 본다.
+    /// 채움은 본문 글자 아래에 칠해지는 순서의 스택(`paint_probe`)과 사각형 채움 보완 검사로 본다.
     #[test]
     fn painted_rows_use_the_row_ink() {
-        let ctx = egui::Context::default();
+        let ctx = paint_probe::probe_context();
         let diff = sample_diff();
         let mut width_cache = None;
         for (name, theme) in [("mocha", mocha()), ("latte", latte())] {
-            let (texts, rects) = paint_frame(&ctx, &theme, &diff, &mut width_cache);
-            for t in &texts {
+            let painted = paint_frame(&ctx, &theme, &diff, &mut width_cache);
+            for t in &painted.texts {
                 assert_eq!(t.opacity_factor, 1.0, "{name}: '{}' opacity", t.text);
             }
-            let find = |s: &str| -> &PaintedText {
-                let hits: Vec<&PaintedText> = texts.iter().filter(|t| t.text == s).collect();
-                assert_eq!(hits.len(), 1, "{name}: '{s}' 글자 도형 수");
-                hits[0]
-            };
+            let find = |s: &str| painted.text(name, s);
             let hunk = diff_row_ink(&theme, true, DiffLineKind::Context);
             let ctx_ink = diff_row_ink(&theme, false, DiffLineKind::Context);
             let del = diff_row_ink(&theme, false, DiffLineKind::Deletion);
@@ -520,38 +461,21 @@ mod tests {
                     "{name}: '{s}' 유효 글리프 색"
                 );
             }
-            // 행 채움: 본문 글자 영역과 겹쳐 보이는 채움(사각형 ∩ 클립). 높이와 무관하다.
-            // 본문 전체 바탕(well, bg_app)과 투명 사각형은 행 채움이 아니라 뺀다.
+            // 행 채움: 본문 전체 바탕(well, bg_app) 위에 그 행 tint가 한 겹 칠해진다. context 행은 well뿐이다.
             let well = theme.bg_app().to_egui();
-            let fills_over = |s: &str| -> Vec<(Rect, Color32)> {
-                let body = find(s).rect;
-                rects
-                    .iter()
-                    .filter(|(_, fill)| *fill != well && fill.a() > 0)
-                    .filter(|(r, _)| {
-                        let o = r.intersect(body);
-                        o.width() > 0.0 && o.height() > 0.0
-                    })
-                    .copied()
-                    .collect()
-            };
+            assert_eq!(well.a(), 255, "{name}: well은 불투명하다");
             for (s, tint, what) in [
-                (HUNK, theme.tint_info_bg().to_egui(), "hunk"),
-                (GONE, theme.tint_danger_bg().to_egui(), "삭제"),
-                (CAME, theme.tint_success_bg().to_egui(), "추가"),
+                (HUNK, Some(theme.tint_info_bg().to_egui()), "hunk"),
+                (GONE, Some(theme.tint_danger_bg().to_egui()), "삭제"),
+                (CAME, Some(theme.tint_success_bg().to_egui()), "추가"),
+                (KEPT, None, "context"),
             ] {
-                let over = fills_over(s);
-                let colors: Vec<Color32> = over.iter().map(|(_, c)| *c).collect();
-                assert_eq!(colors, vec![tint], "{name}: {what} 채움");
-                assert!(
-                    over[0].0.contains_rect(find(s).rect),
-                    "{name}: {what} 채움이 본문 전체를 덮는다"
-                );
+                let body = find(s).rect;
+                let msg = format!("{name}: {what} 행");
+                let stack: Vec<Color32> = std::iter::once(well).chain(tint).collect();
+                painted.assert_stack(&msg, body, &stack);
+                painted.assert_rect_fill(&msg, body, well, tint);
             }
-            assert!(
-                fills_over(KEPT).is_empty(),
-                "{name}: context 행은 채우지 않는다"
-            );
         }
     }
 }

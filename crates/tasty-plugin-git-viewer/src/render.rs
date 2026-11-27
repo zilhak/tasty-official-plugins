@@ -2,6 +2,8 @@
 //! 워크트리·파일 선택이 같은 프레임에 반영되도록 선택 버튼 뒤에 상세 내용을 그린다.
 
 mod diff;
+#[cfg(test)]
+mod paint_probe;
 
 use egui::{Align, Align2, Color32, FontId, Layout, Rect, Sense, Stroke, UiBuilder, vec2};
 use tasty_plugin_sdk::Translator;
