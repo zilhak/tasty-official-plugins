@@ -73,6 +73,10 @@ jobs:
         run: scripts/check.sh fmt
       - name: clippy
         run: scripts/check.sh lint
+      # The pin test reads each plugin's dependency graph with cargo tree --offline,
+      # which needs the crates of every target in the cache.
+      - name: Fetch dependencies
+        run: cargo fetch --locked
       - name: test
         run: scripts/check.sh test
 
