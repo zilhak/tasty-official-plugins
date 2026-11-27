@@ -25,7 +25,8 @@ pub(crate) struct Session {
     pub surface: u32,
     /// 이 세대 서버에서 마지막으로 시작된 thread.
     pub thread: Option<String>,
-    /// TUI에 넘긴 정책·모델 인자. 복원 명령이 같은 값을 다시 쓴다.
+    /// helper가 받은 정책·모델 인자를 등록부에 보관한 값. 복원 명령에서 쓰는 방식은
+    /// [`super::restore_line`]에 있다.
     pub tui_args: Vec<String>,
     #[serde(default)]
     pub native_args: Option<Vec<String>>,

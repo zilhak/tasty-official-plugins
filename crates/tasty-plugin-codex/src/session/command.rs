@@ -1,4 +1,5 @@
-//! launch·spawn·respawn·reboot·복원이 함께 쓰는 세션 helper 명령.
+//! `session` 모드 세션 helper 명령. launch·spawn·respawn·reboot과 `session` 모드 세대의 저장
+//! 복원이 쓴다. `terminal` 모드 세대의 저장 복원 명령은 [`super::restore_line`]이 만든다.
 //!
 //! 터미널에는 플러그인 실행 파일의 `session` 모드를 실행하는 명령 한 줄만 보낸다. 서버와
 //! TUI의 시작·종료는 helper가 맡는다. 명령은 기존 기동 명령과 같이 POSIX 셸 문법이며

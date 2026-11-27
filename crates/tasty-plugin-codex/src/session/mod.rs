@@ -1,6 +1,7 @@
 //! Tasty가 실행하는 Codex 세션: 전용 app-server와 `--remote` TUI.
 //!
-//! launch·spawn·respawn·reboot·복원은 모두 [`command::command_line`]으로 helper를 실행한다.
+//! launch·spawn·respawn·reboot은 [`command::command_line`](`session` 모드)으로 helper를 실행한다.
+//! 저장 복원 명령은 [`restore_line`]이 기록한 세대의 모드에 따라 만든다.
 //! helper는 시작할 때 `codex.session_open`으로 새 세대를 발급받고, 그 세대의 서버 환경에
 //! `TASTY_CODEX_GEN`을 넣는다. 설치된 훅은 이 값과 터미널의 surface를 함께 보내며, 플러그인은
 //! surface의 현재 세대와 같을 때만 훅을 적용한다.
@@ -79,7 +80,8 @@ pub(crate) fn submit_line(
     ))
 }
 
-/// 복원·reboot가 같은 thread를 같은 정책과 모델로 다시 여는 명령(제출 문자 없음).
+/// 저장 복원(`restore.command`)이 같은 thread를 기록한 실행 옵션으로 다시 여는 명령(제출 문자 없음).
+/// reboot는 이 함수를 쓰지 않고 [`submit_line`]으로 명령을 만든다.
 pub(crate) fn restore_line(session: &registry::Session, thread: &str) -> std::io::Result<String> {
     if let Some(args) = &session.native_args {
         let mut parts = vec![

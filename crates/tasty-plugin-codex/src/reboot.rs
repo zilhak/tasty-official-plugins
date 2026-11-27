@@ -226,7 +226,9 @@ fn fetch_session_id(
 }
 
 /// 제출 문자(\r)를 포함한 resume 명령을 만든다. 새 세션과 같은 helper가 전용 서버를 다시
-/// 띄우고 같은 thread를 연다. 호출자가 정한 정책을 TUI에 넘긴다.
+/// 띄우고 같은 thread를 연다. 호출자가 정한 정책을 helper에 넘기고, helper가 소유 서버의
+/// `thread/resume`에 적용한다(`session::helper`의 `prepare_resume`, `session::command`의
+/// `resume_tui_args`).
 pub(crate) fn resume_command(session_id: &str, policy_args: &str) -> std::io::Result<String> {
     crate::session::submit_line(
         Some(session_id),
