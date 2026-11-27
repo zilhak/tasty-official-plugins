@@ -1430,10 +1430,13 @@ fn a_tsv_list_that_cannot_be_read_is_reported_once() {
     assert_one_message(&run, "unreadable TSV");
 }
 
+/// A change of the text of a TSV list.
+type TsvChange = Box<dyn Fn(&str) -> String>;
+
 #[test]
 fn a_tsv_list_needs_the_header_line_and_five_columns() {
     let header = "id\tversion\tplatform\tfile\tsha256\n";
-    let cases: Vec<(&str, Box<dyn Fn(&str) -> String>)> = vec![
+    let cases: Vec<(&str, TsvChange)> = vec![
         (
             "junk header line",
             Box::new(move |t: &str| t.replacen(header, "junk\n", 1)),

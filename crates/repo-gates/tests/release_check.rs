@@ -1340,9 +1340,12 @@ mod release_files {
         );
     }
 
+    /// A change of the TSV lines (the header line first) into the text of a TSV.
+    type TsvChange = Box<dyn Fn(&[String]) -> String>;
+
     #[test]
     fn the_verify_step_takes_right_tsv_lists() {
-        let cases: Vec<(&str, Box<dyn Fn(&[String]) -> String>)> = vec![
+        let cases: Vec<(&str, TsvChange)> = vec![
             ("final newline", Box::new(|l: &[String]| joined(l))),
             (
                 "no final newline",
