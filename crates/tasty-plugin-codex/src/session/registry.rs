@@ -30,9 +30,9 @@ pub(crate) struct Session {
     pub tui_args: Vec<String>,
     #[serde(default)]
     pub native_args: Option<Vec<String>>,
-    /// 기록한 모델. 훅 입력의 `model`(SessionStart)과 native relay가 전한 서버 응답의 모델을
-    /// `session-bind`가 기록한다. 없을 수 있다. 복원 명령에 보충하는지는 [`super::restore_line`]이
-    /// 정한다.
+    /// 기록한 모델. SessionStart 훅 처리가 훅 입력의 `model`을, `session-bind`가 native relay가
+    /// 전한 서버 응답의 모델을 기록한다. 없을 수 있다. 복원 명령에 보충하는지는
+    /// [`super::restore_line`]이 정한다.
     #[serde(default)]
     pub model: Option<String>,
     /// 회차 표지가 있는 프롬프트의 턴. Stop이 자기 턴의 표지를 찾는다.
