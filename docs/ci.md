@@ -594,6 +594,14 @@ would leave that range unchecked.
   every target offline, so they must be downloaded first. A build fetches only the host's
   crates; `scripts/dev-setup.sh` runs `cargo fetch --locked` once, and after a dependency
   change a local check may need it again.
+- Two `pin` tests in `crates/plugin-pin-check/tests/pin.rs` tie the icon notice to its
+  sources: `icon_license_texts_match_tasty_at_the_pin` compares the Lucide and Feather
+  texts and the Lucide version with tasty at the pin, and
+  `lucide_row_names_the_plugins_that_link_tasty_icons` compares the plugins the Lucide row
+  of `THIRD_PARTY_LICENSES.md` names with the plugins whose closure, read the same way,
+  holds `tasty-icons`. The second reads every target offline, so the `check` job of
+  `ci.yml` runs `cargo fetch --locked` before the tests, and a local run needs it too. A
+  crate that is not downloaded fails the test with that hint; it is not skipped.
 
 ## Static C runtime on Windows
 
@@ -715,7 +723,12 @@ com.tasty.claude/LICENSES/NotoEmoji-OFL-1.1.txt
 com.tasty.claude/LICENSES/highlightjs-BSD-3-Clause.txt
 com.tasty.claude/LICENSES/mermaid-MIT.txt
 com.tasty.claude/LICENSES/KaTeX-MIT.txt
+com.tasty.claude/LICENSES/Lucide-ISC.txt
+com.tasty.claude/LICENSES/Feather-MIT.txt
 ```
+
+The entries under `LICENSES/` come in the order the staging folder lists them, which
+depends on the file system.
 
 The markdown archive also lists `com.tasty.markdown/NOTICE.md`. A Windows archive also
 lists the PDB beside the executable, for example `com.tasty.claude/tasty_plugin_claude.pdb`

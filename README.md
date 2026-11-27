@@ -79,7 +79,9 @@ egui family locks other versions than the tasty `Cargo.lock` at the pin, if `egu
 `epaint` is not locked, if a plugin's `PLUGIN_ID` constant differs from the id in its
 manifest or is missing, if a package without a source comes from a folder that is not a
 tracked part of this repository, and if the root `Cargo.toml` or the committed cargo
-config declares a path `[patch]` or a `paths` override.
+config declares a path `[patch]` or a `paths` override. Two of them tie the Lucide and
+Feather notice to tasty at the pin and to the plugins that link `tasty-icons`; see the
+[CI guide](docs/ci.md#plugin-version-check) for what they compare and the `cargo fetch --locked` they need.
 
 ### Cargo.lock
 
