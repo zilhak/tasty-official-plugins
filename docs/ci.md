@@ -702,29 +702,29 @@ scripts/package-plugin.sh all --all --platform linux-x64 --target x86_64-unknown
 ```
 
 Each archive holds one folder, `<id>/`. For example,
-`com.tasty.claude-0.3.1-linux-arm64.tar.gz` lists:
+`com.tasty.claude-0.3.11-linux-x64.tar.gz` lists:
 
 ```
 com.tasty.claude/
-com.tasty.claude/tasty-plugin-claude
-com.tasty.claude/tasty-plugin.toml
-com.tasty.claude/lang/
-com.tasty.claude/lang/en.toml
-com.tasty.claude/lang/ko.toml
-com.tasty.claude/lang/zh-Hans.toml
-com.tasty.claude/lang/ja.toml
 com.tasty.claude/LICENSE
 com.tasty.claude/THIRD_PARTY_LICENSES.md
 com.tasty.claude/LICENSES/
-com.tasty.claude/LICENSES/Hack-MIT-Bitstream-Vera.txt
-com.tasty.claude/LICENSES/emoji-icon-font-MIT.txt
-com.tasty.claude/LICENSES/Ubuntu-Ubuntu-font-1.0.txt
-com.tasty.claude/LICENSES/NotoEmoji-OFL-1.1.txt
-com.tasty.claude/LICENSES/highlightjs-BSD-3-Clause.txt
-com.tasty.claude/LICENSES/mermaid-MIT.txt
 com.tasty.claude/LICENSES/KaTeX-MIT.txt
-com.tasty.claude/LICENSES/Lucide-ISC.txt
+com.tasty.claude/LICENSES/mermaid-MIT.txt
+com.tasty.claude/LICENSES/Ubuntu-Ubuntu-font-1.0.txt
+com.tasty.claude/LICENSES/emoji-icon-font-MIT.txt
+com.tasty.claude/LICENSES/NotoEmoji-OFL-1.1.txt
 com.tasty.claude/LICENSES/Feather-MIT.txt
+com.tasty.claude/LICENSES/Lucide-ISC.txt
+com.tasty.claude/LICENSES/Hack-MIT-Bitstream-Vera.txt
+com.tasty.claude/LICENSES/highlightjs-BSD-3-Clause.txt
+com.tasty.claude/tasty-plugin-claude
+com.tasty.claude/lang/
+com.tasty.claude/lang/ja.toml
+com.tasty.claude/lang/en.toml
+com.tasty.claude/lang/zh-Hans.toml
+com.tasty.claude/lang/ko.toml
+com.tasty.claude/tasty-plugin.toml
 ```
 
 The entries under `LICENSES/` come in the order the staging folder lists them, which
