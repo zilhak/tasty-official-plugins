@@ -587,19 +587,31 @@ fn a_break_left_in_the_window_after_a_front_cut_still_breaks_an_error_phrase() {
     assert_eq!(text.len(), 4106);
     // 일반 부분은 재그리기 `z`를 뺀 4,105바이트라 앞 9바이트가 잘리고, `z` 자리는 창 안에 남는다.
     assert_eq!(text.len() - 1 - RECENT_ERROR_BYTES, 9);
-    assert!(!error_threshold_after([with_origins(
-        &text,
-        &[
-            (0, 4100, "normal"),
-            (4100, 4101, "redraw"),
-            (4101, 4106, "normal")
-        ],
-        &[],
+    assert!(!error_threshold_after([at(
+        with_origins(
+            &text,
+            &[
+                (0, 4100, "normal"),
+                (4100, 4101, "redraw"),
+                (4101, 4106, "normal")
+            ],
+            &[],
+        ),
+        STREAM,
+        0,
+        4106,
+        0,
     )]));
     // 대조: 같은 절단에서 끊긴 자리가 없으면 문구가 창 안에 남아 센다.
     let joined = format!("{}API Error", ".".repeat(4096));
     assert_eq!(joined.len() - RECENT_ERROR_BYTES, 9);
-    assert!(error_threshold_after([all(&joined, "normal")]));
+    assert!(error_threshold_after([at(
+        all(&joined, "normal"),
+        STREAM,
+        0,
+        4105,
+        0
+    )]));
 }
 
 // ── stream 바뀜·응답 유실·호출 실패 ───────────────────────────────────
