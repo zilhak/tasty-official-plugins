@@ -287,8 +287,8 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
     steps:
-      # For scripts/release-check.sh, which reads the SHA-256 lists, the TSV lists, and the
-      # release notes.
+      # For scripts/release-check.sh, which reads the SHA-256 lists, the TSV lists, the
+      # names of the artifact files, and the release notes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -296,10 +296,10 @@ jobs:
           path: ${{ runner.temp }}/release-artifacts
 
       # Checks every SHA-256 list and the expected files, and every TSV list
-      # against its SHA-256 list as promotion (check 7) does, then gathers the
-      # files to upload in one folder: per platform, 8 archives,
+      # against its SHA-256 list as promotion (check 7) does, then gathers only
+      # the files it checked in one folder to upload: per platform, 8 archives,
       # SHA256SUMS-<platform>.txt and plugins-<platform>.tsv, plus one
-      # release-meta.toml.
+      # release-meta.toml. Other files of the artifacts are left out.
       - name: Verify the release files
         env:
           ARTIFACTS: ${{ runner.temp }}/release-artifacts
@@ -320,7 +320,10 @@ jobs:
             scripts/release-check.sh sums "$dir/SHA256SUMS-$platform.txt" publish > "$lists/sums-$platform.txt" || exit 1
             # The list names each archive of the artifact once, and no other file.
             cut -d' ' -f1 "$lists/sums-$platform.txt" | sort > "$lists/listed-$platform.txt"
-            find "$dir" -maxdepth 1 -name "*-$platform.tar.gz" -printf '%f\n' | sort > "$lists/archives-$platform.txt"
+            # release-check.sh refuses an artifact file whose name a SHA-256 list line cannot
+            # hold or that starts with a dot, so each name is one line here and below.
+            scripts/release-check.sh archives "$dir" "$platform" publish > "$lists/found-$platform.txt" || exit 1
+            sort "$lists/found-$platform.txt" > "$lists/archives-$platform.txt"
             if ! diff "$lists/listed-$platform.txt" "$lists/archives-$platform.txt" > "$lists/diff-$platform.txt"; then
               sed 's/^/  /' "$lists/diff-$platform.txt"
               echo "::error::$platform: SHA256SUMS-$platform.txt lists other files than the archives of the artifact (< list, > artifact)"
@@ -335,7 +338,16 @@ jobs:
               echo "::error::$platform: $archives archives; expected $PLUGIN_COUNT"
               exit 1
             fi
-            cp "$dir"/* "$DIST/"
+            # Only the checked files are uploaded, and a file of another platform never
+            # replaces one already checked.
+            { cat "$lists/archives-$platform.txt"; printf '%s\n' "SHA256SUMS-$platform.txt" "plugins-$platform.tsv"; } > "$lists/copy-$platform.txt"
+            while IFS= read -r name; do
+              if [[ -e "$DIST/$name" ]]; then
+                echo "::error::$platform: $name is already in the release files"
+                exit 1
+              fi
+              cp "$dir/$name" "$DIST/"
+            done < "$lists/copy-$platform.txt"
             expected=$((expected + PLUGIN_COUNT + 2))
           done
           meta="$ARTIFACTS/release-meta/release-meta.toml"

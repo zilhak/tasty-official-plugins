@@ -50,6 +50,12 @@
 #       (file, sha256) pairs of the rows are those of PAIRS, each as many times. TSV is
 #       read as sums reads a list. Any other TSV fails with one message that starts with
 #       CONTEXT and names TSV. Promotion (check 7) and the publish job call it.
+#   scripts/release-check.sh archives DIR PLATFORM CONTEXT
+#       Prints the name of each regular file *-PLATFORM.tar.gz in the folder DIR, one per
+#       line. Every entry of DIR, a name that starts with a dot too, must have a name that
+#       a SHA256SUMS line can hold (as sums reads it) and must not start with a dot, so
+#       each name printed is one line. Any other entry fails with one message that starts
+#       with CONTEXT and names PLATFORM. The publish job calls it.
 #   scripts/release-check.sh latest
 #       Prints the tag of the Latest Release of GH_REPO, or nothing when the repository
 #       reads and has no Latest Release. Any other failure to read fails.
@@ -80,7 +86,10 @@ usage() {
 
 SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 SHA_RE='^[0-9a-f]{40}$'
-SUMS_RE='^([0-9a-f]{64})  ([^[:space:]/]+)$'
+# A file name of a SHA256SUMS line: no spaces and no slashes.
+NAME_CHARS='[^[:space:]/]+'
+NAME_RE="^$NAME_CHARS\$"
+SUMS_RE="^([0-9a-f]{64})  ($NAME_CHARS)\$"
 TSV_HEADER=$'id\tversion\tplatform\tfile\tsha256'
 
 is_semver() {
@@ -323,6 +332,26 @@ rows() {
   printf '%s\n' "${out[@]}"
 }
 
+# The archives of platform $2 in the artifact folder $1. $3 starts every message.
+archives() {
+  local dir=$1 platform=$2 context=$3 path name
+  local -a out=()
+  [[ -d "$dir" && -r "$dir" ]] || fail "$context: $platform: cannot read the artifact folder"
+  # A glob keeps every name whole, line breaks included, in bash 3.2 too.
+  shopt -s nullglob dotglob
+  for path in "$dir"/*; do
+    name=${path##*/}
+    [[ "$name" == . || "$name" == .. ]] && continue
+    if [[ ! "$name" =~ $NAME_RE || "$name" == .* ]]; then
+      # The name itself is not printed: a line break would split the message.
+      fail "$context: $platform: the artifact has a file whose name a SHA256SUMS line cannot hold or that starts with a dot"
+    fi
+    if [[ "$name" == *"-$platform.tar.gz" && -f "$path" ]]; then out+=("$name"); fi
+  done
+  shopt -u nullglob dotglob
+  if ((${#out[@]} > 0)); then printf '%s\n' "${out[@]}"; fi
+}
+
 lower() {
   printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'
 }
@@ -398,11 +427,15 @@ case "$cmd" in
     [[ $# -eq 4 ]] || usage "usage: release-check.sh rows TSV PAIRS PLATFORM CONTEXT"
     rows "$1" "$2" "$3" "$4"
     ;;
+  archives)
+    [[ $# -eq 3 ]] || usage "usage: release-check.sh archives DIR PLATFORM CONTEXT"
+    archives "$1" "$2" "$3"
+    ;;
   latest)
     [[ $# -eq 0 ]] || usage "usage: release-check.sh latest"
     latest
     ;;
   *)
-    usage "usage: release-check.sh semver|tag|semver-lt|pending-line|marker|prepare|verify|promote|promoted|sums|rows|latest ..."
+    usage "usage: release-check.sh semver|tag|semver-lt|pending-line|marker|prepare|verify|promote|promoted|sums|rows|archives|latest ..."
     ;;
 esac

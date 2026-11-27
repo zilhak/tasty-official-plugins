@@ -778,7 +778,7 @@ A release has two stages:
 | `create-release` | `[self-hosted, Linux]` | `contents: write` | Tag runs only. Fails unless the tag commit is an ancestor of `origin/main` and the tag equals `v` + `VERSION` in the form `scripts/release-check.sh tag` accepts. Fails if a published Release with the tag exists. Reuses a draft Release only if the `Commit:` line of its marker block names the same commit, and fails otherwise. Without a Release, creates a draft pre-release whose notes end with the marker block (see [Release notes](#release-notes)) |
 | `release-meta` | `[self-hosted, Linux]` | `contents: read` | Writes `release-meta.toml` with `scripts/release-meta.sh` and uploads it as the artifact `release-meta` |
 | `package` | the five platform runners | `contents: read` | Builds and packages the eight plugins and uploads the artifact `plugins-<platform>` |
-| `publish` | `[self-hosted, Linux]` | `contents: write` | Tag runs only. Downloads the artifacts. For each platform, reads `SHA256SUMS-<platform>.txt` with `scripts/release-check.sh sums`, the line check that check 7 of promotion also uses, checks that the list names exactly the archives of the artifact, runs `sha256sum -c`, and checks that there are 8 archives. Checks `plugins-<platform>.tsv` against that list with `scripts/release-check.sh rows`, the row check that check 7 also uses. Then checks that `release-meta.toml` names this tag, commit, and the 8 plugins, and that there are 51 files. Uploads them to the draft. Settles and checks the marker block against `release-meta.toml`, then publishes the Release as a pre-release with the checked notes. Last, checks that the Release is a published pre-release and not Latest |
+| `publish` | `[self-hosted, Linux]` | `contents: write` | Tag runs only. Downloads the artifacts. For each platform, reads `SHA256SUMS-<platform>.txt` with `scripts/release-check.sh sums`, the line check that check 7 of promotion also uses, checks that the list names exactly the archives of the artifact (read with `scripts/release-check.sh archives`, which also refuses an artifact file name that such a list cannot hold or that starts with a dot), runs `sha256sum -c`, and checks that there are 8 archives. Checks `plugins-<platform>.tsv` against that list with `scripts/release-check.sh rows`, the row check that check 7 also uses. Then checks that `release-meta.toml` names this tag, commit, and the 8 plugins, and that there are 51 files. Uploads only these checked files to the draft. Settles and checks the marker block against `release-meta.toml`, then publishes the Release as a pre-release with the checked notes. Last, checks that the Release is a published pre-release and not Latest |
 
 On a tag run, `release-meta` and `package` start only after `create-release` succeeds.
 `publish` checks out the tag commit only for `scripts/release-check.sh`.
@@ -821,7 +821,8 @@ and `scripts/release-promote.sh` call it. Its head comment describes the block a
 command, and `crates/repo-gates/tests/release_check.rs` pins what it accepts and refuses.
 Its `sums` command is likewise the one reader of the lines of a `SHA256SUMS-<platform>.txt`
 list, and its `rows` command the one reader of the rows of a `plugins-<platform>.tsv` list,
-for `publish` and for check 7 of promotion.
+for `publish` and for check 7 of promotion. Its `archives` command reads the file names of
+an artifact for `publish`.
 Before publishing, `publish` makes the block hold exactly one pending line (adding it to
 a reused draft that lacks it, keeping one of identical copies) and checks the `Commit:`,
 `tasty rev:`, and pending pin against the `release-meta.toml` of the run. A block it

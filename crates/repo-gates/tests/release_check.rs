@@ -711,6 +711,93 @@ fn rows_takes_a_tsv_pairs_a_platform_and_a_context() {
     );
 }
 
+fn run_archives(dir: &Path) -> Split {
+    let out = support::git_env::command("bash")
+        .arg(support::repo_file("scripts/release-check.sh"))
+        .args(["archives", p(dir), "linux-x64", CONTEXT])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("run scripts/release-check.sh archives");
+    Split::new(&out)
+}
+
+/// An artifact folder of linux-x64 with two archives, its two lists, and `extra` files.
+fn artifact_folder(extra: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for name in [
+        "a-0.1.0-linux-x64.tar.gz",
+        "b-0.1.0-linux-x64.tar.gz",
+        LIST,
+        TSV,
+    ]
+    .iter()
+    .chain(extra)
+    {
+        std::fs::write(dir.path().join(name), name).expect("write");
+    }
+    dir
+}
+
+#[test]
+fn archives_prints_the_archives_of_the_platform() {
+    let dir = artifact_folder(&["notes.txt", "c-0.1.0-linux-arm64.tar.gz"]);
+    // A folder with an archive name is no archive.
+    std::fs::create_dir(dir.path().join("d-0.1.0-linux-x64.tar.gz")).expect("mkdir");
+    let r = run_archives(dir.path());
+    assert_eq!(r.run, 0);
+    let mut got: Vec<&str> = r.run.output.lines().collect();
+    got.sort();
+    assert_eq!(
+        got,
+        ["a-0.1.0-linux-x64.tar.gz", "b-0.1.0-linux-x64.tar.gz"],
+        "{:?}",
+        r.run
+    );
+}
+
+#[test]
+fn archives_refuses_a_name_that_a_list_line_cannot_hold_or_that_starts_with_a_dot() {
+    let cases = [
+        ("line break, archive name", "x\ny-linux-x64.tar.gz"),
+        ("line break, other file", "notes\nx.txt"),
+        ("space", "a b-0.1.0-linux-x64.tar.gz"),
+        ("tab", "notes\tx.txt"),
+        ("dot, archive name", ".x-0.1.0-linux-x64.tar.gz"),
+        ("dot, other file", ".hidden"),
+    ];
+    let runs: Vec<(&str, Split)> = cases
+        .iter()
+        .map(|(what, name)| (*what, run_archives(artifact_folder(&[name]).path())))
+        .collect();
+    // Every case that was not refused, named at once.
+    let taken: Vec<&str> = runs
+        .iter()
+        .filter(|(_, r)| r.run.code != 1)
+        .map(|(what, _)| *what)
+        .collect();
+    assert!(taken.is_empty(), "not refused: {taken:?}");
+    for (what, r) in &runs {
+        r.assert_one_message(what);
+        // Nothing on stdout: the caller gets no names from a refused folder.
+        assert_eq!(r.run.output, r.stderr, "{what}");
+        assert!(
+            r.stderr.contains(&format!("{CONTEXT}: linux-x64: ")),
+            "{what}: {:?}",
+            r.stderr
+        );
+    }
+}
+
+#[test]
+fn archives_takes_a_folder_a_platform_and_a_context() {
+    let dir = artifact_folder(&[]);
+    assert_eq!(run(&["archives", p(dir.path()), "linux-x64"]), 2);
+    assert_eq!(
+        run(&["archives", p(dir.path()), "linux-x64", CONTEXT, "x"]),
+        2
+    );
+}
+
 /// The text of one job of release.yml, from its key to the next job key.
 fn job(workflow: &str, name: &str) -> String {
     let start = workflow
@@ -751,6 +838,7 @@ fn release_workflow_settles_and_checks_the_notes_with_the_shared_script() {
         "uses: actions/checkout@",
         "scripts/release-check.sh sums ",
         "scripts/release-check.sh rows ",
+        "scripts/release-check.sh archives ",
         "scripts/release-check.sh prepare ",
         "scripts/release-check.sh verify ",
         "gh release edit \"$TAG\" --draft=false --prerelease --notes-file ",
@@ -1123,6 +1211,11 @@ mod release_files {
 
         /// Runs the step as GitHub runs a bash step, from the repository root.
         fn run(&self) -> Split {
+            self.run_on(&self.platforms)
+        }
+
+        /// Runs the step with `platforms` as PLATFORMS.
+        fn run_on(&self, platforms: &str) -> Split {
             let script = self.dir.path().join("step.sh");
             std::fs::write(&script, run_block(&self.workflow, STEP)).expect("write step");
             let temp = self.dir.path().join("runner-temp");
@@ -1133,7 +1226,7 @@ mod release_files {
                 .current_dir(support::repo_root())
                 .env("TAG", TAG)
                 .env("COMMIT", COMMIT)
-                .env("PLATFORMS", &self.platforms)
+                .env("PLATFORMS", platforms)
                 .env("PLUGIN_COUNT", self.count.to_string())
                 .env("ARTIFACTS", self.artifacts())
                 .env("DIST", self.dist())
@@ -1373,6 +1466,123 @@ mod release_files {
                 .contains(&format!("publish: cannot read plugins-{PLATFORM}.tsv")),
             "t13 missing TSV: {:?}",
             r.stderr
+        );
+    }
+
+    /// The message of release-check.sh archives for an artifact of PLATFORM.
+    fn archives_message() -> String {
+        format!(
+            "publish: {PLATFORM}: the artifact has a file whose name a SHA256SUMS line cannot hold"
+        )
+    }
+
+    /// Writes `name` into the artifact folder of PLATFORM.
+    fn add_file(a: &Artifacts, name: &str, text: &str) -> PathBuf {
+        let path = a.platform_dir().join(name);
+        std::fs::write(&path, text).expect("write file");
+        path
+    }
+
+    #[test]
+    fn the_verify_step_refuses_an_artifact_file_name_that_a_list_cannot_hold() {
+        let mut cases: Vec<(&str, Artifacts)> = Vec::new();
+        // n1: an archive name with a line break.
+        let a = Artifacts::new();
+        add_file(&a, "x\ny-linux-x64.tar.gz", "x");
+        cases.push(("n1 line break in an archive name", a));
+        // n2: the parts of a name with a line break are files of the list too, so a
+        // line count of the names takes the archives.
+        let a = Artifacts::new();
+        let mut lines = a.lines();
+        for line in lines.drain(5..) {
+            std::fs::remove_file(a.platform_dir().join(&line[66..])).expect("remove archive");
+        }
+        let p_txt = add_file(&a, "p.txt", "p");
+        let q = add_file(&a, &format!("q-{PLATFORM}.tar.gz"), "q");
+        add_file(&a, &format!("p.txt\nq-{PLATFORM}.tar.gz"), "pq");
+        lines.push(format!("{}  p.txt", sha256(&p_txt)));
+        lines.push(format!("{}  q-{PLATFORM}.tar.gz", sha256(&q)));
+        lines.push(format!("{}  q-{PLATFORM}.tar.gz", sha256(&q)));
+        a.set_list(&joined(&lines));
+        cases.push(("n2 the parts of a name with a line break listed", a));
+        // n3: another file with a line break.
+        let a = Artifacts::new();
+        add_file(&a, "notes\nx.txt", "x");
+        cases.push(("n3 line break in another file name", a));
+        // n4: an archive whose name starts with a dot, not listed.
+        let a = Artifacts::new();
+        add_file(&a, &format!(".x-0.1.0-{PLATFORM}.tar.gz"), "x");
+        cases.push(("n4 an archive name with a dot first", a));
+        // o2: an archive renamed with a dot first and listed so, and one more file.
+        let a = Artifacts::new();
+        let name = a.lines()[0][66..].to_string();
+        let dotted = format!(".{name}");
+        std::fs::rename(a.platform_dir().join(&name), a.platform_dir().join(&dotted))
+            .expect("rename");
+        a.set_list(&joined(&a.lines()).replace(&name, &dotted));
+        a.set_tsv(
+            &joined(&a.tsv_lines()).replace(&format!("\t{name}\t"), &format!("\t{dotted}\t")),
+        );
+        add_file(&a, "notes.txt", "notes");
+        cases.push(("o2 a listed archive name with a dot first", a));
+        let runs: Vec<(&str, Split)> = cases.iter().map(|(what, a)| (*what, a.run())).collect();
+        // Every case that was not refused, named at once.
+        let taken: Vec<&str> = runs
+            .iter()
+            .filter(|(_, r)| r.run.code != 1)
+            .map(|(what, _)| *what)
+            .collect();
+        assert!(taken.is_empty(), "not refused: {taken:?}");
+        for (what, r) in &runs {
+            r.assert_one_message(what);
+            assert!(
+                r.stderr.contains(&archives_message()),
+                "{what}: {:?}",
+                r.stderr
+            );
+        }
+    }
+
+    #[test]
+    fn the_verify_step_uploads_only_the_files_it_checked() {
+        // o1: a file of another platform's folder with the name of a checked archive.
+        let a = Artifacts::new();
+        let name = a.lines()[0][66..].to_string();
+        std::fs::write(
+            a.artifacts().join("plugins-linux-arm64").join(&name),
+            "other bytes",
+        )
+        .expect("write");
+        let r = a.run();
+        assert_eq!(r.run, 0, "o1");
+        a.assert_dist_is_verified("o1");
+        // A file that no list names is left out.
+        let a = Artifacts::new();
+        add_file(&a, "notes.txt", "notes");
+        let r = a.run();
+        assert_eq!(r.run, 0, "extra file");
+        a.assert_dist_is_verified("extra file");
+    }
+
+    #[test]
+    fn the_verify_step_never_replaces_a_release_file() {
+        // Only a platform named twice reaches the check: the names of two platforms differ.
+        let a = Artifacts::new();
+        let r = a.run_on(&format!("{} {PLATFORM}", a.platforms));
+        assert_eq!(r.run, 1);
+        let errors: Vec<&str> = r
+            .run
+            .output
+            .lines()
+            .filter(|l| l.starts_with("error: ") || l.starts_with("::error::"))
+            .collect();
+        assert_eq!(
+            errors,
+            [format!(
+                "::error::{PLATFORM}: com.tasty.p0-0.1.0-{PLATFORM}.tar.gz is already in the release files"
+            )],
+            "{:?}",
+            r.run
         );
     }
 
