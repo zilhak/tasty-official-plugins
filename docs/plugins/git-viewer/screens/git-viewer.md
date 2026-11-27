@@ -96,7 +96,7 @@ popup을 닫으면 핸들을 해제한다. 다중 thread dispatch나 저장소 �
 - worktree: current(녹색 dot pill) / linked / locked(노랑 dot pill, 사유 hover) / invalid(빨강 dot pill) /
   worktree 0개(`no_worktrees`).
 - 빈/없음 안내(Changes `no_changes` · Commits `no_commits` · rail `no_worktrees`)는 해당 pane 중앙 한 줄. 커밋 행 **안의** 빈 summary/author 는 그 자리에 `no_message` / `unknown_author` 로 대체된다(git-core 는 빈 문자열만 준다).
-- error(`accent-danger` 라인, tinted 밴드) 는 header 아래·body 위에 표시.
+- error(`accent-danger-raised` 글자, `tint-danger-bg` 밴드) 는 header 아래·body 위에 표시.
 - already-open(단일 인스턴스 두 번째 인스턴스) 중앙 안내.
 
 ## 디자인 토큰 매핑

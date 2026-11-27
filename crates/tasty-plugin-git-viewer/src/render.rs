@@ -194,11 +194,9 @@ fn error_line(ui: &mut egui::Ui, theme: &Theme, err: &str) {
     let pad_x = theme.spacing_md.value();
     let h = theme.spacing_sm.value() * 2.0 + theme.font_size_caption.value();
     let (rect, _) = ui.allocate_exact_size(vec2(full_w, h), Sense::hover());
-    let danger = theme.accent_danger().to_egui();
-    // 오류 요약 줄 배경. 대응 토큰 없음 — 값에 이름만 둔다.
-    const ERROR_ROW_BG_OPACITY: f32 = 0.1;
+    // 키트 git-viewer 오류 띠: 바탕 tint-danger-bg, 글자 accent-danger-raised.
     ui.painter()
-        .rect_filled(rect, 0.0, danger.gamma_multiply(ERROR_ROW_BG_OPACITY));
+        .rect_filled(rect, 0.0, theme.tint_danger_bg().to_egui());
     bottom_separator(ui, theme, rect);
     ui.painter()
         .with_clip_rect(rect.shrink2(vec2(pad_x, 0.0)))
@@ -207,7 +205,7 @@ fn error_line(ui: &mut egui::Ui, theme: &Theme, err: &str) {
             Align2::LEFT_CENTER,
             err,
             prop(theme.font_size_caption.value()),
-            danger,
+            theme.accent_danger_raised().to_egui(),
         );
 }
 
@@ -850,6 +848,7 @@ fn status_pill(s: FileStatus) -> (&'static str, TagVariant) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Pos2;
 
     fn entry(summary: &str, author: &str) -> LogEntry {
         LogEntry {
@@ -893,6 +892,55 @@ mod tests {
             assert_ne!(author, "(unknown)", "{locale}: author 가 번역돼야 함");
             assert_ne!(summary, "git_viewer.no_message", "{locale}: 키 누락");
             assert_ne!(author, "git_viewer.unknown_author", "{locale}: 키 누락");
+        }
+    }
+
+    fn mocha() -> Theme {
+        Theme::with_colors_and_zoom(tasty_themes::mocha_fallback_colors(), false, 1.0)
+    }
+
+    /// 내장 Latte와 팔레트·밝기 분기가 같은 테마.
+    fn latte() -> Theme {
+        let file =
+            tasty_themes::ThemeFile::parse(tasty_themes::LATTE_TOML_TEXT).expect("latte.toml");
+        let (partial, is_light) = file.to_partial();
+        let mut colors = tasty_themes::mocha_fallback_colors();
+        colors.apply_partial(&partial);
+        Theme::with_colors(colors, is_light.unwrap_or(true))
+    }
+
+    /// 오류 띠는 패널 바탕 위에 danger tint를 한 겹 칠하고 글자는 danger -raised 잉크로 그린다.
+    /// 팝업과 같은 `bg_panel` 프레임 안에서 그린다. Mocha는 기본 accent와 -raised가 같아
+    /// 잉크 판별은 Latte가 맡는다. 오류 문자열은 글자 클립 안에 드는 짧은 값이다.
+    #[test]
+    fn error_band_paints_the_danger_tint_and_raised_ink() {
+        const ERR: &str = "bad index";
+        let l = latte();
+        assert_ne!(l.accent_danger(), l.accent_danger_raised());
+        let ctx = paint_probe::probe_context();
+        for (name, theme) in [("mocha", mocha()), ("latte", l)] {
+            let panel = theme.bg_panel().to_egui();
+            assert_eq!(panel.a(), 255, "{name}: 패널 바탕은 불투명하다");
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0))),
+                ..Default::default()
+            };
+            let out = ctx.run(input, |ctx| {
+                let frame = egui::Frame::new()
+                    .fill(panel)
+                    .inner_margin(egui::Margin::ZERO);
+                egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                    error_line(ui, &theme, ERR);
+                });
+            });
+            let painted = paint_probe::collect(&ctx, &out);
+            let text = painted.text(name, ERR);
+            let msg = format!("{name}: 오류 띠");
+            let tint = theme.tint_danger_bg().to_egui();
+            painted.assert_stack(&msg, text.rect, &[panel, tint]);
+            painted.assert_rect_fill(&msg, text.rect, panel, Some(tint));
+            paint_probe::assert_glyph_ink(&msg, text, theme.accent_danger_raised().to_egui());
         }
     }
 }
