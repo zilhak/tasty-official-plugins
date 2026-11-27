@@ -801,10 +801,12 @@ fn a_pin_whose_icon_text_differs_fails() {
 
 #[test]
 fn a_pin_whose_lucide_version_differs_fails() {
-    let fake = FakeCheckout::with_texts_and_version("version", "lucide-static 0.461.0");
+    // Made from our version, so it differs whatever version the row holds.
+    let other = format!("{} (other)", our_lucide_version());
+    let fake = FakeCheckout::with_texts_and_version("version", &other);
     let problems = icon_notice_problems(&workspace_root(), &fake.0, &"0".repeat(40));
     assert_eq!(problems.len(), 1, "{problems:?}");
-    assert!(problems[0].contains("0.461.0"), "{problems:?}");
+    assert!(problems[0].contains(&other), "{problems:?}");
 }
 
 #[test]
