@@ -75,9 +75,10 @@ POSIX는 `if [ -n "$TASTY_CODEX_GEN" ] && [ -n "$TASTY_SURFACE_ID" ]; then … |
 검토하지 않은 훅은 실행되지 않는다. 이 경우 상태 보고와 부모 결과 반환이 동작하지 않는다.
 설치된 trust 메타데이터만으로 실제 훅 실행을 보장하지 않는다.
 
-훅 stdin의 session_id는 `codex-session-id`와 `restore.command` meta에 기록하며 reboot와
-세션 복원이 사용한다. stdin의 `model`(SessionStart)은 복원 명령에, `turn_id`(UserPromptSubmit·Stop·Interrupt)는
-부모 결과 반환의 완료 키에 쓴다. 설치 이벤트는 아래 일곱 개다. 승인이 어느 도구에서나 발생할 수 있어
+훅 stdin의 session_id는 `codex-session-id`와 `restore.command` meta에 기록한다. native 선택 경로의
+`session-bind`도 같은 두 meta를 기록한다([터미널 세션 복원](#터미널-세션-복원)). reboot는
+`codex-session-id`만 읽고, 저장 복원은 `restore.command`를 실행한다. stdin의 `model`(SessionStart)은
+복원 명령에, `turn_id`(UserPromptSubmit·Stop·Interrupt)는 부모 결과 반환의 완료 키에 쓴다. 설치 이벤트는 아래 일곱 개다. 승인이 어느 도구에서나 발생할 수 있어
 도구 이름 matcher를 두지 않으며 PostToolUse도 매 호출마다 프로세스를 실행한다.
 
 ### Codex 실행 파일과 PATH
@@ -167,7 +168,9 @@ TUI는 재개 때 정책 없이 `thread/resume`을 보낸다. 서버는 이미 �
   thread는 TUI가 끝날 때까지 로드된 채 남는다.
 - 전송 오류나 해석할 수 없는 메시지로 읽기를 멈추면 연결을 닫는다. 그 뒤로는 구독하지 않는다. 메시지 본문 크기만으로 구독을 끊지는 않는다.
 
-탭 복원과 reboot는 이 helper로 기존 thread를 재개하므로 같은 방식으로 정책을 적용한다. launch·spawn·respawn은 새 세션을 띄운다.
+reboot와 `session` 모드 세대의 탭 복원은 이 helper로 기존 thread를 재개하므로 같은 방식으로 정책을 적용한다.
+`terminal` 모드 세대의 탭 복원은 relay가 정책을 다룬다([터미널 세션 복원](#터미널-세션-복원)의 native TUI 정책).
+launch·spawn·respawn은 새 세션을 띄운다.
 
 이 경로의 실서버 검증은 opt-in 시험(`TASTY_CODEX_NORMAL_HOME_E2E=1`, Linux)으로 한다.
 
@@ -223,8 +226,10 @@ Codex 0.154에서 두 훅의 시점은 다음과 같다(측정: app-server 로�
 - 세대의 thread가 비어 있으면 SessionStart는 그 thread를 바로 묶는다. SessionStart가 아닌 훅은
   아래 표처럼 서버가 그 thread를 `active`로 보일 때만 묶는다. 비운 세대에 늦게 온 이전 thread의
   Stop은 thread가 없으므로 결과를 만들지 않는다.
-- SessionStart가 오기 전(첫 턴 전) 또는 unload 뒤 첫 턴 전에는 `codex-session-id`가 없으므로
-  `reboot`은 재개할 세션이 없다고 거절한다.
+- `reboot`은 surface의 `codex-session-id` meta가 비어 있으면 재개할 세션이 없다고 거절한다.
+  SessionStart가 오기 전(첫 턴 전)이나 unload 뒤 첫 턴 전이 보통 그렇다. 다만 native 선택 경로는
+  첫 턴 전에도 이 meta를 기록한다([터미널 세션 복원](#터미널-세션-복원)의 `session-bind`).
+  정본은 `src/reboot.rs`의 `fetch_session_id`다.
 
 같은 TUI에서 대화를 바꾸면(`/new`, `/resume`, 이미 연 대화로 돌아가기) 다른 thread의 훅이 온다.
 같은 서버에 이미 로드된 대화로 돌아가면 SessionStart 없이 UserPromptSubmit부터 온다. 훅은 따로
@@ -250,10 +255,12 @@ SessionStart의 `source`나 thread ID 순서로는 판정하지 않는다. 이�
 취소 시 종료·회수한다. 세션 등록 자체는 중복 세대 발급을 피하기 위해 재시도하지 않는다.
 준비 전의 일시적인 접속 실패는 화면에 반복 출력하지 않는다.
 
-SessionStart에서 현재 surface에 세션 ID와 `restore.command`를 저장한다. 복원 명령은 helper의
-`--resume <thread>` 명령이며 세대에 기록한 정책 인자와 훅이 알려 준 모델(`-m`)을 그대로 쓰고
-제출 문자는 넣지 않는다. 호스트는 이 명령을 복원한 터미널의 셸에서 실행하므로 cwd는 복원된
-터미널의 것을 쓰고, 새 surface ID는 그 PTY의 환경에서 받는다.
+현재 surface에 세션 ID와 `restore.command`를 저장한다(기록하는 경로는 [훅 설치와 실행](#훅-설치와-실행)과
+아래 `session-bind` 문단). 저장 복원(탭 복원·앱 재시작)은 `restore.command`를 실행하고, reboot는
+이 명령을 쓰지 않는다. 복원 명령은 기록한 세대의 모드에 따라 helper의 다른 명령이 된다
+([세션 실행 (전용 app-server)](#세션-실행-전용-app-server), 판정은 `src/session/mod.rs`의 `restore_line`).
+명령에는 기록한 실행 옵션을 쓰고 제출 문자는 넣지 않는다. 호스트는 이 명령을 복원한 터미널의 셸에서
+실행하므로 cwd는 복원된 터미널의 것을 쓰고, 새 surface ID는 그 PTY의 환경에서 받는다.
 
 `tasty codex install`은 Tasty 데이터 홈의 셸 통합 디렉터리에 `shell-integrations/com.tasty.codex.sh`도 설치한다.
 Tasty의 Bash·zsh 통합은 프롬프트 준비 때 이 디렉터리의 스크립트를 읽는다([셸 통합 확장](https://github.com/zilhak/tasty/blob/develop/docs/dev-guide/plugin-development.md#셸-통합-확장-스크립트)).
@@ -736,7 +743,7 @@ tasty codex result <event_id>
 - Given claim을 만드는 도중 플러그인이 끝나 빈 claim이 남음 When 다시 시작하거나 같은 키를 다시 기록 Then 이벤트를 지우지 않고 claim을 고친다.
 - Given helper 환경에 `HERDR_ENV`가 없음 When `terminal`·`session` 모드가 서버와 TUI를 띄움 Then TUI는 `HERDR_ENV=1`을 받고 전용 app-server는 받지 않는다. 값이 정의돼 있으면(빈 값 포함) 서버와 TUI 모두 그 값을 그대로 받는다.
 - Given 전용 app-server가 시작하지 못함 When helper 실행 Then TUI를 시작하지 않고 실패를 알리며 embedded·공유 서버로 내려가지 않는다.
-- Given 승인·sandbox 정책이 있는 reboot·탭 복원 When helper가 기존 thread를 재개 Then TUI에는 정책 인자를 넘기지 않고, 소유 서버의 `thread/resume`이 적용한 정책을 TUI가 붙은 뒤에도 서버가 유지한다.
+- Given 승인·sandbox 정책이 있는 reboot·`session` 모드 세대의 탭 복원 When helper가 기존 thread를 재개 Then TUI에는 정책 인자를 넘기지 않고, 소유 서버의 `thread/resume`이 적용한 정책을 TUI가 붙은 뒤에도 서버가 유지한다.
 - Given 소유 서버가 재개를 거부하거나 요청한 정책과 다른 값으로 응답 When helper 실행 Then 서버를 정리하고 `failed`와 사유를 남기며 TUI를 시작하지 않는다.
 - Given reboot로 재개한 TUI가 시작 직후 끝나 셸로 돌아옴 When 안내를 보낼 차례 Then helper `exited`를 보고 안내와 Enter를 셸에 넣지 않는다.
 - Given TUI가 끝나 서버를 정리 중인 Linux·macOS helper When 터미널에서 Ctrl+C·hangup이 반복해 도착 Then helper는 끝나지 않고 서버 그룹 정리를 마치며 npm 래퍼·실제 서버·TUI가 남지 않는다.
