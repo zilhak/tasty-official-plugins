@@ -477,8 +477,8 @@ const FEATHER_TEXT: &str = "LICENSES/Feather-MIT.txt";
 /// the pin moves.
 const PIN_WITHOUT_ICON_TEXTS: &str = "ed10dc4eacf24b87f1398d227da5f1352ba79949";
 
-/// `git hash-object --no-filters` of tasty's texts at 49a2911ad5, the first tasty commit
-/// with both texts and the Lucide row, for the pin above.
+/// `git hash-object --no-filters` of tasty's texts at 49a2911ad5, for the pin above. tasty
+/// added both texts and the Lucide row in 54ea7dd297, with the same blobs.
 const LUCIDE_BLOB_AT_TASTY: &str = "325e8ff0aae2dde3134c1ceed780a11d7bd8f544";
 const FEATHER_BLOB_AT_TASTY: &str = "1f4f4336baff1185dc78ae9e78cac46628dcc869";
 
