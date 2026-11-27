@@ -1,7 +1,7 @@
 # Third-Party Licenses
 
 The plugins' own code is under the MIT license in [`LICENSE`](LICENSE). The plugin
-archives also ship the third-party assets below, under MIT, BSD-3-Clause, OFL 1.1, the
+archives also ship the third-party assets below, under MIT, BSD-3-Clause, ISC, OFL 1.1, the
 Ubuntu Font Licence 1.0, and the Bitstream Vera license.
 
 | Project | Version | License | Included in | License text |
@@ -13,11 +13,18 @@ Ubuntu Font Licence 1.0, and the Bitstream Vera license.
 | egui default fonts: Noto Emoji Regular | epaint_default_fonts 0.31.1 | OFL 1.1 | clipboard-viewer, git-viewer, image, and markdown plugin binaries | [`LICENSES/NotoEmoji-OFL-1.1.txt`](LICENSES/NotoEmoji-OFL-1.1.txt) |
 | egui default fonts: Ubuntu Light | epaint_default_fonts 0.31.1 | Ubuntu Font Licence 1.0 | clipboard-viewer, git-viewer, image, and markdown plugin binaries | [`LICENSES/Ubuntu-Ubuntu-font-1.0.txt`](LICENSES/Ubuntu-Ubuntu-font-1.0.txt) |
 | egui default fonts: emoji-icon-font | epaint_default_fonts 0.31.1 | MIT | clipboard-viewer, git-viewer, image, and markdown plugin binaries | [`LICENSES/emoji-icon-font-MIT.txt`](LICENSES/emoji-icon-font-MIT.txt) |
+| Lucide (including parts from Feather) | lucide-static 0.460.0 | ISC, MIT (Feather) | clipboard-viewer, git-viewer, image, and markdown plugins (those whose own normal and build dependencies include tasty-icons) | [`LICENSES/Lucide-ISC.txt`](LICENSES/Lucide-ISC.txt), [`LICENSES/Feather-MIT.txt`](LICENSES/Feather-MIT.txt) |
 
 The files in `LICENSES/` are copied unchanged. The mermaid, highlight.js, and KaTeX texts
 are the `LICENSE` files at the tags of the bundled versions, the same files tasty ships.
 The font texts are the license files in the `fonts/` folder of the `epaint_default_fonts`
-0.31.1 crate that `Cargo.lock` locks.
+0.31.1 crate that `Cargo.lock` locks. The Lucide and Feather texts are byte for byte the
+files of the same names in tasty's `LICENSES/`; their sources are in the icons section below.
+
+The Lucide row lists the plugins whose own normal and build dependencies, resolved with that
+plugin's features alone, include `tasty-icons`. A release builds all plugins in one cargo
+build, where features are unified, so every plugin compiles `tasty-icons` there; the row
+does not claim which icon shapes stay in each final binary.
 
 ## markdown plugin rendering engines
 
@@ -78,6 +85,43 @@ every plugin archive.
   Text: [`LICENSES/emoji-icon-font-MIT.txt`](LICENSES/emoji-icon-font-MIT.txt).
 
 The crate embeds the font files with `include_bytes!`.
+
+## Icons
+
+### Lucide (including parts from Feather)
+
+- Source: Lucide Contributors, https://github.com/lucide-icons/lucide (npm `lucide-static`).
+  Parts of Lucide come from Feather (https://github.com/feathericons/feather, Cole Bemis).
+- Version: the Version column of the Lucide row in the table above.
+- Applies to: every icon definition in tasty's `tasty-icons` crate whose shape is the same
+  as a Lucide icon (including the parts from Feather) or was changed from one. Which
+  definitions those are is recorded by the source comments in tasty's
+  `crates/tasty-icons/src/lib.rs` and in tasty's `THIRD_PARTY_LICENSES.md`; this file does
+  not list them. The plugins reach those shapes in three ways: the clipboard-viewer and
+  image `build.rs` scripts bake icon shapes into the binary, the markdown plugin uses them
+  in its `build.rs` and its renderer, and git-viewer links `tasty-icons` through
+  `tasty-ui-widgets`.
+- License: ISC for the Lucide parts, MIT for the Feather parts.
+- License texts:
+  - [`LICENSES/Lucide-ISC.txt`](LICENSES/Lucide-ISC.txt): the `LICENSE` of the npm
+    `lucide-static` package at the version above (the same as the `LICENSE` at the lucide
+    repository tag of that version), sha256
+    `1e7290b35280a048667bbf0ebabac1c7fd52a75300e8b2946ac165715997f2bc`.
+  - [`LICENSES/Feather-MIT.txt`](LICENSES/Feather-MIT.txt): the `LICENSE` at
+    feathericons/feather commit `3dc050d97405062eba78aa57115c0a15c63abdaa`, sha256
+    `308028e93fcf84972523cdf6e616f73168546b4953895f516d01287f16fe7bee`. Lucide's
+    `LICENSE` names the copyright of the Feather parts but does not carry the MIT
+    permission text, so the Feather text is shipped as well.
+- Copyright: as in the copyright lines at the head of those two files.
+
+The two licenses word their notice condition differently. ISC (`LICENSES/Lucide-ISC.txt`)
+requires that "the above copyright notice and this permission notice appear in all
+copies", and MIT (`LICENSES/Feather-MIT.txt`) requires that "The above copyright notice
+and this permission notice shall be included in all copies or substantial portions of the
+Software."
+
+The other plugins do not have `tasty-icons` in their own normal and build dependencies. The
+notice set below still goes into every plugin archive.
 
 ## Notice set
 

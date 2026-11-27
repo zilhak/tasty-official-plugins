@@ -2302,7 +2302,7 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-agent-stream"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "directories",
@@ -2338,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-clipboard-viewer"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2383,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-git-viewer"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "egui",
@@ -2406,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-html"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -2418,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "tasty-plugin-image"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "arboard",
