@@ -2026,6 +2026,84 @@ fn a_link_retargeted_between_export_ignored_files_demands_a_bump() {
     );
 }
 
+// A file that is neither Rust nor the manifest is compared by its git tree entry, as Cargo
+// checks it out, not by the git archive copy.
+
+const EXT_READS_DATA: &str = "pub const D: &str = include_str!(\"data.txt\");\n";
+
+/// git archive expands export-subst ($Format:%s$ is the subject of the first commit, ext
+/// seed), so both copies read the same while the file in git changed.
+#[test]
+fn an_export_subst_file_is_compared_as_git_stores_it() {
+    let lib = format!("{EXT_LIB}{EXT_READS_DATA}");
+    let f = PinFixture::ext_moved(
+        &[
+            ("src/lib.rs", &lib),
+            ("src/data.txt", "$Format:%s$\n"),
+            (".gitattributes", "src/data.txt export-subst\n"),
+        ],
+        &[("src/data.txt", "ext seed\n")],
+    );
+    assert_ext_changed(&f.check(&HEAD_RANGE), "src/data.txt", "export-subst");
+}
+
+#[test]
+fn an_empty_and_a_missing_shipped_file_differ() {
+    let f = PinFixture::new();
+    f.root_crate_source(EXT_MANIFEST, &[("src/data.txt", "")]);
+    fs::remove_file(f.ext_dir().join("src/data.txt")).expect("remove data.txt");
+    f.move_ext_pin();
+    assert_ext_changed(&f.check(&HEAD_RANGE), "src/data.txt", "removed");
+}
+
+/// The mode is set in the index and on disk, so the commit does not depend on how the
+/// working tree keeps the executable bit.
+#[test]
+fn a_mode_only_change_of_a_shipped_file_counts() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = PinFixture::new();
+    f.root_crate_source(EXT_MANIFEST, &[("src/data.txt", "data\n")]);
+    let data = f.ext_dir().join("src/data.txt");
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o755)).expect("chmod data.txt");
+    run_git(
+        &f.ext_dir(),
+        &["update-index", "--chmod=+x", "--", "src/data.txt"],
+    );
+    f.move_ext_pin();
+    let mode = git_out(&f.ext_dir(), &["ls-tree", "HEAD", "--", "src/data.txt"]);
+    assert!(mode.starts_with("100755 "), "{mode}");
+    assert_ext_changed(&f.check(&HEAD_RANGE), "src/data.txt", "mode only");
+}
+
+/// A tree entry that git cannot list is undecidable, not two equal empty values. Only the
+/// exact-path listing of the pinned repository fails here.
+#[test]
+fn a_tree_lookup_that_fails_on_both_sides_is_undecidable() {
+    const MARK: &str = "zz-tree-entry-died-here";
+    let f = PinFixture::ext_moved(&[("src/data.txt", "1\n")], &[("src/data.txt", "2\n")]);
+    let stub = tempfile::tempdir().expect("stub dir");
+    support::write_executable(
+        &stub.path().join("git"),
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = -C ]; then case \" $* \" in *\" ls-tree \"*\" --full-tree \"*) echo {MARK} >&2; exit 128 ;; esac; fi\nexec \"{real}\" \"$@\"\n",
+            real = real_git()
+        ),
+    )
+    .expect("write the stub");
+    let mut cmd = f.command(false);
+    cmd.env("PATH", path_with(stub.path()));
+    let (code, text) = run(cmd, &HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("cannot read the tree entry of src/data.txt at "),
+        "{text}"
+    );
+    assert!(
+        text.contains(MARK),
+        "the stand-in did not fail the listing:\n{text}"
+    );
+}
+
 /// The version line of the root manifest is left out as for a crate in a directory, also
 /// when [workspace.package] comes first with a version of its own.
 #[test]

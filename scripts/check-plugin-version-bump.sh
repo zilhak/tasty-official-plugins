@@ -748,15 +748,15 @@ pin_check_included_build_scripts() {  # <src> <commit> <dir> <name>
     done < "$CRATE_RECORDS"
 }
 
-# The shipped content of one file of an extracted tree: Rust after the judge and rustfmt
-# without blank lines, the crate manifest without its version line (whole when it has a
-# multi-line string), anything else as is.
+# The shipped content of one Rust file or of the crate manifest of an extracted tree: Rust
+# after the judge and rustfmt without blank lines, the manifest without its version line
+# (whole when it has a multi-line string). Any other file is compared by pin_entry.
 pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
     local f="$1/$3" out fmt vline man
     man=$(repo_path "$4" Cargo.toml)
     if [ ! -f "$f" ]; then
         # A missing Rust file and a copy emptied as test-only count as the same, as in
-        # shipped_sum; other files tell a missing file from an empty one.
+        # shipped_sum; a manifest tells a missing file from an empty one.
         case "$3" in *.rs) printf '<no-ship>' ;; *) printf '<absent>' ;; esac
         return
     fi
@@ -790,7 +790,25 @@ pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
             [ -n "$vline" ] && out=$(printf '%s' "$out" | sed "${vline}d")
             printf '%s' "$out" | cksum
             ;;
-        *) cksum < "$f" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Sets PIN_ENTRY to what Cargo checks out at <path> of <src> at <commit>: the mode, type and
+# object id of its tree entry (tree_entry), or <absent>; for a link also the cksum of what
+# the extracted copy <root>/<path> reads through it. git archive output is not compared:
+# it expands export-subst. A mode or a link target that changes is a change. Returns 2 when
+# git cannot list the tree.
+pin_entry() {  # <src> <commit> <root> <path>
+    local rc=0
+    tree_entry "$1" "$2" "$4" || rc=$?
+    case "$rc" in
+        0) PIN_ENTRY="$TREE_MODE $TREE_TYPE $TREE_OID"
+           if [ "$TREE_MODE" = 120000 ]; then
+               if [ -e "$3/$4" ]; then PIN_ENTRY="$PIN_ENTRY $(cksum < "$3/$4")"; else PIN_ENTRY="$PIN_ENTRY <not extracted>"; fi
+           fi ;;
+        1) PIN_ENTRY="<absent>" ;;
+        *) return 2 ;;
     esac
 }
 
@@ -1290,8 +1308,24 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
             PIN_FILES="$PIN_FILES $f"
             continue
         fi
-        a=$(pin_sum "$WORK/$k.old.raw" "$WORK/$k.old.cooked" "$f" "$dir" "$ed")
-        b=$(pin_sum "$WORK/$k.new.raw" "$WORK/$k.new.cooked" "$f" "$dir" "$ed")
+        # Each value is read in this shell and checked: a failure inside a command
+        # substitution would leave two equal empty values.
+        case "$f" in
+            *.rs|"$(repo_path "$dir" Cargo.toml)")
+                a=$(pin_sum "$WORK/$k.old.raw" "$WORK/$k.old.cooked" "$f" "$dir" "$ed") \
+                    || die "cannot compare $f of $name at ${old:0:8}."
+                b=$(pin_sum "$WORK/$k.new.raw" "$WORK/$k.new.cooked" "$f" "$dir" "$ed") \
+                    || die "cannot compare $f of $name at ${new:0:8}."
+                ;;
+            *)
+                pin_entry "$src" "$old" "$WORK/$k.old.raw" "$f" \
+                    || die "cannot read the tree entry of $f at ${old:0:8} ($name)."
+                a=$PIN_ENTRY
+                pin_entry "$src" "$new" "$WORK/$k.new.raw" "$f" \
+                    || die "cannot read the tree entry of $f at ${new:0:8} ($name)."
+                b=$PIN_ENTRY
+                ;;
+        esac
         [ "$a" = "$b" ] || PIN_FILES="$PIN_FILES $f"
     done
     [ -n "$PIN_FILES" ]
