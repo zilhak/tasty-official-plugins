@@ -716,6 +716,38 @@ pin_check_build_script() {  # <src> <commit> <dir> <name>
     fi
 }
 
+# Stops as undecidable when a Rust source of package <name> in <dir> at <commit> (the files of
+# crate_rust_records, with the files that their include! calls open) uses the build.rs next
+# to the manifest of another package through include!: Cargo reads the paths of a build
+# script from the package that runs it, the crate judged, but pin_check_outside_inputs reads
+# them from that other package. An include! path that cannot be decoded and ends in build.rs
+# stops it too. A #[path] attribute is not read.
+pin_check_included_build_scripts() {  # <src> <commit> <dir> <name>
+    local tab t kind f l a b p q fdir
+    tab=$(printf '\t')
+    crate_rust_records "$1" "$2" "$3"
+    while IFS="$tab" read -r t kind f _ l a b p; do
+        [ "$kind" = include ] || continue
+        case "$t" in
+            lit) q=$p ;;
+            bad)
+                case "$b" in
+                    build.rs|*/build.rs) die "$4 includes a file in $f line $l whose path cannot be read ($a) and may be the build script of another package; judge the plugin versions by hand." ;;
+                esac
+                continue ;;
+            *) continue ;;
+        esac
+        case "$q" in ""|/*) continue ;; esac
+        q=$(norm_path "$(dirname "$f")/$q")
+        case "$q" in build.rs|*/build.rs) ;; *) continue ;; esac
+        fdir=$(dirname "$q")
+        [ "$fdir" != "$3" ] || continue
+        if xgit -C "$1" cat-file -e "$2:$(repo_path "$fdir" Cargo.toml)" 2>/dev/null; then
+            die "$4 uses $q, the build script of another package ($(repo_path "$fdir" Cargo.toml)), as a source; its paths are not resolved here, so judge the plugin versions by hand."
+        fi
+    done < "$CRATE_RECORDS"
+}
+
 # The shipped content of one file of an extracted tree: Rust after the judge and rustfmt
 # without blank lines, the crate manifest without its version line (whole when it has a
 # multi-line string), anything else as is.
@@ -1388,6 +1420,7 @@ EOF2
             [ "$d_new" != "<quoted>" ] || die "cannot read the directory of $name in $url at ${new:0:8}: $QUOTED_NOTE."
             pin_edition "$PIN_SRC" "$new" "$d_new" "$name"
             pin_check_build_script "$PIN_SRC" "$new" "$d_new" "$name"
+            pin_check_included_build_scripts "$PIN_SRC" "$new" "$d_new" "$name"
             pin_check_outside_inputs "$PIN_SRC" "$new" "$d_new" "$name"
             reason=""
             if [ "$old" = "-" ]; then

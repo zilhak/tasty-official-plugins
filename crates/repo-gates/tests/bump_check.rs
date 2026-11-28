@@ -2987,6 +2987,58 @@ fn a_build_script_borrowed_from_a_nested_package_is_undecidable() {
     }
 }
 
+/// The build.rs of a package nested in tasty-a, used by a source of tasty-a through
+/// include!, reads ../outside.txt from tasty-a as Cargo runs it, not from the nested
+/// package: a change of crates/outside.txt alone stops the check, from the build script of
+/// tasty-a (one line or several) or from a module of its library.
+#[test]
+fn a_crate_that_uses_the_build_script_of_a_nested_package_as_a_source_is_undecidable() {
+    let nested = "fn main() {\n    println!(\"cargo:rerun-if-changed=../outside.txt\");\n    \
+                  let text = std::fs::read_to_string(\"../outside.txt\").unwrap();\n    \
+                  let out = std::env::var(\"OUT_DIR\").unwrap();\n    \
+                  std::fs::write(format!(\"{out}/outside.txt\"), text).unwrap();\n}\n";
+    let want = "tasty-a uses crates/tasty-a/nested/build.rs, the build script of another \
+                package (crates/tasty-a/nested/Cargo.toml), as a source";
+    let mut failures = Vec::new();
+    for (label, rel, body) in [
+        (
+            "build.rs, one line",
+            "crates/tasty-a/build.rs",
+            "include!(\"nested/build.rs\");\n".to_string(),
+        ),
+        (
+            "build.rs, over three lines",
+            "crates/tasty-a/build.rs",
+            "include!(\n    \"nested/build.rs\"\n);\n".to_string(),
+        ),
+        (
+            "src/lib.rs, in a module",
+            "crates/tasty-a/src/lib.rs",
+            format!("{TASTY_A_LIB}mod m {{\n    include!(\"../nested/build.rs\");\n}}\n"),
+        ),
+    ] {
+        let f = PinFixture::tasty_moved_twice(
+            &[
+                (
+                    "crates/tasty-a/nested/Cargo.toml",
+                    "[package]\nname = \"nested\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                ),
+                ("crates/tasty-a/nested/build.rs", nested),
+                ("crates/outside.txt", "one\n"),
+                (rel, &body),
+            ],
+            &[("crates/outside.txt", "two\n")],
+        );
+        let (code, text) = f.check(&HEAD_RANGE);
+        if code != 2 || !text.contains(want) {
+            failures.push(format!(
+                "{label}: want exit 2 with {want:?}, got exit {code}:\n{text}"
+            ));
+        }
+    }
+    assert_cases(failures);
+}
+
 /// A build script of the crate itself, and `build = false`, take the usual path: the
 /// rerun-if-changed path is read from the crate and stops the check as outside it.
 #[test]

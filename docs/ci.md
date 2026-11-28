@@ -423,7 +423,8 @@ would leave that range unchecked.
   (`include_paths`). A crate that inherits from the root of its workspace is judged
   against the inherited sources of that root (`pin_root_inherited_changed`). A pinned
   crate whose `build` names a script next to the manifest of another package, or cannot
-  be read, is undecidable (`pin_check_build_script`). An
+  be read, is undecidable (`pin_check_build_script`), and so is one whose sources use such
+  a script through `include!` (`pin_check_included_build_scripts`). An
   update of a crates.io crate in `Cargo.lock` needs one too, unless the plugin is already
   above its version at the tip of `origin/main` (the local `main` only when there is no
   `origin/main`). `main` moves only for releases and hotfixes, so its tip is the baseline.
