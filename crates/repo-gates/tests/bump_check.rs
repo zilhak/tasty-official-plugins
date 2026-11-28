@@ -1779,6 +1779,92 @@ fn a_text_include_path_that_goes_up_from_a_link_is_undecidable() {
     );
 }
 
+/// A link below another link has no entry of its own in the tree, so a .. step after it
+/// cannot be told from one after a directory: a .. step that leaves anything but a
+/// directory of the tree is undecidable. Here the file read is src/d/e/help.md, while the
+/// folded path names src/a/help.md.
+#[test]
+fn an_include_path_that_goes_up_from_a_link_below_a_link_is_undecidable() {
+    let f = PinFixture::tasty_moved_twice_with_links(
+        &[
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!("pub const H: &str = include_str!(\"a/l2/../help.md\");\n{TASTY_B_FN}"),
+            ),
+            ("crates/tasty-b/src/d/help.md", "a\n"),
+            ("crates/tasty-b/src/d/e/help.md", "a\n"),
+            ("crates/tasty-b/src/d/e/f/keep", "keep\n"),
+        ],
+        &[
+            ("crates/tasty-b/src/a", "d"),
+            ("crates/tasty-b/src/d/l2", "e/f"),
+        ],
+        &[("crates/tasty-b/src/d/e/help.md", "b\n")],
+    );
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "crates/tasty-b/src/lib.rs reads crates/tasty-b/src/a/l2/../help.md, a path that goes up \
+         from crates/tasty-b/src/a/l2, which is no directory of the tree",
+    );
+}
+
+/// The target of a link is folded as written too, so a .. step in it right after a link is
+/// undecidable: alias.inc opens dirlink/../gen/build.rs, which is nested/gen/build.rs, the
+/// build script of another package, not gen/build.rs.
+#[test]
+fn a_link_target_that_goes_up_from_a_link_is_undecidable() {
+    let f = PinFixture::tasty_moved_twice_with_links(
+        &[
+            ("crates/tasty-b/build.rs", "include!(\"alias.inc\");\n"),
+            ("crates/tasty-b/nested/level/keep", "keep\n"),
+            (
+                "crates/tasty-b/nested/gen/Cargo.toml",
+                "[package]\nname = \"gen\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "crates/tasty-b/nested/gen/build.rs",
+                "fn main() {\n    println!(\"cargo:rerun-if-changed=../outside.txt\");\n}\n",
+            ),
+            ("crates/outside.txt", "one\n"),
+        ],
+        &[
+            ("crates/tasty-b/alias.inc", "dirlink/../gen/build.rs"),
+            ("crates/tasty-b/dirlink", "nested/level"),
+        ],
+        &[("crates/outside.txt", "two\n")],
+    );
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "crates/tasty-b/alias.inc reads crates/tasty-b/dirlink/../gen/build.rs, a path that goes \
+         up from the link crates/tasty-b/dirlink",
+    );
+}
+
+/// A .. step that leaves a directory of the tree, with no link on the way, is folded as
+/// before: the file is in the crate and its change is a change of the crate.
+#[test]
+fn an_include_path_that_goes_up_from_a_directory_is_compared() {
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            ("crates/tasty-b/src/sub/keep", "keep\n"),
+            ("crates/tasty-b/src/data.txt", "one\n"),
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!("pub const H: &str = include_str!(\"sub/../data.txt\");\n{TASTY_B_FN}"),
+            ),
+        ],
+        &[("crates/tasty-b/src/data.txt", "two\n")],
+    );
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.contains("changed: crates/tasty-b/src/data.txt")),
+        "{text}"
+    );
+}
+
 /// A directory that a .. step leaves and that git cannot look up is undecidable, not taken
 /// as no link. Only the lookup of that directory fails here.
 #[test]

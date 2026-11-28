@@ -535,9 +535,12 @@ norm_path() {
 }
 
 # Stops as undecidable when the path <path> of <src> at <commit>, joined as written, has a ..
-# step right after a link: the system goes up from the target of the link, while norm_path
-# drops the link. Each directory that a .. step leaves is looked up as a tree entry; a
-# lookup that fails stops the check too. A path without a .. step is not looked up.
+# step that does not leave a directory of the tree: the system goes up from the target of
+# a link, while norm_path drops the link. Each directory that a .. step leaves is looked up
+# as a tree entry and must be a directory (mode 040000). A link stops the check, and so
+# does a path that git has no entry for, because a path below a link has none; rustc finds
+# no file through a directory that does not exist either. A lookup that fails stops the
+# check too. A path without a .. step is not looked up.
 check_link_steps() {  # <src> <commit> <path> <file>
     local part up="" rest rc
     case "/$3/" in */../*) ;; *) return 0 ;; esac
@@ -553,6 +556,9 @@ check_link_steps() {  # <src> <commit> <path> <file>
                 [ "$rc" -le 1 ] || die "cannot read the tree entry of $up at ${2:0:8} in $1."
                 if [ "$rc" = 0 ] && [ "$TREE_MODE" = 120000 ]; then
                     die "$4 reads $3, a path that goes up from the link $up; judge the plugin versions by hand."
+                fi
+                if [ "$rc" = 1 ] || [ "$TREE_MODE" != 040000 ]; then
+                    die "$4 reads $3, a path that goes up from $up, which is no directory of the tree at ${2:0:8}; judge the plugin versions by hand."
                 fi
                 case "$up" in */*) up=${up%/*} ;; *) up="" ;; esac ;;
             *) up=${up:+$up/}$part ;;
@@ -903,7 +909,9 @@ open_tree_file() {  # <src> <commit> <path> <out>
                 hops=$((hops + 1))
                 [ "$hops" -le 8 ] || die "$3 at ${2:0:8} goes through more than 8 links; judge the plugin versions by hand."
                 t=$(xgit -C "$1" cat-file blob "$TREE_OID") || die "cannot read the link $p at ${2:0:8} in $1."
-                case "$t" in /*) up="" ;; *) up=$(norm_path "$(dirname "$p")/$t") ;; esac
+                # The target is folded as written, so it goes through the link step check.
+                case "$t" in /*) up="" ;; *) check_link_steps "$1" "$2" "$(dirname "$p")/$t" "$3"
+                    up=$(norm_path "$(dirname "$p")/$t") ;; esac
                 [ -n "$up" ] || die "$3 at ${2:0:8} is a link that leaves the repository ($p -> $t); judge the plugin versions by hand."
                 p=$up ;;
             *) die "$3 at ${2:0:8} is not a file ($p is a $TREE_TYPE, mode $TREE_MODE); judge the plugin versions by hand." ;;
