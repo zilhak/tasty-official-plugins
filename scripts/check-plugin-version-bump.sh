@@ -1300,7 +1300,8 @@ include_paths() {  # <root> <src> <commit>
     : > "$rec" || die "cannot write the work directory."
     [ "${#rs[@]}" -gt 0 ] || return 0
     rust_records "$2" "$3" "$root" "$rec" 0 "${rs[@]}"
-    bad=$(awk -F '\t' '$1 == "bad" && $4 == 0 { print $3 " line " $5 " (" $6 ")"; exit }' "$rec")
+    bad=$(awk -F '\t' '$1 == "bad" && $4 == 0 { print $3 " line " $5 " (" $6 ")"; exit }' "$rec") \
+        || die "cannot look for the include paths that cannot be read in $root."
     [ -z "$bad" ] || die "cannot read the path of an include in $bad; judge the plugin versions by hand."
     awk -F '\t' '
         $1 != "lit" || $4 != 0 || ($2 != "include_str" && $2 != "include_bytes") { next }

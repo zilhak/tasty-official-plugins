@@ -3395,6 +3395,44 @@ fn an_include_path_that_cannot_be_decoded_is_undecidable() {
     assert_cases(failures);
 }
 
+/// The shipped sources are searched by awk for a path that cannot be decoded; when that awk
+/// fails, the check stops instead of reading as no such path. Only that awk fails here.
+#[test]
+fn a_search_for_undecodable_include_paths_that_fails_is_undecidable() {
+    const MARK: &str = "zz-bad-record-search-died-here";
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            ("crates/tasty-b/src/help.md", "one\n"),
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!("pub const H: &str = include_str!(\"he\\u{{e9}}lp.md\");\n{TASTY_B_FN}"),
+            ),
+        ],
+        &[("crates/tasty-b/src/help.md", "two\n")],
+    );
+    let stub = tempfile::tempdir().expect("stub dir");
+    support::write_executable(
+        &stub.path().join("awk"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'$1 == \"bad\" && $4 == 0'*) echo {MARK} >&2; exit 68 ;; esac\nexec \"{real}\" \"$@\"\n",
+            real = real_tool("awk")
+        ),
+    )
+    .expect("write the stub");
+    let mut cmd = f.command(false);
+    cmd.env("PATH", path_with(stub.path()));
+    let (code, text) = run(cmd, &HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("cannot look for the include paths that cannot be read in "),
+        "{text}"
+    );
+    assert!(
+        text.contains(MARK),
+        "the stand-in did not fail the search:\n{text}"
+    );
+}
+
 /// A call in a doc attribute is left out before its path is read, so one that cannot be
 /// decoded does not stop the check.
 #[test]
