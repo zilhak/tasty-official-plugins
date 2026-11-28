@@ -917,8 +917,9 @@ open_tree_file() {  # <src> <commit> <path> <out>
 # the first token of its arguments is a plain or raw string, "bad <kind> <file> <doc>
 # <line> <reason> <path with ? for what is not decoded>" when that string cannot be
 # decoded to one line, and "arg <kind> <file> <doc> <line> <arguments as written>"
-# otherwise; and "str rerun <file> <doc> <line> <start> <end> <text>" for each plain or raw
-# string whose text holds rerun-if-changed=. <file> is RS_NAME, <line> the line of the macro
+# otherwise; and "str rerun <file> <doc> <line> <start> <end> <text>" for each line of the
+# text of a plain or raw string that holds rerun-if-changed= (a line break, written or
+# escaped, ends a line; a tab or a byte that is not decoded reads as ?). <file> is RS_NAME, <line> the line of the macro
 # name (of the string for str), <doc> 1 inside a doc attribute (#[doc = ...] or
 # #![doc = ...], to the bracket that closes it), and the columns those of the literal with
 # its prefix and quotes, in bytes.
@@ -976,11 +977,13 @@ function hexval(h,    i, c, d, n) {
     return n
 }
 function addc(n) {
-    if (n == 0 || n == 9 || n == 10 || n == 13) { SB = "a control character in the path"; SV = SV "?"; return }
-    SV = SV sprintf("%c", n)
+    if (n == 0 || n == 9 || n == 10 || n == 13) {
+        SB = "a control character in the path"; SV = SV "?"; SD = SD ((n == 10 || n == 13) ? "\n" : "?"); return
+    }
+    SV = SV sprintf("%c", n); SD = SD sprintf("%c", n)
 }
 function plain(sl, sc, kind,    c, e, h) {
-    SV = ""; SB = ""; adv()
+    SV = ""; SB = ""; SD = ""; adv()
     while (ln <= N) {
         c = cur()
         if (c == "\"") { adv(); return lit(kind, sl, sc) }
@@ -993,11 +996,11 @@ function plain(sl, sc, kind,    c, e, h) {
                 while (ln <= N && (cur() == " " || cur() == "\t" || cur() == "\n" || cur() == "\r")) adv()
                 continue
             }
-            if (e == "\\" || e == "\"" || e == "\047") { SV = SV e; adv(); continue }
+            if (e == "\\" || e == "\"" || e == "\047") { SV = SV e; SD = SD e; adv(); continue }
             if (e == "x") {
                 adv(); h = cur(); adv(); h = h cur(); adv()
                 e = hexval(h)
-                if (e < 0 || e > 127) { SB = "the escape \\x" h; SV = SV "?" } else addc(e)
+                if (e < 0 || e > 127) { SB = "the escape \\x" h; SV = SV "?"; SD = SD "?" } else addc(e)
                 continue
             }
             if (e == "u") {
@@ -1008,18 +1011,20 @@ function plain(sl, sc, kind,    c, e, h) {
                     if (cur() == "}") adv()
                 }
                 e = hexval(h)
-                if (e < 0 || e > 127) { SB = "the escape \\u{" h "}"; SV = SV "?" } else addc(e)
+                if (e < 0 || e > 127) { SB = "the escape \\u{" h "}"; SV = SV "?"; SD = SD "?" } else addc(e)
                 continue
             }
-            SB = "the escape \\" e; SV = SV "?"; adv(); continue
+            SB = "the escape \\" e; SV = SV "?"; SD = SD ((e == "n" || e == "r") ? "\n" : "?"); adv(); continue
         }
-        if (c == "\n" || c == "\t" || c == "\r") { SB = "a line break or a tab in the path"; SV = SV "?"; adv(); continue }
-        SV = SV c; adv()
+        if (c == "\n" || c == "\t" || c == "\r") {
+            SB = "a line break or a tab in the path"; SV = SV "?"; SD = SD (c == "\t" ? "?" : "\n"); adv(); continue
+        }
+        SV = SV c; SD = SD c; adv()
     }
     return 0
 }
 function raw(sl, sc, h, kind,    c, j) {
-    SV = ""; SB = ""; advn(h + 1)
+    SV = ""; SB = ""; SD = ""; advn(h + 1)
     while (ln <= N) {
         c = cur()
         if (c == "\"") {
@@ -1027,6 +1032,7 @@ function raw(sl, sc, h, kind,    c, j) {
             while (j < h && peek(j + 1) == "#") j++
             if (j == h) { advn(h + 1); return lit(kind, sl, sc) }
         }
+        SD = SD ((c == "\n" || c == "\r") ? "\n" : (c == "\t") ? "?" : c)
         if (c == "\n" || c == "\t" || c == "\r") { SB = "a line break or a tab in the path"; c = "?" }
         SV = SV c; adv()
     }
@@ -1072,11 +1078,17 @@ function span(l1, c1, l2, c2,    s, i) {
 function out(type, kind, doc, line, rest) {
     print type "\t" kind "\t" NAME "\t" (doc + 0) "\t" line "\t" rest
 }
-function tok(t, x, sl, sc,    open) {
+function tok(t, x, sl, sc,    open, nd, i) {
     # A string that names rerun-if-changed= is a build directive for the outside input check,
-    # read within its own quotes.
-    if (t == "s" && (SK == "plain" || SK == "raw") && index(SV, "rerun-if-changed="))
-        out("str", "rerun", INDOC, sl, sl ":" sc "\t" SEL ":" SEC "\t" SV)
+    # read within its own quotes. Cargo reads a build script line by line, so each line of
+    # the string text (SD: line breaks kept, a tab or a byte that is not decoded as ?) that
+    # names it is a directive of its own.
+    if (t == "s" && (SK == "plain" || SK == "raw") && index(SD, "rerun-if-changed=")) {
+        nd = split(SD, DL, "\n")
+        for (i = 1; i <= nd; i++)
+            if (index(DL[i], "rerun-if-changed="))
+                out("str", "rerun", INDOC, sl, sl ":" sc "\t" SEL ":" SEC "\t" DL[i])
+    }
     if (CS == 3) {
         if (t == "s" && (SK == "plain" || SK == "raw")) {
             if (SB != "") out("bad", CK, CD, CL, SB "\t" SV)

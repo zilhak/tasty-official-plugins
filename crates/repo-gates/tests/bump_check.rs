@@ -1871,6 +1871,54 @@ fn a_comment_before_a_build_directive_is_not_read_as_its_path() {
     );
 }
 
+/// Cargo reads a build script line by line, so a string that holds two directives on two
+/// lines (an escaped line break, an escaped byte 0x0a or a raw string over two lines) names
+/// the path of each. Two directives on one line are one path, which stays in the crate.
+#[test]
+fn each_line_of_a_build_directive_string_is_read() {
+    let want = "tasty-b reads crates/outside.txt outside its crate (crates/tasty-b/build.rs)";
+    let mut failures = Vec::new();
+    for (label, call, code_want) in [
+        (
+            "escaped line break",
+            r#"println!("cargo:rerun-if-changed=inside\"\ncargo:rerun-if-changed=../outside.txt");"#,
+            2,
+        ),
+        (
+            "escaped byte",
+            r#"println!("cargo:rerun-if-changed=inside\x0acargo:rerun-if-changed=../outside.txt");"#,
+            2,
+        ),
+        (
+            "raw string",
+            "println!(r\"cargo:rerun-if-changed=inside\ncargo:rerun-if-changed=../outside.txt\");",
+            2,
+        ),
+        (
+            "one line",
+            r#"println!("cargo:rerun-if-changed=inside rerun-if-changed=../outside.txt");"#,
+            0,
+        ),
+    ] {
+        let build = format!("fn main() {{\n    {call}\n}}\n");
+        let f = PinFixture::tasty_moved_twice(
+            &[
+                ("crates/outside.txt", "one\n"),
+                ("crates/tasty-b/build.rs", &build),
+            ],
+            &[("crates/outside.txt", "two\n")],
+        );
+        let (code, text) = f.check(&HEAD_RANGE);
+        let ok = code == code_want && (code_want != 2 || text.contains(want));
+        if !ok {
+            failures.push(format!(
+                "{label}: want exit {code_want}, got exit {code}:\n{text}"
+            ));
+        }
+    }
+    assert_cases(failures);
+}
+
 /// A path continued on the next line still climbs out of the crate, after a LF line end and
 /// after a CR LF one.
 #[test]
