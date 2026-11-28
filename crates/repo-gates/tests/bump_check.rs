@@ -1818,6 +1818,43 @@ fn a_link_step_lookup_that_fails_is_undecidable() {
     );
 }
 
+/// The list of include paths with a .. step comes from awk; when awk fails, the check stops
+/// instead of reading the list as empty and skipping the link steps. Only the awk that
+/// makes that list fails here.
+#[test]
+fn an_include_path_list_that_cannot_be_made_is_undecidable() {
+    const MARK: &str = "zz-link-step-list-died-here";
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            ("crates/tasty-b/src/sub/keep", "keep\n"),
+            ("crates/tasty-b/src/help.txt", "one\n"),
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!("pub const H: &str = include_str!(\"sub/../help.txt\");\n{TASTY_B_FN}"),
+            ),
+        ],
+        &[("crates/tasty-b/src/help.txt", "two\n")],
+    );
+    let stub = tempfile::tempdir().expect("stub dir");
+    support::write_executable(
+        &stub.path().join("awk"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'index($8, \"..\")'*) echo {MARK} >&2; exit 68 ;; esac\nexec \"{real}\" \"$@\"\n",
+            real = real_tool("awk")
+        ),
+    )
+    .expect("write the stub");
+    let mut cmd = f.command(false);
+    cmd.env("PATH", path_with(stub.path()));
+    let (code, text) = run(cmd, &HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("cannot list the include paths of "), "{text}");
+    assert!(
+        text.contains(MARK),
+        "the stand-in did not fail the list:\n{text}"
+    );
+}
+
 /// The build script of a nested package opened under another name, through a link, is still
 /// that build script.
 #[test]

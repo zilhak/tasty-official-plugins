@@ -1192,17 +1192,22 @@ rust_records() {  # <src> <commit> <root> <out> <path>...
             || die "cannot read the Rust tokens of $f at ${c:0:8}."
         cat "$out.one" >> "$out" || die "cannot write the work directory."
         # Every literal path with a .. step, of any include kind, is checked here once, before
-        # a caller folds it.
+        # a caller folds it. The list is a file, so an awk that fails stops the check instead
+        # of reading as no such path.
+        awk -F '\t' '$1 == "lit" && index($8, "..") && substr($8, 1, 1) != "/" { print $8 "\t" $3 }' \
+            "$out.one" > "$out.steps" || die "cannot list the include paths of $f at ${c:0:8}."
         while IFS="$tab" read -r p q; do
             check_link_steps "$src" "$c" "$(dirname "$q")/$p" "$q"
-        done < <(awk -F '\t' '$1 == "lit" && index($8, "..") && substr($8, 1, 1) != "/" { print $8 "\t" $3 }' "$out.one")
+        done < "$out.steps"
+        awk -F '\t' '$1 == "lit" && $2 == "include" && $4 == 0 { print $8 }' "$out.one" > "$out.next" \
+            || die "cannot list the include! paths of $f at ${c:0:8}."
         while IFS= read -r p; do
             case "$p" in ""|/*) continue ;; esac
             q=$(norm_path "$(dirname "$f")/$p")
             [ -n "$q" ] || continue
             case "$seen" in *"$nl$q$nl"*) continue ;; esac
             seen="$seen$q$nl"; queue+=("$q")
-        done < <(awk -F '\t' '$1 == "lit" && $2 == "include" && $4 == 0 { print $8 }' "$out.one")
+        done < "$out.next"
     done
 }
 
