@@ -619,7 +619,9 @@ pin_check_outside_inputs() {  # <src> <commit> <dir> <name>
         if grep -qE '^[[:space:]]*//' <<<"$content"; then continue; fi
         # A quoted file name cannot be split from the line or resolved.
         case "$rest" in '"'*) die "$name has a file $file that may read outside its crate, but $QUOTED_NOTE." ;; esac
-        masked=$(mask_literals "$CRATE_RECORDS" "$file" "$lno" "$content")
+        # A line that cannot be blanked would read as empty and drop its candidates.
+        masked=$(mask_literals "$CRATE_RECORDS" "$file" "$lno" "$content") \
+            || die "cannot blank the literals of $file line $lno at ${c:0:8}."
         while IFS= read -r cand; do
             [ -n "$cand" ] && outside_text_path "$src" "$c" "$dir" "$name" "$file" "$cand"
         done <<EOF3

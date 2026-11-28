@@ -1610,6 +1610,44 @@ fn an_outside_path_in_a_raw_string_concat_still_stops_the_check() {
     );
 }
 
+/// Before the text search the string literals are blanked out of the line by awk; when that
+/// awk fails, the check stops instead of searching an empty line and losing the candidate
+/// above. Only the awk that blanks the literals fails here.
+#[test]
+fn a_line_whose_literals_cannot_be_blanked_is_undecidable() {
+    const MARK: &str = "zz-blank-literals-died-here";
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            ("other/x.txt", "one\n"),
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!(
+                    "pub const S: &str = r#\"include_str!(concat!(\"../../../other/\", \"x.txt\"))\"#;\n{TASTY_B_FN}"
+                ),
+            ),
+        ],
+        &[("other/x.txt", "two\n")],
+    );
+    let stub = tempfile::tempdir().expect("stub dir");
+    support::write_executable(
+        &stub.path().join("awk"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'($1 == \"lit\" || $1 == \"str\") && $3'*) echo {MARK} >&2; exit 68 ;; esac\nexec \"{real}\" \"$@\"\n",
+            real = real_tool("awk")
+        ),
+    )
+    .expect("write the stub");
+    let mut cmd = f.command(false);
+    cmd.env("PATH", path_with(stub.path()));
+    let (code, text) = run(cmd, &HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("cannot blank the literals of "), "{text}");
+    assert!(
+        text.contains(MARK),
+        "the stand-in did not fail the blanking:\n{text}"
+    );
+}
+
 #[test]
 fn an_escaped_outside_path_is_undecidable() {
     outside_cases(
