@@ -1780,9 +1780,9 @@ fn a_text_include_path_that_goes_up_from_a_link_is_undecidable() {
 }
 
 /// A link below another link has no entry of its own in the tree, so a .. step after it
-/// cannot be told from one after a directory: a .. step that leaves anything but a
-/// directory of the tree is undecidable. Here the file read is src/d/e/help.md, while the
-/// folded path names src/a/help.md.
+/// cannot be told from one after a directory: a .. step that leaves a path without an
+/// entry is undecidable when the nearest entry above it is a link. Here the file read is
+/// src/d/e/help.md, while the folded path names src/a/help.md.
 #[test]
 fn an_include_path_that_goes_up_from_a_link_below_a_link_is_undecidable() {
     let f = PinFixture::tasty_moved_twice_with_links(
@@ -1804,7 +1804,7 @@ fn an_include_path_that_goes_up_from_a_link_below_a_link_is_undecidable() {
     assert_undecidable_with(
         &f.check(&HEAD_RANGE),
         "crates/tasty-b/src/lib.rs reads crates/tasty-b/src/a/l2/../help.md, a path that goes up \
-         from crates/tasty-b/src/a/l2, which is no directory of the tree",
+         from crates/tasty-b/src/a/l2, which is below the link crates/tasty-b/src/a",
     );
 }
 
@@ -1905,6 +1905,36 @@ fn a_doc_include_through_a_link_stops_only_where_doc_attributes_are_read() {
         }
     }
     assert_cases(failures);
+}
+
+/// A directory that the build makes has no entry in the tree. With a directory of the
+/// tree as the nearest entry above it, no link is on the way, and a .. step after it is
+/// folded as written: src/dir/../help.md is src/help.md, whose change is a change of the
+/// crate.
+#[test]
+fn an_include_path_that_goes_up_from_a_directory_the_build_makes_is_compared() {
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            (
+                "crates/tasty-b/build.rs",
+                "fn main() {\n    std::fs::create_dir_all(\"src/dir\").unwrap();\n}\n",
+            ),
+            ("crates/tasty-b/src/help.md", "one\n"),
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!("pub const H: &str = include_str!(\"dir/../help.md\");\n{TASTY_B_FN}"),
+            ),
+        ],
+        &[("crates/tasty-b/src/help.md", "two\n")],
+    );
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.contains("changed: crates/tasty-b/src/help.md")),
+        "{text}"
+    );
 }
 
 /// A directory that a .. step leaves and that git cannot look up is undecidable, not taken

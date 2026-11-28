@@ -535,14 +535,15 @@ norm_path() {
 }
 
 # Stops as undecidable when the path <path> of <src> at <commit>, joined as written, has a ..
-# step that does not leave a directory of the tree: the system goes up from the target of
-# a link, while norm_path drops the link. Each directory that a .. step leaves is looked up
-# as a tree entry and must be a directory (mode 040000). A link stops the check, and so
-# does a path that git has no entry for, because a path below a link has none; rustc finds
-# no file through a directory that does not exist either. A lookup that fails stops the
-# check too. A path without a .. step is not looked up.
+# step that may go up from a link: the system goes up from the target of a link, while
+# norm_path drops the link. Each directory that a .. step leaves is looked up as a tree
+# entry. A directory (mode 040000) passes, a link or any other entry stops the check. A
+# path that git has no entry for passes when the nearest entry above it is a directory (a
+# directory that the build makes, folded as written), and stops when that entry is a link
+# or another entry, because a path below a link has no entry of its own. A lookup that
+# fails stops the check too. A path without a .. step is not looked up.
 check_link_steps() {  # <src> <commit> <path> <file>
-    local part up="" rest rc
+    local part up="" rest rc a
     case "/$3/" in */../*) ;; *) return 0 ;; esac
     rest=$3
     while [ -n "$rest" ]; do
@@ -557,7 +558,19 @@ check_link_steps() {  # <src> <commit> <path> <file>
                 if [ "$rc" = 0 ] && [ "$TREE_MODE" = 120000 ]; then
                     die "$4 reads $3, a path that goes up from the link $up; judge the plugin versions by hand."
                 fi
-                if [ "$rc" = 1 ] || [ "$TREE_MODE" != 040000 ]; then
+                if [ "$rc" = 1 ]; then
+                    a=$up
+                    while [ "${a%/*}" != "$a" ]; do
+                        a=${a%/*}
+                        rc=0; tree_entry "$1" "$2" "$a" || rc=$?
+                        [ "$rc" -le 1 ] || die "cannot read the tree entry of $a at ${2:0:8} in $1."
+                        [ "$rc" = 1 ] && continue
+                        [ "$TREE_MODE" = 040000 ] && break
+                        [ "$TREE_MODE" = 120000 ] \
+                            && die "$4 reads $3, a path that goes up from $up, which is below the link $a; judge the plugin versions by hand."
+                        die "$4 reads $3, a path that goes up from $up, which is below $a (mode $TREE_MODE) at ${2:0:8}; judge the plugin versions by hand."
+                    done
+                elif [ "$TREE_MODE" != 040000 ]; then
                     die "$4 reads $3, a path that goes up from $up, which is no directory of the tree at ${2:0:8}; judge the plugin versions by hand."
                 fi
                 case "$up" in */*) up=${up%/*} ;; *) up="" ;; esac ;;
