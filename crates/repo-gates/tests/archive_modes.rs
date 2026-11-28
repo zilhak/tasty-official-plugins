@@ -4,7 +4,8 @@
 //! rules. The checks run the functions of scripts/lib/archive-modes.sh with a fake tar and
 //! on hand-made USTAR bytes, scripts/package-plugin.sh pack on hand-made stages with the
 //! real tar, and the stage step of a copy of the packaging with a stub scripts/check.sh in
-//! place of cargo. Names and ids in the test data are made up.
+//! place of cargo. The two lists pack writes go through scripts/release-check.sh sums and
+//! rows as the publish job runs them. Names and ids in the test data are made up.
 
 #![cfg(unix)]
 
@@ -1529,6 +1530,68 @@ fn manifest_version() -> String {
         .and_then(|v| v.strip_suffix('"'))
         .expect("manifest version")
         .to_owned()
+}
+
+/// Runs scripts/release-check.sh with <args> and the context the publish job gives.
+fn release_check(args: &[&str]) -> Output {
+    Command::new("bash")
+        .arg(support::repo_file("scripts/release-check.sh"))
+        .args(args)
+        .arg("publish")
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("run scripts/release-check.sh")
+}
+
+/// T2-c: the publish job reads the two lists of pack with release-check.sh sums and rows
+/// (.github/workflows/release.yml), so the lists pack writes pass those checks in that
+/// order, and the same rows call refuses a copy of the TSV with another first line.
+#[test]
+fn pack_writes_lists_that_the_release_checks_take() {
+    let s = Stage::new("linux-x64", &claude_manifest(), EXE, &[]);
+    let out = s.pack(None, "022");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let dist = s.dist();
+    let sums = release_check(&[
+        "sums",
+        &dist.join("SHA256SUMS-linux-x64.txt").to_string_lossy(),
+    ]);
+    assert!(sums.status.success(), "sums: {}", stderr(&sums));
+    let pairs = s.out.path().join("sums-linux-x64.txt");
+    fs::write(&pairs, &sums.stdout).expect("write pairs");
+    let rows = |tsv: &Path| {
+        release_check(&[
+            "rows",
+            &tsv.to_string_lossy(),
+            &pairs.to_string_lossy(),
+            "linux-x64",
+        ])
+    };
+
+    let tsv = dist.join("plugins-linux-x64.tsv");
+    let out = rows(&tsv);
+    assert!(out.status.success(), "rows: {}", stderr(&out));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("{ID} {}\n", manifest_version())
+    );
+
+    let body = fs::read(&tsv).expect("read TSV");
+    let lf = body
+        .iter()
+        .position(|&b| b == b'\n')
+        .expect("a line break after the header line");
+    let mut junk = b"junk".to_vec();
+    junk.extend_from_slice(&body[lf..]);
+    let copy = s.out.path().join("junk-header.tsv");
+    fs::write(&copy, junk).expect("write TSV copy");
+    let out = rows(&copy);
+    assert_eq!(out.status.code(), Some(1), "rows: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("line 1 is not the header line"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 /// A tar wrapper that answers --version with $FAKE_VERSION, logs a -czf call with its
