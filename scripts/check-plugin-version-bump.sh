@@ -534,6 +534,32 @@ norm_path() {
     }'
 }
 
+# Stops as undecidable when the path <path> of <src> at <commit>, joined as written, has a ..
+# step right after a link: the system goes up from the target of the link, while norm_path
+# drops the link. Each directory that a .. step leaves is looked up as a tree entry; a
+# lookup that fails stops the check too. A path without a .. step is not looked up.
+check_link_steps() {  # <src> <commit> <path> <file>
+    local part up="" rest rc
+    case "/$3/" in */../*) ;; *) return 0 ;; esac
+    rest=$3
+    while [ -n "$rest" ]; do
+        part=${rest%%/*}
+        if [ "$part" = "$rest" ]; then rest=""; else rest=${rest#*/}; fi
+        case "$part" in
+            ""|.) ;;
+            ..)
+                [ -n "$up" ] || return 0
+                rc=0; tree_entry "$1" "$2" "$up" || rc=$?
+                [ "$rc" -le 1 ] || die "cannot read the tree entry of $up at ${2:0:8} in $1."
+                if [ "$rc" = 0 ] && [ "$TREE_MODE" = 120000 ]; then
+                    die "$4 reads $3, a path that goes up from the link $up; judge the plugin versions by hand."
+                fi
+                case "$up" in */*) up=${up%/*} ;; *) up="" ;; esac ;;
+            *) up=${up:+$up/}$part ;;
+        esac
+    done
+}
+
 # The repository path of <rel> inside the crate directory <dir>. A crate at the root of its
 # repository has the directory "." and no prefix: git cannot read <commit>:./path.
 repo_path() {  # <dir> <rel>
@@ -589,6 +615,7 @@ EOF2
             lit)
                 # a is the start column, p the end column, partial the decoded path.
                 case "/$partial/" in */../*) ;; *) continue ;; esac
+                check_link_steps "$src" "$c" "$(dirname "$f")/$partial" "$name ($f)"
                 outside_resolved "$dir" "$name" "$f" "$partial" "$(norm_path "$(dirname "$f")/$partial")" ;;
             str)
                 # A build directive string, as decoded; partial is its text.
@@ -728,8 +755,9 @@ pin_check_build_script() {  # <src> <commit> <dir> <name>
 # crate_rust_records, with the files that their include! calls open) uses the build.rs next
 # to the manifest of another package through include!: Cargo reads the paths of a build
 # script from the package that runs it, the crate judged, but pin_check_outside_inputs reads
-# them from that other package. An include! path that cannot be decoded and ends in build.rs
-# stops it too. A #[path] attribute is not read.
+# them from that other package. A file that include! opens through a link is judged by its
+# target, so another name does not hide such a script. An include! path that cannot be
+# decoded and ends in build.rs stops it too. A #[path] attribute is not read.
 pin_check_included_build_scripts() {  # <src> <commit> <dir> <name>
     local tab t kind f l a b p q fdir
     tab=$(printf '\t')
@@ -737,7 +765,12 @@ pin_check_included_build_scripts() {  # <src> <commit> <dir> <name>
     while IFS="$tab" read -r t kind f _ l a b p; do
         [ "$kind" = include ] || continue
         case "$t" in
-            lit) q=$p ;;
+            lit)
+                case "$p" in ""|/*) continue ;; esac
+                check_link_steps "$1" "$2" "$(dirname "$f")/$p" "$4 ($f)"
+                q=$(norm_path "$(dirname "$f")/$p") ;;
+            # A file opened through a link is judged by what it is, not by its name.
+            open) q=$a ;;
             bad)
                 case "$b" in
                     build.rs|*/build.rs) die "$4 includes a file in $f line $l whose path cannot be read ($a) and may be the build script of another package; judge the plugin versions by hand." ;;
@@ -745,8 +778,6 @@ pin_check_included_build_scripts() {  # <src> <commit> <dir> <name>
                 continue ;;
             *) continue ;;
         esac
-        case "$q" in ""|/*) continue ;; esac
-        q=$(norm_path "$(dirname "$f")/$q")
         case "$q" in build.rs|*/build.rs) ;; *) continue ;; esac
         fdir=$(dirname "$q")
         [ "$fdir" != "$3" ] || continue
@@ -864,6 +895,7 @@ open_tree_file() {  # <src> <commit> <path> <out>
         case "$TREE_MODE" in
             100644|100755)
                 xgit -C "$1" cat-file blob "$TREE_OID" > "$4" || die "cannot read $p at ${2:0:8} in $1."
+                OPEN_TREE_PATH=$p
                 return 0 ;;
             120000)
                 hops=$((hops + 1))
@@ -1114,8 +1146,10 @@ END { NAME = ENVIRON["RS_NAME"]; scan() }
 # records to <out>. A file is read from <root>/<path> when <root> is given and holds it as
 # a regular file, otherwise from git: a <path> as git stores it, an included file through
 # open_tree_file. An include! path that is absolute or climbs above the repository root is
-# not followed, nor one that git has not got; each file is read once. The path of a call
-# in an included file is resolved from that file as include! names it (a link, not its target).
+# not followed, nor one that git has not got; each file is read once, and a path with a ..
+# step right after a link stops the check (check_link_steps). The path of a call in an
+# included file is resolved from that file as include! names it (a link, not its target); a
+# file read through a link adds the record "open include <name> 0 0 <target>".
 rust_records() {  # <src> <commit> <root> <out> <path>...
     local src="$1" c="$2" root="$3" out="$4" queue=() i=0 first f p q seen nl
     shift 4
@@ -1132,12 +1166,18 @@ rust_records() {  # <src> <commit> <root> <out> <path>...
             xgit -C "$src" show "$c:$f" > "$out.src" || die "cannot read $f at ${c:0:8} in $src."
         else
             open_tree_file "$src" "$c" "$f" "$out.src" || continue
+            # Through a link: the file read, for a caller that asks what was opened.
+            if [ "$OPEN_TREE_PATH" != "$f" ]; then
+                printf 'open\tinclude\t%s\t0\t0\t%s\n' "$f" "$OPEN_TREE_PATH" >> "$out" \
+                    || die "cannot write the work directory."
+            fi
         fi
         RS_NAME="$f" LC_ALL=C awk "$RUST_SCAN_AWK" "$out.src" > "$out.one" \
             || die "cannot read the Rust tokens of $f at ${c:0:8}."
         cat "$out.one" >> "$out" || die "cannot write the work directory."
         while IFS= read -r p; do
             case "$p" in ""|/*) continue ;; esac
+            check_link_steps "$src" "$c" "$(dirname "$f")/$p" "$f"
             q=$(norm_path "$(dirname "$f")/$p")
             [ -n "$q" ] || continue
             case "$seen" in *"$nl$q$nl"*) continue ;; esac
@@ -1150,7 +1190,7 @@ rust_records() {  # <src> <commit> <root> <out> <path>...
 # include or rerun-if-changed=, outside its tests, benches and examples (the files that pin_check_outside_inputs
 # reads), with the files their include! calls open, into the file CRATE_RECORDS. The result
 # of the last arguments is kept. Stops when git cannot list the files.
-CRATE_KEY=""; CRATE_SEQ=0; CRATE_RECORDS=""
+CRATE_KEY=""; CRATE_SEQ=0; CRATE_RECORDS=""; OPEN_TREE_PATH=""
 crate_rust_records() {  # <src> <commit> <dir>
     local f rs=() rc=0
     [ "$CRATE_KEY" = "$1 $2 $3" ] && return 0
@@ -1177,7 +1217,8 @@ crate_rust_records() {  # <src> <commit> <dir>
 # does a failure to list or search the files.
 # Paths built by macros are not read.
 include_paths() {  # <root> <src> <commit>
-    local root="$1" rec="$WORK/include-paths" rs=() f bad
+    local root="$1" rec="$WORK/include-paths" rs=() f p bad tab
+    tab=$(printf '\t')
     [ -d "$root" ] || return 0
     # A list that cannot be made stops the check: an empty list would read as no includes.
     # grep -l returns 1 for files without the word, which is no failure.
@@ -1194,6 +1235,9 @@ include_paths() {  # <root> <src> <commit>
     rust_records "$2" "$3" "$root" "$rec" "${rs[@]}"
     bad=$(awk -F '\t' '$1 == "bad" && $4 == 0 { print $3 " line " $5 " (" $6 ")"; exit }' "$rec")
     [ -z "$bad" ] || die "cannot read the path of an include in $bad; judge the plugin versions by hand."
+    while IFS="$tab" read -r f p; do
+        check_link_steps "$2" "$3" "$(dirname "$f")/$p" "$f"
+    done < <(awk -F '\t' '$1 == "lit" && $4 == 0 && ($2 == "include_str" || $2 == "include_bytes") && index($8, "..") { print $3 "\t" $8 }' "$rec")
     awk -F '\t' '
         $1 != "lit" || $4 != 0 || ($2 != "include_str" && $2 != "include_bytes") { next }
         {

@@ -1485,9 +1485,23 @@ fn a_pin_move_with_an_unlisted_outside_input_is_undecidable() {
 impl PinFixture {
     /// tasty with `files`, pinned; then `change` and another pin move.
     fn tasty_moved_twice(files: &[(&str, &str)], change: &[(&str, &str)]) -> PinFixture {
+        PinFixture::tasty_moved_twice_with_links(files, &[], change)
+    }
+
+    /// tasty_moved_twice with the links `(path, target)` added before the first pin move.
+    fn tasty_moved_twice_with_links(
+        files: &[(&str, &str)],
+        links: &[(&str, &str)],
+        change: &[(&str, &str)],
+    ) -> PinFixture {
         let f = PinFixture::new();
         for (rel, body) in files {
             f.tasty_write(rel, body);
+        }
+        for (rel, target) in links {
+            let path = f.tasty.join(rel);
+            fs::create_dir_all(path.parent().expect("a parent")).expect("create the parent");
+            std::os::unix::fs::symlink(target, &path).expect("link");
         }
         let t2 = f.tasty_commit("add the inputs");
         f.move_pin(&t2);
@@ -1714,6 +1728,59 @@ fn a_build_directive_after_another_string_and_a_comment_is_still_read() {
     assert_undecidable_with(
         &f.check(&HEAD_RANGE),
         "tasty-b reads crates/outside.txt outside its crate (crates/tasty-b/build.rs)",
+    );
+}
+
+/// rustc goes up from the target of a link, but the path is folded as written: a .. step
+/// right after a link is undecidable.
+#[test]
+fn an_include_path_that_goes_up_from_a_link_is_undecidable() {
+    let f = PinFixture::tasty_moved_twice_with_links(
+        &[
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!("include!(\"link/../body.inc\");\n{TASTY_B_FN}"),
+            ),
+            ("other/sub/keep", "keep\n"),
+            (
+                "other/body.inc",
+                "pub const H: &str = include_str!(\"help.md\");\n",
+            ),
+            ("other/help.md", "one\n"),
+        ],
+        &[("crates/tasty-b/src/link", "../../../other/sub")],
+        &[("other/help.md", "two\n")],
+    );
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "a path that goes up from the link crates/tasty-b/src/link",
+    );
+}
+
+/// The build script of a nested package opened under another name, through a link, is still
+/// that build script.
+#[test]
+fn a_nested_build_script_included_through_a_link_is_undecidable() {
+    let f = PinFixture::tasty_moved_twice_with_links(
+        &[
+            (
+                "crates/tasty-b/nested/Cargo.toml",
+                "[package]\nname = \"nested\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "crates/tasty-b/nested/build.rs",
+                "fn main() {\n    println!(\"cargo:rerun-if-changed=../outside.txt\");\n}\n",
+            ),
+            ("crates/tasty-b/build.rs", "include!(\"alias.inc\");\n"),
+            ("crates/outside.txt", "one\n"),
+        ],
+        &[("crates/tasty-b/alias.inc", "nested/build.rs")],
+        &[("crates/outside.txt", "two\n")],
+    );
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "tasty-b uses crates/tasty-b/nested/build.rs, the build script of another package \
+         (crates/tasty-b/nested/Cargo.toml), as a source",
     );
 }
 
