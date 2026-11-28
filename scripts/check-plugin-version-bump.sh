@@ -1389,15 +1389,26 @@ $bad"
     return 0
 }
 
-# Whether the manifest of <dir> inherits something other than lints from the workspace: a
-# key workspace = true, bare or quoted, outside the [lints] table (its name read as a TOML key).
+# Whether the manifest of <dir> inherits something other than lints from the workspace. The
+# manifest is read as TOML records (toml_lines_body with TOML_MULTI=1): a key whose last part
+# is workspace with the value true, or an inline table whose field workspace is true, outside
+# the lints table. A record that cannot be read counts as an inheritance, so that
+# pin_root_inherited_changed decides; text inside a string is no key.
 pin_inherits() {  # <src> <commit> <dir>
-    xgit -C "$1" show "$2:$(repo_path "$3" Cargo.toml)" | awk "$TOML_KEY_AWK"'
-        /^[[:space:]]*\[/ {
-            h = $0; sub(/^[[:space:]]*\[+/, "", h); sub(/\].*$/, "", h)
-            lints = (split_key(h, hp) >= 1 && hp[1] == "lints")
+    xgit -C "$1" show "$2:$(repo_path "$3" Cargo.toml)" | TOML_MULTI=1 toml_lines_body \
+        | awk -F '\t' "$TOML_KEY_AWK"'
+        $1 == "<unreadable>" { found = 1; next }
+        {
+            line = substr($0, length($1) + 2)
+            if (substr(line, 1, 8) == "<multi> ") line = substr(line, 9)
+            e = eq_at(line); if (!e) next
+            n = ($1 == "") ? 0 : split_key($1, sp)
+            m = split_key(substr(line, 1, e - 1), kp)
+            if ((n >= 1 ? sp[1] : kp[1]) == "lints") next
+            v = trim(substr(line, e + 1))
+            if (kp[m] == "workspace" && v == "true") found = 1
+            else if (substr(v, 1, 1) == "{") { w = field_value(v, "workspace"); if (w == "true" || w == "<bad>") found = 1 }
         }
-        !lints && /["\047]?workspace["\047]?[[:space:]]*=[[:space:]]*true/ { found = 1 }
         END { exit found ? 0 : 1 }'
 }
 

@@ -3007,6 +3007,34 @@ fn an_inheritance_written_with_a_quoted_workspace_key_is_judged() {
     }
 }
 
+/// The crate manifest is read as TOML records: a line inside a multi-line string that looks
+/// like a [lints] table opens no table.
+#[test]
+fn a_lints_header_inside_a_multi_line_string_does_not_hide_an_inheritance() {
+    let root = "\n[workspace.package]\nauthors = [\"one\"]\n";
+    let a = "description = \"\"\"\n[ \"lints\" ]\n\"\"\"\nauthors.workspace = true\n";
+    let f = PinFixture::inherited_move(root, a, "\"one\"", "\"two\"");
+    assert_inherited(&f.check(&HEAD_RANGE), a);
+}
+
+/// Text inside a string that reads like a workspace key inherits nothing.
+#[test]
+fn a_workspace_key_inside_a_string_is_no_inheritance() {
+    let root = "\n[workspace.package]\nauthors = [\"one\"]\n";
+    let mut failures = Vec::new();
+    for a in [
+        "description = \"authors.workspace = true\"\n",
+        "description = \"\"\"\nauthors.workspace = true\n\"\"\"\n",
+    ] {
+        let f = PinFixture::inherited_move(root, a, "\"one\"", "\"two\"");
+        let (code, text) = f.check(&HEAD_RANGE);
+        if code != 0 {
+            failures.push(format!("{a:?}: exit {code}\n{text}"));
+        }
+    }
+    assert_cases(failures);
+}
+
 /// version.workspace = true in [package] takes the version of [workspace.package] in the
 /// same manifest: a change there is the inherited change, not content.
 #[test]
