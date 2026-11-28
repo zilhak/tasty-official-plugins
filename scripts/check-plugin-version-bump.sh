@@ -549,8 +549,11 @@ repo_path() {  # <dir> <rel>
 # here instead, also when the call spans lines, is escaped, or sits in an included file
 # (doc attributes too, as for the lines). The arguments of a call that are no literal are
 # searched for a string with ../ as a line is, and a literal path that cannot be decoded
-# stops the check when its decoded part has a .. step. A crate at the root of its
-# repository has the whole repository as its directory.
+# stops the check when its decoded part has a .. step. Unlike include_paths, which leaves
+# doc attributes out and stops on any such literal, this check reads them too, so it stops
+# only on a .. step: a part that is not decoded is never a . or a /, so every .. step that
+# could climb out is kept. A crate at the root of its repository has the whole repository
+# as its directory.
 pin_check_outside_inputs() {  # <src> <commit> <dir> <name>
     local src="$1" c="$2" dir="$3" name="$4" hits line rest file content lno masked cand tab
     local t kind f l a p partial
@@ -885,8 +888,9 @@ open_tree_file() {  # <src> <commit> <path> <out>
 # ASCII belongs to an identifier, so my_include_str! and an identifier that ends in
 # include_str are other macros. A call inside the arguments of another macro is read, also
 # inside stringify!, which does not open the file: a call the tokens name counts.
-# A path is decoded from \\, \", \', \x00-\x7F, \u{0}-\u{7F} and line continuations; any
-# other escape, a line break, a tab, a CR or a NUL makes it a bad record.
+# A path is decoded from \\, \", \', \x00-\x7F, \u{0}-\u{7F} and line continuations (also
+# before a CR LF line end); any other escape, a line break, a tab, a CR or a NUL makes it a
+# bad record.
 RUST_SCAN_AWK='
 function cur() { if (ln > N) return ""; return (cl <= LN[ln]) ? substr(L[ln], cl, 1) : "\n" }
 function peek(k,    p) {
@@ -941,6 +945,8 @@ function plain(sl, sc, kind,    c, e, h) {
         if (c == "\"") { adv(); return lit(kind, sl, sc) }
         if (c == "\\") {
             adv(); e = cur()
+            # A line continuation, also before a CR LF line end (rustc reads CR LF as LF).
+            if (e == "\r" && peek(1) == "\n") { adv(); e = "\n" }
             if (e == "\n") {
                 adv()
                 while (ln <= N && (cur() == " " || cur() == "\t" || cur() == "\n" || cur() == "\r")) adv()
@@ -1045,11 +1051,15 @@ function tok(t, x, sl, sc,    open) {
         if (INDOC && BD == DOCBD && x == "]") INDOC = 0
         if (BD > 0) BD--
     }
-    if (CS == 1) CS = (t == "p" && x == "!") ? 2 : 0
-    else if (CS == 2) {
-        if (open) { CS = 3; CLEV = BD; AL = sl; AC = sc + 1 } else CS = 0
-    } else if (t == "i" && (x == "include" || x == "include_str" || x == "include_bytes")) {
-        CS = 1; CK = x; CD = INDOC; CL = sl
+    # A name that is not followed by ! and a delimiter is no call, but the token after it
+    # can still start one: before!(include_str include_str!("x")) reads the second name.
+    if (CS == 1 && t == "p" && x == "!") CS = 2
+    else if (CS == 2 && open) { CS = 3; CLEV = BD; AL = sl; AC = sc + 1 }
+    else {
+        CS = 0
+        if (t == "i" && (x == "include" || x == "include_str" || x == "include_bytes")) {
+            CS = 1; CK = x; CD = INDOC; CL = sl
+        }
     }
     if (DA == 1 || DA == 2) {
         if (DA == 1 && t == "p" && x == "!") DA = 2

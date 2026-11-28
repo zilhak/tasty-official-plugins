@@ -1693,6 +1693,33 @@ fn a_build_directive_after_a_resolved_include_on_the_same_line_is_still_read() {
     );
 }
 
+/// A path continued on the next line still climbs out of the crate, after a LF line end and
+/// after a CR LF one.
+#[test]
+fn an_outside_path_after_a_line_continuation_is_undecidable() {
+    let want = "tasty-b reads crates/outside.txt outside its crate (crates/tasty-b/build.rs)";
+    let mut failures = Vec::new();
+    for (label, eol) in [("LF", "\n"), ("CR LF", "\r\n")] {
+        let build = format!(
+            "fn main() {{{eol}    let _ = include_str!(\"\\{eol}        ../outside.txt\");{eol}}}{eol}"
+        );
+        let f = PinFixture::tasty_moved_twice(
+            &[
+                ("crates/outside.txt", "one\n"),
+                ("crates/tasty-b/build.rs", &build),
+            ],
+            &[("crates/outside.txt", "two\n")],
+        );
+        let (code, text) = f.check(&HEAD_RANGE);
+        if code != 2 || !text.contains(want) {
+            failures.push(format!(
+                "{label}: want exit 2 with {want:?}, got exit {code}:\n{text}"
+            ));
+        }
+    }
+    assert_cases(failures);
+}
+
 /// Case 8: The old commit cannot be found anywhere (no TASTY_GIT_DIR, not in the cargo database,
 /// and the URL does not have it).
 #[test]
@@ -2730,6 +2757,26 @@ fn an_undecodable_include_in_crate_docs_is_still_left_out() {
 fn an_include_inside_another_macro_call_is_compared() {
     help_line_cases(&[(
         "pub const H: &str = concat!(\"[\", include_str!(\"help.md\"), \"]\");",
+        HELP,
+    )]);
+}
+
+/// A name that is no call (not followed by !) does not hide the call right after it.
+#[test]
+fn an_include_after_an_include_name_that_is_no_call_is_compared() {
+    help_line_cases(&[(
+        "macro_rules! before { (include_str $e:expr) => {$e}; }\n\
+         pub const H: &str = before!(include_str include_str!(\"help.md\"));",
+        HELP,
+    )]);
+}
+
+/// A line continuation in a path is read before a LF and before a CR LF line end, as rustc
+/// reads it.
+#[test]
+fn an_include_path_after_a_crlf_line_continuation_is_compared() {
+    help_line_cases(&[(
+        "pub const H: &str = include_str!(\"\\\r\n    help.md\");",
         HELP,
     )]);
 }
