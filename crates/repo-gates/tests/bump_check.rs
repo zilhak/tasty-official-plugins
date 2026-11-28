@@ -2219,6 +2219,12 @@ fn each_line_of_a_build_directive_string_is_read() {
             0,
         ),
         (
+            "warning alone",
+            "\n",
+            r#"println!("cargo::warning=example rerun-if-changed=../outside.txt");"#,
+            0,
+        ),
+        (
             "warning, then a directive on the same line",
             "\n",
             r#"println!("cargo::warning=a rerun-if-changed=b"); println!("cargo:rerun-if-changed=../outside.txt");"#,
