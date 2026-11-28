@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.clipboard-viewer"
 name = "Clipboard Viewer"
-version = "0.2.7"
+version = "0.2.8"
 description = "Read-only viewer of the current system clipboard"
 api_version = "1"
 lang_dir = "lang"

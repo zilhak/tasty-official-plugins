@@ -38,7 +38,7 @@ archive and needs a patch bump of every plugin, once per release. A change of
 
 ## Pinned tasty commit
 
-`ed10dc4eacf24b87f1398d227da5f1352ba79949`
+`cbb5c819ab627b492283a1bf10a16c3fd13039f8`
 
 The plugin crates are workspace members (`members = ["crates/*"]`) and are not pinned.
 The tasty crates that stay in tasty come from this one commit: the plugin SDK, protocol,

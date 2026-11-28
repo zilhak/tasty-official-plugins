@@ -472,19 +472,6 @@ const NOTICE_INVENTORY: &str = "THIRD_PARTY_LICENSES.md";
 const LUCIDE_TEXT: &str = "LICENSES/Lucide-ISC.txt";
 const FEATHER_TEXT: &str = "LICENSES/Feather-MIT.txt";
 
-/// The pin whose tasty checkout predates tasty's icon license texts. Only at this pin may
-/// the checkout lack both texts; remove it, and the blob and version constants below, when
-/// the pin moves.
-const PIN_WITHOUT_ICON_TEXTS: &str = "ed10dc4eacf24b87f1398d227da5f1352ba79949";
-
-/// `git hash-object --no-filters` of tasty's texts at 49a2911ad5, for the pin above. tasty
-/// added both texts and the Lucide row in 54ea7dd297, with the same blobs.
-const LUCIDE_BLOB_AT_TASTY: &str = "325e8ff0aae2dde3134c1ceed780a11d7bd8f544";
-const FEATHER_BLOB_AT_TASTY: &str = "1f4f4336baff1185dc78ae9e78cac46628dcc869";
-
-/// The Version cell of tasty's Lucide row at 49a2911ad5, for the pin above.
-const LUCIDE_VERSION_AT_TASTY: &str = "lucide-static 0.460.0";
-
 /// The trimmed cells of the single table row of `text` whose first cell starts with
 /// "Lucide". `what` names the file in errors.
 fn lucide_row(text: &str, what: &str) -> Result<Vec<String>, String> {
@@ -552,23 +539,6 @@ fn plugins_named_in(cell: &str) -> Result<BTreeSet<String>, String> {
     Ok(names.into_iter().map(str::to_owned).collect())
 }
 
-/// `git hash-object --no-filters` of a file, read only.
-fn git_blob_id(path: &Path) -> Result<String, String> {
-    let out = Command::new("git")
-        .args(["hash-object", "--no-filters"])
-        .arg(path)
-        .output()
-        .map_err(|e| format!("run git hash-object: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "git hash-object {} failed: {}",
-            path.display(),
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
 fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))
 }
@@ -613,28 +583,8 @@ fn icon_notice_problems(repo: &Path, checkout: &Path, pin: &str) -> Vec<String> 
                 Err(e) => problems.push(e),
             }
         }
-        (false, false) if pin == PIN_WITHOUT_ICON_TEXTS => {
-            for (text, blob) in [
-                (LUCIDE_TEXT, LUCIDE_BLOB_AT_TASTY),
-                (FEATHER_TEXT, FEATHER_BLOB_AT_TASTY),
-            ] {
-                match git_blob_id(&repo.join(text)) {
-                    Ok(id) if id == blob => {}
-                    Ok(id) => problems.push(format!(
-                        "{text} has blob {id}, not tasty's {blob} at 49a2911ad5"
-                    )),
-                    Err(e) => problems.push(e),
-                }
-            }
-            if our_version != LUCIDE_VERSION_AT_TASTY {
-                problems.push(format!(
-                    "the Lucide version {our_version:?} is not tasty's {LUCIDE_VERSION_AT_TASTY:?}"
-                ));
-            }
-        }
         (false, false) => problems.push(format!(
-            "the tasty checkout at the pin {pin} has neither {LUCIDE_TEXT} nor {FEATHER_TEXT}; \
-             only the pin {PIN_WITHOUT_ICON_TEXTS} may lack them"
+            "the tasty checkout at the pin {pin} has neither {LUCIDE_TEXT} nor {FEATHER_TEXT}"
         )),
         _ => {
             let missing: Vec<&str> = texts
@@ -783,7 +733,7 @@ fn a_pin_with_only_one_icon_text_fails() {
         LUCIDE_TEXT,
         &read_bytes(&workspace_root().join(LUCIDE_TEXT)).expect("read"),
     );
-    let problems = icon_notice_problems(&workspace_root(), &fake.0, PIN_WITHOUT_ICON_TEXTS);
+    let problems = icon_notice_problems(&workspace_root(), &fake.0, &"0".repeat(40));
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains(FEATHER_TEXT), "{problems:?}");
 }
@@ -810,7 +760,7 @@ fn a_pin_whose_lucide_version_differs_fails() {
 }
 
 #[test]
-fn a_pin_other_than_the_exception_without_icon_texts_fails() {
+fn a_pin_without_icon_texts_fails() {
     let fake = FakeCheckout::new("none");
     let problems = icon_notice_problems(&workspace_root(), &fake.0, &"0".repeat(40));
     assert_eq!(problems.len(), 1, "{problems:?}");

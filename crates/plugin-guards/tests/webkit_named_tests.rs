@@ -57,8 +57,16 @@ fn automatic_job_bodies_of_dir(workflows: &Path) -> Vec<String> {
         {
             continue;
         }
-        // Splitting jobs and leaving out manual-only ones uses the shared reader.
-        bodies.extend(automatic_job_bodies(&text));
+        // Splitting jobs and leaving out manual-only ones uses the shared reader. A file it
+        // cannot read fails the test instead of dropping its jobs.
+        match automatic_job_bodies(&w.rel, &text) {
+            Ok(found) => bodies.extend(found),
+            Err(why) => panic!(
+                "cannot read the jobs of .github/workflows/{}:\n{}",
+                w.rel,
+                why.join("\n")
+            ),
+        }
     }
     bodies
 }

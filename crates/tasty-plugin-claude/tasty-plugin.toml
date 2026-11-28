@@ -1,7 +1,7 @@
 manifest_version = 1
 id = "com.tasty.claude"
 name = "Claude Code"
-version = "0.3.11"
+version = "0.3.12"
 description = "Claude Code CLI integration for Tasty"
 api_version = "1"
 lang_dir = "lang"
