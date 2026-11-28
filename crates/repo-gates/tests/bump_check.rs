@@ -3520,6 +3520,55 @@ fn a_crate_that_uses_the_build_script_of_a_nested_package_as_a_source_is_undecid
     assert_cases(failures);
 }
 
+/// A manifest next to an included build.rs that git cannot look up is not taken as missing:
+/// the first lookup of whether that manifest is there fails here, and the later ones go to
+/// git.
+#[test]
+fn a_manifest_lookup_of_an_included_build_script_that_fails_is_undecidable() {
+    const MARK: &str = "zz-manifest-lookup-died-here";
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            (
+                "crates/tasty-a/nested/Cargo.toml",
+                "[package]\nname = \"nested\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "crates/tasty-a/nested/build.rs",
+                "fn main() {\n    println!(\"cargo:rerun-if-changed=../outside.txt\");\n}\n",
+            ),
+            (
+                "crates/tasty-a/build.rs",
+                "include!(\"nested/build.rs\");\n",
+            ),
+            ("crates/outside.txt", "one\n"),
+        ],
+        &[("crates/outside.txt", "two\n")],
+    );
+    let stub = tempfile::tempdir().expect("stub dir");
+    let once = stub.path().join("failed-once");
+    support::write_executable(
+        &stub.path().join("git"),
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *\" cat-file -e \"*nested/Cargo.toml*|*\" ls-tree \"*nested/Cargo.toml*) if [ ! -e \"{once}\" ]; then : > \"{once}\"; echo {MARK} >&2; exit 68; fi ;; esac\nexec \"{real}\" \"$@\"\n",
+            once = once.display(),
+            real = real_git()
+        ),
+    )
+    .expect("write the stub");
+    let mut cmd = f.command(false);
+    cmd.env("PATH", path_with(stub.path()));
+    let (code, text) = run(cmd, &HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("cannot read the tree entry of crates/tasty-a/nested/Cargo.toml at "),
+        "{text}"
+    );
+    assert!(
+        text.contains(MARK),
+        "the stand-in did not fail the lookup:\n{text}"
+    );
+}
+
 /// A build script of the crate itself, and `build = false`, take the usual path: the
 /// rerun-if-changed path is read from the crate and stops the check as outside it.
 #[test]

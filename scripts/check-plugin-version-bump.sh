@@ -757,9 +757,10 @@ pin_check_build_script() {  # <src> <commit> <dir> <name>
 # script from the package that runs it, the crate judged, but pin_check_outside_inputs reads
 # them from that other package. A file that include! opens through a link is judged by its
 # target, so another name does not hide such a script. An include! path that cannot be
-# decoded and ends in build.rs stops it too. A #[path] attribute is not read.
+# decoded and ends in build.rs stops it too, as does a manifest lookup that git cannot do.
+# A #[path] attribute is not read.
 pin_check_included_build_scripts() {  # <src> <commit> <dir> <name>
-    local tab t kind f l a b p q fdir
+    local tab t kind f l a b p q fdir rc
     tab=$(printf '\t')
     crate_rust_records "$1" "$2" "$3"
     while IFS="$tab" read -r t kind f _ l a b p; do
@@ -781,7 +782,10 @@ pin_check_included_build_scripts() {  # <src> <commit> <dir> <name>
         case "$q" in build.rs|*/build.rs) ;; *) continue ;; esac
         fdir=$(dirname "$q")
         [ "$fdir" != "$3" ] || continue
-        if xgit -C "$1" cat-file -e "$2:$(repo_path "$fdir" Cargo.toml)" 2>/dev/null; then
+        # A manifest that git cannot look up is not taken as missing.
+        rc=0; tree_entry "$1" "$2" "$(repo_path "$fdir" Cargo.toml)" || rc=$?
+        [ "$rc" -le 1 ] || die "cannot read the tree entry of $(repo_path "$fdir" Cargo.toml) at ${2:0:8} in $1."
+        if [ "$rc" = 0 ]; then
             die "$4 uses $q, the build script of another package ($(repo_path "$fdir" Cargo.toml)), as a source; its paths are not resolved here, so judge the plugin versions by hand."
         fi
     done < "$CRATE_RECORDS"
