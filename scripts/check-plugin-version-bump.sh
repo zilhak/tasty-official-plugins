@@ -1162,12 +1162,21 @@ crate_rust_records() {  # <src> <commit> <dir>
 # line, resolved against the file that holds the call. The files are read as tokens
 # (RUST_SCAN_AWK, rust_records), with the files that their include! calls open, which are
 # read from git when <root> has not got them. A call inside a doc attribute is crate
-# documentation and is left out. A literal path that cannot be decoded stops the check.
+# documentation and is left out. A literal path that cannot be decoded stops the check, as
+# does a failure to list or search the files.
 # Paths built by macros are not read.
 include_paths() {  # <root> <src> <commit>
     local root="$1" rec="$WORK/include-paths" rs=() f bad
     [ -d "$root" ] || return 0
-    (cd "$root" && find . -name '*.rs' -type f -exec grep -l --null -e include -- {} +) > "$rec.files"
+    # A list that cannot be made stops the check: an empty list would read as no includes.
+    # grep -l returns 1 for files without the word, which is no failure.
+    (cd "$root" && find . -name '*.rs' -type f -print0) > "$rec.all" \
+        || die "cannot list the Rust files of $root."
+    : > "$rec.files" || die "cannot write the work directory."
+    if [ -s "$rec.all" ]; then
+        (cd "$root" && xargs -0 sh -c '[ "$#" -gt 0 ] || exit 0; grep -l --null -e include -- "$@"; [ "$?" -le 1 ]' sh) \
+            < "$rec.all" > "$rec.files" || die "cannot search the Rust files of $root."
+    fi
     while IFS= read -r -d '' f; do rs+=("${f#./}"); done < "$rec.files"
     : > "$rec" || die "cannot write the work directory."
     [ "${#rs[@]}" -gt 0 ] || return 0

@@ -1741,12 +1741,17 @@ fn a_pin_move_from_an_unreadable_commit_is_undecidable() {
 
 /// The first git on PATH, which a stand-in in front of it hands every other call to.
 fn real_git() -> String {
+    real_tool("git")
+}
+
+/// The first `name` on PATH, for a stand-in that hands the calls it does not fail on.
+fn real_tool(name: &str) -> String {
     let path = std::env::var("PATH").unwrap_or_default();
     path.split(':')
         .filter(|d| !d.is_empty())
-        .map(|d| Path::new(d).join("git"))
+        .map(|d| Path::new(d).join(name))
         .find(|p| p.is_file())
-        .expect("git on PATH")
+        .unwrap_or_else(|| panic!("{name} on PATH"))
         .to_string_lossy()
         .into_owned()
 }
@@ -2125,6 +2130,36 @@ fn a_tree_lookup_that_fails_on_both_sides_is_undecidable() {
         text.contains("cannot read the tree entry of src/data.txt at "),
         "{text}"
     );
+    assert!(
+        text.contains(MARK),
+        "the stand-in did not fail the listing:\n{text}"
+    );
+}
+
+/// A list of the shipped Rust files that cannot be made is undecidable, not a list without
+/// includes. Only the listing in the copies of the shipped sources fails here.
+#[test]
+fn a_shipped_source_list_that_cannot_be_made_is_undecidable() {
+    const MARK: &str = "zz-find-died-here";
+    let lib = format!("{EXT_LIB}pub const H: &str = include_str!(\"help.md\");\n");
+    let f = PinFixture::ext_moved(
+        &[("src/lib.rs", &lib), ("src/help.md", "1\n")],
+        &[("src/help.md", "2\n")],
+    );
+    let stub = tempfile::tempdir().expect("stub dir");
+    support::write_executable(
+        &stub.path().join("find"),
+        format!(
+            "#!/bin/sh\ncase \"$PWD\" in *.ship) echo {MARK} >&2; exit 70 ;; esac\nexec \"{real}\" \"$@\"\n",
+            real = real_tool("find")
+        ),
+    )
+    .expect("write the stub");
+    let mut cmd = f.command(false);
+    cmd.env("PATH", path_with(stub.path()));
+    let (code, text) = run(cmd, &HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("cannot list the Rust files of "), "{text}");
     assert!(
         text.contains(MARK),
         "the stand-in did not fail the listing:\n{text}"
