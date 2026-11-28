@@ -1344,11 +1344,13 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
 # workspace. at the top). An inline table is one record, so a change of any of its fields is
 # a change. The manifest is read as TOML keys (toml_lines_body with TOML_MULTI=1). A comment
 # does not count, nor do the blanks at the ends of a line that no multi-line string spans.
-# Spacing inside a line, and the lines a multi-line string spans with their blanks (also
-# those after its closing delimiter, up to a comment), are kept, which errs toward a bump or
-# a stop. Only matters to a crate that inherits from them. Stops when a record that cannot
-# be read could be in those sources, or when a multi-line value in them changed; a
-# multi-line string elsewhere, or one in them that did not change, is passed over.
+# Spacing inside a line is kept, and so are the lines after the first that a multi-line
+# string spans, with their blanks (also those after its closing delimiter, up to a comment),
+# which errs toward a bump or a stop; the line that opens the string loses its leading
+# blanks, which come before its key. Only matters to a crate that inherits from them. Stops
+# when a record that cannot be read could be in those sources, or when a multi-line value
+# in them changed; a multi-line string elsewhere, or one in them that did not change, is
+# passed over.
 pin_root_inherited_changed() {  # <src> <old> <new>
     local c bad
     for c in "$2" "$3"; do
