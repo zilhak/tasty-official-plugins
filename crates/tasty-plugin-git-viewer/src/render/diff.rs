@@ -176,7 +176,7 @@ impl<'a> DiffRow<'a> {
 
 /// diff 한 행의 잉크와 채움. 그리기 호출은 이 값만 받는다.
 /// 정본: tasty-page `vendor/ui_kits/terminal/overlays/git_viewer.jsx` `DiffLine`.
-/// 채움은 page component `git-diff-*-bg`가 가리키는 semantic tint 토큰이다.
+/// 채움은 component `git-diff-{hunk,add,del}-bg` 토큰이다.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DiffRowInk {
     /// 본문과 `+`/`-` 부호의 잉크.
@@ -192,17 +192,17 @@ fn diff_row_ink(theme: &Theme, is_hunk: bool, kind: DiffLineKind) -> DiffRowInk 
         (true, _) => (
             theme.accent_info_raised(),
             theme.text_muted(),
-            Some(theme.tint_info_bg()),
+            Some(theme.git_diff_hunk_bg()),
         ),
         (false, DiffLineKind::Addition) => (
             theme.accent_success_raised(),
             theme.text_muted_raised(),
-            Some(theme.tint_success_bg()),
+            Some(theme.git_diff_add_bg()),
         ),
         (false, DiffLineKind::Deletion) => (
             theme.accent_danger_raised(),
             theme.text_muted_raised(),
-            Some(theme.tint_danger_bg()),
+            Some(theme.git_diff_del_bg()),
         ),
         (false, DiffLineKind::Context) => (theme.text_primary(), theme.text_muted(), None),
     };
@@ -321,21 +321,34 @@ mod tests {
         }
     }
 
-    /// 채움은 각 색상의 semantic tint 토큰이고 context 행은 채우지 않는다.
+    /// 테마마다 세 component 채움이 서로 다르다. 아래 채움 시험이 행을 가를 수 있다는 전제다.
     #[test]
-    fn row_fills_read_the_tint_tokens() {
+    fn the_git_diff_fills_differ_from_each_other() {
+        for (name, t) in [("mocha", mocha()), ("latte", latte())] {
+            let hunk = t.git_diff_hunk_bg().to_egui();
+            let add = t.git_diff_add_bg().to_egui();
+            let del = t.git_diff_del_bg().to_egui();
+            assert_ne!(hunk, add, "{name}: hunk와 추가 채움");
+            assert_ne!(hunk, del, "{name}: hunk와 삭제 채움");
+            assert_ne!(add, del, "{name}: 추가와 삭제 채움");
+        }
+    }
+
+    /// 채움은 각 행의 component `git-diff-*-bg` 토큰이고 context 행은 채우지 않는다.
+    #[test]
+    fn row_fills_read_the_git_diff_tokens() {
         for t in [mocha(), latte()] {
             assert_eq!(
                 diff_row_ink(&t, true, DiffLineKind::Context).fill,
-                Some(t.tint_info_bg().to_egui())
+                Some(t.git_diff_hunk_bg().to_egui())
             );
             assert_eq!(
                 diff_row_ink(&t, false, DiffLineKind::Addition).fill,
-                Some(t.tint_success_bg().to_egui())
+                Some(t.git_diff_add_bg().to_egui())
             );
             assert_eq!(
                 diff_row_ink(&t, false, DiffLineKind::Deletion).fill,
-                Some(t.tint_danger_bg().to_egui())
+                Some(t.git_diff_del_bg().to_egui())
             );
             assert_eq!(diff_row_ink(&t, false, DiffLineKind::Context).fill, None);
         }
@@ -461,9 +474,9 @@ mod tests {
             let well = theme.bg_app().to_egui();
             assert_eq!(well.a(), 255, "{name}: well은 불투명하다");
             for (s, tint, what) in [
-                (HUNK, Some(theme.tint_info_bg().to_egui()), "hunk"),
-                (GONE, Some(theme.tint_danger_bg().to_egui()), "삭제"),
-                (CAME, Some(theme.tint_success_bg().to_egui()), "추가"),
+                (HUNK, Some(theme.git_diff_hunk_bg().to_egui()), "hunk"),
+                (GONE, Some(theme.git_diff_del_bg().to_egui()), "삭제"),
+                (CAME, Some(theme.git_diff_add_bg().to_egui()), "추가"),
                 (KEPT, None, "context"),
             ] {
                 let body = find(s).rect;
