@@ -1865,6 +1865,48 @@ fn an_include_path_that_goes_up_from_a_directory_is_compared() {
     );
 }
 
+/// The shipped sources leave a call inside a doc attribute out before the link steps are
+/// checked, so a doc include through a link in a test module does not stop the check. The
+/// outside input check still reads doc attributes, so the same call in a shipped file does.
+#[test]
+fn a_doc_include_through_a_link_stops_only_where_doc_attributes_are_read() {
+    let doc = "#![doc = include_str!(\"link/../help.md\")]\n";
+    let mut failures = Vec::new();
+    for (label, lib, tests, code_want) in [
+        (
+            "test module",
+            format!("#[cfg(test)]\nmod tests;\n{TASTY_B_FN}"),
+            Some(format!("{doc}#[test]\nfn t() {{}}\n")),
+            0,
+        ),
+        ("shipped file", format!("{doc}{TASTY_B_FN}"), None, 2),
+    ] {
+        let mut files = vec![
+            ("crates/tasty-b/src/sub/keep", "keep\n"),
+            ("crates/tasty-b/src/help.md", "one\n"),
+            ("crates/tasty-b/src/lib.rs", lib.as_str()),
+        ];
+        if let Some(t) = &tests {
+            files.push(("crates/tasty-b/src/tests.rs", t.as_str()));
+        }
+        let f = PinFixture::tasty_moved_twice_with_links(
+            &files,
+            &[("crates/tasty-b/src/link", "sub")],
+            &[("crates/tasty-b/src/help.md", "two\n")],
+        );
+        let (code, text) = f.check(&HEAD_RANGE);
+        let ok = code == code_want
+            && (code_want != 2
+                || text.contains("a path that goes up from the link crates/tasty-b/src/link"));
+        if !ok {
+            failures.push(format!(
+                "{label}: want exit {code_want}, got exit {code}:\n{text}"
+            ));
+        }
+    }
+    assert_cases(failures);
+}
+
 /// A directory that a .. step leaves and that git cannot look up is undecidable, not taken
 /// as no link. Only the lookup of that directory fails here.
 #[test]

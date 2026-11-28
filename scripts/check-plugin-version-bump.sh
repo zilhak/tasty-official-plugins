@@ -1169,13 +1169,14 @@ END { NAME = ENVIRON["RS_NAME"]; scan() }
 # a regular file, otherwise from git: a <path> as git stores it, an included file through
 # open_tree_file. An include! path that is absolute or climbs above the repository root is
 # not followed, nor one that git has not got; each file is read once, and a literal path of
-# any include kind with a .. step right after a link stops the check (check_link_steps). The
+# any include kind with a .. step that leaves no directory of the tree stops the check
+# (check_link_steps); a call inside a doc attribute counts only when <docs> is 1. The
 # path of a call in an included file is resolved from that file as include! names it (a
 # link, not its target); a file read through a link adds the record
 # "open include <name> 0 0 <target>".
-rust_records() {  # <src> <commit> <root> <out> <path>...
-    local src="$1" c="$2" root="$3" out="$4" queue=() i=0 first f p q seen nl tab
-    shift 4
+rust_records() {  # <src> <commit> <root> <out> <docs> <path>...
+    local src="$1" c="$2" root="$3" out="$4" docs="$5" queue=() i=0 first f p q seen nl tab
+    shift 5
     nl='
 '
     tab=$(printf '\t')
@@ -1200,9 +1201,10 @@ rust_records() {  # <src> <commit> <root> <out> <path>...
             || die "cannot read the Rust tokens of $f at ${c:0:8}."
         cat "$out.one" >> "$out" || die "cannot write the work directory."
         # Every literal path with a .. step, of any include kind, is checked here once, before
-        # a caller folds it. The list is a file, so an awk that fails stops the check instead
-        # of reading as no such path.
-        awk -F '\t' '$1 == "lit" && index($8, "..") && substr($8, 1, 1) != "/" { print $8 "\t" $3 }' \
+        # a caller folds it, the calls in doc attributes only for a caller that reads them.
+        # The list is a file, so an awk that fails stops the check instead of reading as no
+        # such path.
+        awk -F '\t' -v docs="$docs" '$1 == "lit" && (docs == 1 || $4 == 0) && index($8, "..") && substr($8, 1, 1) != "/" { print $8 "\t" $3 }' \
             "$out.one" > "$out.steps" || die "cannot list the include paths of $f at ${c:0:8}."
         while IFS="$tab" read -r p q; do
             check_link_steps "$src" "$c" "$(dirname "$q")/$p" "$q"
@@ -1237,7 +1239,7 @@ crate_rust_records() {  # <src> <commit> <dir>
         case "$f" in *.rs) rs+=("$f") ;; esac
     done < "$CRATE_RECORDS.list"
     : > "$CRATE_RECORDS" || die "cannot write the work directory."
-    if [ "${#rs[@]}" -gt 0 ]; then rust_records "$1" "$2" "" "$CRATE_RECORDS" "${rs[@]}"; fi
+    if [ "${#rs[@]}" -gt 0 ]; then rust_records "$1" "$2" "" "$CRATE_RECORDS" 1 "${rs[@]}"; fi
     CRATE_KEY="$1 $2 $3"
 }
 
@@ -1264,7 +1266,7 @@ include_paths() {  # <root> <src> <commit>
     while IFS= read -r -d '' f; do rs+=("${f#./}"); done < "$rec.files"
     : > "$rec" || die "cannot write the work directory."
     [ "${#rs[@]}" -gt 0 ] || return 0
-    rust_records "$2" "$3" "$root" "$rec" "${rs[@]}"
+    rust_records "$2" "$3" "$root" "$rec" 0 "${rs[@]}"
     bad=$(awk -F '\t' '$1 == "bad" && $4 == 0 { print $3 " line " $5 " (" $6 ")"; exit }' "$rec")
     [ -z "$bad" ] || die "cannot read the path of an include in $bad; judge the plugin versions by hand."
     awk -F '\t' '
