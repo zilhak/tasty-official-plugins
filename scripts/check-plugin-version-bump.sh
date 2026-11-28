@@ -538,10 +538,10 @@ norm_path() {
 # step that may go up from a link: the system goes up from the target of a link, while
 # norm_path drops the link. Each directory that a .. step leaves is looked up as a tree
 # entry. A directory (mode 040000) passes, a link or any other entry stops the check. A
-# path that git has no entry for passes when the nearest entry above it is a directory (a
-# directory that the build makes, folded as written), and stops when that entry is a link
-# or another entry, because a path below a link has no entry of its own. A lookup that
-# fails stops the check too. A path without a .. step is not looked up.
+# path that git has no entry for stops it too: it may be below a link, which has no entry
+# of its own, or something the build script makes, a directory or a link, which the tree
+# cannot tell. The nearest entry above it only names the reason. A lookup that fails stops
+# the check too. A path without a .. step is not looked up.
 check_link_steps() {  # <src> <commit> <path> <file>
     local part up="" rest rc a
     case "/$3/" in */../*) ;; *) return 0 ;; esac
@@ -570,6 +570,7 @@ check_link_steps() {  # <src> <commit> <path> <file>
                             && die "$4 reads $3, a path that goes up from $up, which is below the link $a; judge the plugin versions by hand."
                         die "$4 reads $3, a path that goes up from $up, which is below $a (mode $TREE_MODE) at ${2:0:8}; judge the plugin versions by hand."
                     done
+                    die "$4 reads $3, a path that goes up from $up, which is no directory of the tree at ${2:0:8} (the build may make it, as a directory or a link); judge the plugin versions by hand."
                 elif [ "$TREE_MODE" != 040000 ]; then
                     die "$4 reads $3, a path that goes up from $up, which is no directory of the tree at ${2:0:8}; judge the plugin versions by hand."
                 fi

@@ -1945,34 +1945,51 @@ fn a_doc_include_through_a_link_stops_only_where_doc_attributes_are_read() {
     assert_cases(failures);
 }
 
-/// A directory that the build makes has no entry in the tree. With a directory of the
-/// tree as the nearest entry above it, no link is on the way, and a .. step after it is
-/// folded as written: src/dir/../help.md is src/help.md, whose change is a change of the
-/// crate.
+/// A path that the build script makes has no entry in the tree, and the tree cannot tell
+/// whether it is a directory or a link, so a .. step after it is undecidable. For a link
+/// the file read is the one beside its target (src/real/help.md here), not the folded
+/// src/help.md. For a plain directory (create_dir_all) the folded path is right, and the
+/// stop is a false refusal: it is kept on the safe side, since the two cannot be told
+/// apart.
 #[test]
-fn an_include_path_that_goes_up_from_a_directory_the_build_makes_is_compared() {
-    let f = PinFixture::tasty_moved_twice(
-        &[
-            (
-                "crates/tasty-b/build.rs",
-                "fn main() {\n    std::fs::create_dir_all(\"src/dir\").unwrap();\n}\n",
-            ),
-            ("crates/tasty-b/src/help.md", "one\n"),
-            (
-                "crates/tasty-b/src/lib.rs",
-                &format!("pub const H: &str = include_str!(\"dir/../help.md\");\n{TASTY_B_FN}"),
-            ),
-        ],
-        &[("crates/tasty-b/src/help.md", "two\n")],
-    );
-    let (code, text) = f.check(&HEAD_RANGE);
-    assert_eq!(code, 1, "{text}");
-    assert!(
-        reasons_of(&text, "beta")
-            .iter()
-            .any(|r| r.contains("changed: crates/tasty-b/src/help.md")),
-        "{text}"
-    );
+fn an_include_path_that_goes_up_from_a_path_the_build_makes_is_undecidable() {
+    let want = "crates/tasty-b/src/lib.rs reads crates/tasty-b/src/dir/../help.md, a path that goes \
+                up from crates/tasty-b/src/dir, which is no directory of the tree";
+    let mut failures = Vec::new();
+    for (label, make, changed) in [
+        (
+            "a directory",
+            "std::fs::create_dir_all(\"src/dir\").unwrap();",
+            "crates/tasty-b/src/help.md",
+        ),
+        (
+            "a link",
+            "std::os::unix::fs::symlink(\"real/sub\", \"src/dir\").unwrap();",
+            "crates/tasty-b/src/real/help.md",
+        ),
+    ] {
+        let build = format!("fn main() {{\n    {make}\n}}\n");
+        let f = PinFixture::tasty_moved_twice(
+            &[
+                ("crates/tasty-b/build.rs", &build),
+                ("crates/tasty-b/src/real/sub/keep", "keep\n"),
+                ("crates/tasty-b/src/help.md", "top\n"),
+                ("crates/tasty-b/src/real/help.md", "old\n"),
+                (
+                    "crates/tasty-b/src/lib.rs",
+                    &format!("pub const H: &str = include_str!(\"dir/../help.md\");\n{TASTY_B_FN}"),
+                ),
+            ],
+            &[(changed, "new\n")],
+        );
+        let (code, text) = f.check(&HEAD_RANGE);
+        if code != 2 || !text.contains(want) {
+            failures.push(format!(
+                "{label}: want exit 2 with {want:?}, got exit {code}:\n{text}"
+            ));
+        }
+    }
+    assert_cases(failures);
 }
 
 /// A directory that a .. step leaves and that git cannot look up is undecidable, not taken
