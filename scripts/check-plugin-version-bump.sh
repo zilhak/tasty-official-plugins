@@ -1112,9 +1112,10 @@ function tok(t, x, sl, sc,    open, nd, nr, i, dt, dn) {
     # trims each line, so each line of the string text (SD: LF kept, an escaped CR, a tab or
     # a byte that is not decoded as ?) is read on its own, after the blanks and ? in front of
     # it. A line is left out only when it then names another directive outright: cargo: or
-    # cargo:: and a name without a format brace before the first =, other than
-    # rerun-if-changed with blanks after it (cargo::warning=... rerun-if-changed=x is a
-    # warning). Every other line
+    # cargo:: and a name before the first =, other than rerun-if-changed with blanks after
+    # it (cargo::warning=... rerun-if-changed=x is a warning), and no format brace before
+    # rerun-if-changed=, since a format argument may print an LF and a new prefix there
+    # (cargo::warning=x{}rerun-if-changed=x with "\ncargo:"). Every other line
     # that holds rerun-if-changed= is read as one, also one without the prefix or with a
     # brace, whose format arguments may give it.
     if (t == "s" && (SK == "plain" || SK == "raw") && index(SD, "rerun-if-changed=")) {
@@ -1122,7 +1123,9 @@ function tok(t, x, sl, sc,    open, nd, nr, i, dt, dn) {
         for (i = 1; i <= nd; i++) {
             if (!index(DL[i], "rerun-if-changed=")) continue
             dt = DL[i]; sub(/^[ ?\013\014]+/, "", dt)
-            if (match(dt, /^cargo::?[^={]*=/)) {
+            # A format brace anywhere before rerun-if-changed= may give an LF and a new
+            # prefix, so only a line without one names another directive for sure.
+            if (!index(substr(dt, 1, index(dt, "rerun-if-changed=") - 1), "{") && match(dt, /^cargo::?[^={]*=/)) {
                 dn = substr(dt, 1, RLENGTH - 1); sub(/^cargo::?/, "", dn); sub(/[ ?\013\014]+$/, "", dn)
                 if (dn != "rerun-if-changed") continue
             }

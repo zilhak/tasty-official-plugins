@@ -2169,7 +2169,8 @@ fn a_comment_before_a_build_directive_is_not_read_as_its_path() {
 /// tab or a CR) names the path of each, while an escaped CR inside a line stays in the
 /// path. A line that names another directive outright, such as a warning, is no input, also
 /// when indented and next to a real directive on the same source line. A line whose prefix
-/// a format argument may give is read as a directive. Two directives on one line are one
+/// a format argument may give is read as a directive, and so is a warning with a format
+/// brace before rerun-if-changed=, whose argument may print an LF and a new prefix there. Two directives on one line are one
 /// path, which stays in the crate.
 #[test]
 fn each_line_of_a_build_directive_string_is_read() {
@@ -2301,6 +2302,48 @@ fn each_line_of_a_build_directive_string_is_read() {
             "\n",
             r#"println!("cargo:{}", "rerun-if-changed=../outside.txt");"#,
             2,
+        ),
+        (
+            "LF and prefix from a format argument in a warning",
+            "\n",
+            r#"println!("cargo::warning=x{}rerun-if-changed=../outside.txt", "\ncargo:");"#,
+            2,
+        ),
+        (
+            "LF and prefix from a named format argument in a warning",
+            "\n",
+            r#"let p = "\ncargo::"; println!("cargo::warning=x{p}rerun-if-changed=../outside.txt");"#,
+            2,
+        ),
+        (
+            "LF and prefix from a format argument, then a directive",
+            "\n",
+            r#"println!("cargo::warning=x{}rerun-if-changed=../outside.txt", "\ncargo::"); println!("cargo::rerun-if-changed=build.rs");"#,
+            2,
+        ),
+        (
+            "indented warning whose argument prints a directive",
+            "\n",
+            r#"println!("  cargo::warning={}rerun-if-changed=../outside.txt", "note\ncargo::");"#,
+            2,
+        ),
+        (
+            "warning whose argument prints a directive",
+            "\n",
+            r#"println!("cargo::warning={}rerun-if-changed=../outside.txt", "note\ncargo::");"#,
+            2,
+        ),
+        (
+            "cargo: warning whose argument prints a directive",
+            "\n",
+            r#"println!("cargo:warning={}rerun-if-changed=../outside.txt", "note\ncargo:");"#,
+            2,
+        ),
+        (
+            "warning with a format brace after the path only",
+            "\n",
+            r#"println!("cargo::warning=x rerun-if-changed=../outside.txt{}", "y");"#,
+            0,
         ),
         (
             "one line",
