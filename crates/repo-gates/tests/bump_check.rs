@@ -1983,6 +1983,48 @@ fn an_include_path_list_that_cannot_be_made_is_undecidable() {
     );
 }
 
+/// The same holds for the list of include! paths to follow: an awk that fails there stops
+/// the check instead of leaving the included files unread.
+#[test]
+fn an_include_list_to_follow_that_cannot_be_made_is_undecidable() {
+    const MARK: &str = "zz-include-list-died-here";
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            (
+                "crates/tasty-b/src/body.inc",
+                "pub const H: &str = include_str!(\"help.txt\");\n",
+            ),
+            ("crates/tasty-b/src/help.txt", "one\n"),
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!("include!(\"body.inc\");\n{TASTY_B_FN}"),
+            ),
+        ],
+        &[("crates/tasty-b/src/help.txt", "two\n")],
+    );
+    let stub = tempfile::tempdir().expect("stub dir");
+    support::write_executable(
+        &stub.path().join("awk"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'$2 == \"include\" && $4 == 0'*) echo {MARK} >&2; exit 68 ;; esac\nexec \"{real}\" \"$@\"\n",
+            real = real_tool("awk")
+        ),
+    )
+    .expect("write the stub");
+    let mut cmd = f.command(false);
+    cmd.env("PATH", path_with(stub.path()));
+    let (code, text) = run(cmd, &HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("cannot list the include! paths of "),
+        "{text}"
+    );
+    assert!(
+        text.contains(MARK),
+        "the stand-in did not fail the list:\n{text}"
+    );
+}
+
 /// The build script of a nested package opened under another name, through a link, is still
 /// that build script.
 #[test]
