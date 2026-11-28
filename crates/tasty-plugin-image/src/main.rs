@@ -1173,6 +1173,65 @@ mod tests {
             assert!(floating(&rig.doc));
             assert_eq!(out, vec![(12, EditResultWire::Acted, None)]);
         }
+
+        /// 직전 프레임의 툴바에서 클릭을 받는 위젯 중 오른쪽 끝이 가장 먼 것의 rect.
+        /// 캔버스처럼 큰 영역은 크기로 거른다.
+        fn rightmost_toolbar_control(rig: &Rig) -> egui::Rect {
+            rig.ctx().viewport(|v| {
+                v.prev_pass
+                    .widgets
+                    .layers()
+                    .flat_map(|(_, widgets)| widgets.iter())
+                    .filter(|w| {
+                        w.sense.senses_click() && w.rect.width() < 200.0 && w.rect.height() < 100.0
+                    })
+                    .map(|w| w.rect)
+                    .max_by(|a, b| a.right().total_cmp(&b.right()))
+                    .expect("툴바 컨트롤이 그려져야 한다")
+            })
+        }
+
+        /// 오른쪽 끝 컨트롤(줌 아웃 IconButton)을 포커스 링 바깥 폭만큼 넓혀도 표면 안에 든다.
+        fn assert_last_ring_inside_the_surface(rig: &Rig) {
+            let theme = &rig.theme;
+            let outer =
+                tasty_ui_widgets::control_ring_gap(theme).value() + theme.focus_ring_width.value();
+            let control = rightmost_toolbar_control(rig);
+            assert_eq!(
+                control.width(),
+                control.height(),
+                "오른쪽 끝은 정사각 줌 아웃 버튼이어야 한다: {control:?}"
+            );
+            let ring = control.expand(outer);
+            let surface = rig.ctx().screen_rect();
+            assert!(
+                surface.contains_rect(ring),
+                "포커스 링 {ring:?}이 표면 {surface:?} 밖으로 나간다"
+            );
+        }
+
+        #[test]
+        fn the_viewer_zoom_out_ring_stays_inside_the_surface() {
+            let (dir, doc) = loaded_doc("ring-viewer");
+            let mut rig = Rig::new(doc);
+            rig.frame(Vec::new(), &mut no_read);
+            rig.frame(Vec::new(), &mut no_read);
+            assert!(!rig.doc.is_editing());
+            assert_last_ring_inside_the_surface(&rig);
+            let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
+        }
+
+        #[test]
+        fn the_edit_zoom_out_ring_stays_inside_the_surface() {
+            let (dir, mut doc) = loaded_doc("ring-edit");
+            doc.enter_edit_mode();
+            let mut rig = Rig::new(doc);
+            rig.frame(Vec::new(), &mut no_read);
+            rig.frame(Vec::new(), &mut no_read);
+            assert!(rig.doc.is_editing());
+            assert_last_ring_inside_the_surface(&rig);
+            let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
+        }
     }
 
     #[test]

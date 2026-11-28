@@ -86,7 +86,6 @@ pub(crate) fn draw(ctx: &egui::Context, theme: &Theme, tr: &Translator, doc: &mu
             } else {
                 draw_viewer_controls(ui, theme, tr, doc);
             }
-            ui.add_space(pad);
         });
         ui.add_space(pad);
 
@@ -194,6 +193,8 @@ fn draw_viewer_controls(ui: &mut egui::Ui, theme: &Theme, tr: &Translator, doc: 
     }
 
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // 왼쪽과 같은 여백이다. 마지막 버튼의 포커스 링이 표면 오른쪽 끝에 잘리지 않는다.
+        ui.add_space(theme.spacing_sm.value());
         draw_zoom_controls(ui, theme, tr, doc);
     });
 }
@@ -261,6 +262,8 @@ fn draw_edit_controls(ui: &mut egui::Ui, theme: &Theme, tr: &Translator, doc: &m
     }
 
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // 왼쪽과 같은 여백이다. 마지막 버튼의 포커스 링이 표면 오른쪽 끝에 잘리지 않는다.
+        ui.add_space(theme.spacing_sm.value());
         draw_zoom_controls(ui, theme, tr, doc);
     });
 }
