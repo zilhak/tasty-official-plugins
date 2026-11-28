@@ -925,9 +925,11 @@ open_tree_file() {  # <src> <commit> <path> <out>
 # the first token of its arguments is a plain or raw string, "bad <kind> <file> <doc>
 # <line> <reason> <path with ? for what is not decoded>" when that string cannot be
 # decoded to one line, and "arg <kind> <file> <doc> <line> <arguments as written>"
-# otherwise; and "str rerun <file> <doc> <line> <start> <end> <text>" for each line of the
-# text of a plain or raw string that holds rerun-if-changed= (a line break, written or
-# escaped, ends a line; a tab or a byte that is not decoded reads as ?). <file> is RS_NAME, <line> the line of the macro
+# otherwise; and "str rerun <file> <doc> <line> <start> <end> <text>" for each build
+# directive line in the text of a plain or raw string that holds rerun-if-changed= (an LF,
+# written or escaped, ends a line; an escaped CR, a tab or a byte that is not decoded reads
+# as ?), or one with an empty <text> when no line is one, so that the string is still
+# blanked out of its line. <file> is RS_NAME, <line> the line of the macro
 # name (of the string for str), <doc> 1 inside a doc attribute (#[doc = ...] or
 # #![doc = ...], to the bracket that closes it), and the columns those of the literal with
 # its prefix and quotes, in bytes.
@@ -986,7 +988,7 @@ function hexval(h,    i, c, d, n) {
 }
 function addc(n) {
     if (n == 0 || n == 9 || n == 10 || n == 13) {
-        SB = "a control character in the path"; SV = SV "?"; SD = SD ((n == 10 || n == 13) ? "\n" : "?"); return
+        SB = "a control character in the path"; SV = SV "?"; SD = SD (n == 10 ? "\n" : "?"); return
     }
     SV = SV sprintf("%c", n); SD = SD sprintf("%c", n)
 }
@@ -1022,10 +1024,12 @@ function plain(sl, sc, kind,    c, e, h) {
                 if (e < 0 || e > 127) { SB = "the escape \\u{" h "}"; SV = SV "?"; SD = SD "?" } else addc(e)
                 continue
             }
-            SB = "the escape \\" e; SV = SV "?"; SD = SD ((e == "n" || e == "r") ? "\n" : "?"); adv(); continue
+            SB = "the escape \\" e; SV = SV "?"; SD = SD (e == "n" ? "\n" : "?"); adv(); continue
         }
         if (c == "\n" || c == "\t" || c == "\r") {
-            SB = "a line break or a tab in the path"; SV = SV "?"; SD = SD (c == "\t" ? "?" : "\n"); adv(); continue
+            # A CR before LF is the CR LF line end that rustc reads as LF.
+            SB = "a line break or a tab in the path"; SV = SV "?"
+            SD = SD ((c == "\n") ? "\n" : (c == "\r" && peek(1) == "\n") ? "" : "?"); adv(); continue
         }
         SV = SV c; SD = SD c; adv()
     }
@@ -1040,7 +1044,7 @@ function raw(sl, sc, h, kind,    c, j) {
             while (j < h && peek(j + 1) == "#") j++
             if (j == h) { advn(h + 1); return lit(kind, sl, sc) }
         }
-        SD = SD ((c == "\n" || c == "\r") ? "\n" : (c == "\t") ? "?" : c)
+        SD = SD ((c == "\n") ? "\n" : (c == "\r" && peek(1) == "\n") ? "" : (c == "\r" || c == "\t") ? "?" : c)
         if (c == "\n" || c == "\t" || c == "\r") { SB = "a line break or a tab in the path"; c = "?" }
         SV = SV c; adv()
     }
@@ -1086,16 +1090,24 @@ function span(l1, c1, l2, c2,    s, i) {
 function out(type, kind, doc, line, rest) {
     print type "\t" kind "\t" NAME "\t" (doc + 0) "\t" line "\t" rest
 }
-function tok(t, x, sl, sc,    open, nd, i) {
+function tok(t, x, sl, sc,    open, nd, nr, i) {
     # A string that names rerun-if-changed= is a build directive for the outside input check,
-    # read within its own quotes. Cargo reads a build script line by line, so each line of
-    # the string text (SD: line breaks kept, a tab or a byte that is not decoded as ?) that
-    # names it is a directive of its own.
+    # read within its own quotes. Cargo splits the output of a build script at LF only, so
+    # each line of the string text (SD: LF kept, an escaped CR, a tab or a byte that is not
+    # decoded as ?) is read on its own. A line that starts with cargo: or cargo:: is a
+    # directive only under the name rerun-if-changed (cargo::warning=... rerun-if-changed=x
+    # is a warning). A line after an LF starts an output line, so without that prefix it is
+    # no directive; the first line may go on a line that the program printed before, and
+    # without the prefix it is still read.
     if (t == "s" && (SK == "plain" || SK == "raw") && index(SD, "rerun-if-changed=")) {
-        nd = split(SD, DL, "\n")
-        for (i = 1; i <= nd; i++)
-            if (index(DL[i], "rerun-if-changed="))
-                out("str", "rerun", INDOC, sl, sl ":" sc "\t" SEL ":" SEC "\t" DL[i])
+        nd = split(SD, DL, "\n"); nr = 0
+        for (i = 1; i <= nd; i++) {
+            if (!index(DL[i], "rerun-if-changed=")) continue
+            if (DL[i] ~ /^cargo:/) { if (DL[i] !~ /^cargo::?rerun-if-changed=/) continue }
+            else if (i > 1) continue
+            out("str", "rerun", INDOC, sl, sl ":" sc "\t" SEL ":" SEC "\t" DL[i]); nr++
+        }
+        if (nr == 0) out("str", "rerun", INDOC, sl, sl ":" sc "\t" SEL ":" SEC "\t")
     }
     if (CS == 3) {
         if (t == "s" && (SK == "plain" || SK == "raw")) {

@@ -2078,36 +2078,92 @@ fn a_comment_before_a_build_directive_is_not_read_as_its_path() {
     );
 }
 
-/// Cargo reads a build script line by line, so a string that holds two directives on two
-/// lines (an escaped line break, an escaped byte 0x0a or a raw string over two lines) names
-/// the path of each. Two directives on one line are one path, which stays in the crate.
+/// Cargo splits the output of a build script at LF only, so a string that holds two
+/// directives on two lines (an escaped LF, an escaped byte 0x0a or a raw string over two
+/// lines, also in a file with CR LF line ends) names the path of each, while an escaped CR
+/// stays in the path. A line is a directive only under the name rerun-if-changed, in the
+/// cargo: and the cargo:: form: a warning that names it is no input, also next to a real
+/// directive on the same source line. Two directives on one line are one path, which stays
+/// in the crate.
 #[test]
 fn each_line_of_a_build_directive_string_is_read() {
     let want = "tasty-b reads crates/outside.txt outside its crate (crates/tasty-b/build.rs)";
     let mut failures = Vec::new();
-    for (label, call, code_want) in [
+    for (label, eol, call, code_want) in [
         (
             "escaped line break",
+            "\n",
             r#"println!("cargo:rerun-if-changed=inside\"\ncargo:rerun-if-changed=../outside.txt");"#,
             2,
         ),
         (
             "escaped byte",
+            "\n",
             r#"println!("cargo:rerun-if-changed=inside\x0acargo:rerun-if-changed=../outside.txt");"#,
             2,
         ),
         (
             "raw string",
+            "\n",
             "println!(r\"cargo:rerun-if-changed=inside\ncargo:rerun-if-changed=../outside.txt\");",
             2,
         ),
         (
+            "raw string, CR LF",
+            "\r\n",
+            "println!(r\"cargo:rerun-if-changed=inside\r\ncargo:rerun-if-changed=../outside.txt\");",
+            2,
+        ),
+        (
+            "CR LF, in the crate",
+            "\r\n",
+            "println!(r\"cargo:rerun-if-changed=build.rs\r\ncargo:rerun-if-changed=src/lib.rs\");",
+            0,
+        ),
+        (
+            "escaped CR",
+            "\n",
+            r#"println!("cargo:rerun-if-changed=sub\r/../../outside.txt");"#,
+            2,
+        ),
+        (
+            "escaped byte 0x0d",
+            "\n",
+            r#"println!("cargo:rerun-if-changed=sub\x0d/../../outside.txt");"#,
+            2,
+        ),
+        (
+            "escaped U+000D",
+            "\n",
+            r#"println!("cargo:rerun-if-changed=sub\u{d}/../../outside.txt");"#,
+            2,
+        ),
+        (
+            "cargo:: form",
+            "\n",
+            r#"println!("cargo::rerun-if-changed=../outside.txt");"#,
+            2,
+        ),
+        (
+            "warning",
+            "\n",
+            r#"println!("cargo::rerun-if-changed=build.rs\ncargo::warning=example rerun-if-changed=../outside.txt");"#,
+            0,
+        ),
+        (
+            "warning, then a directive on the same line",
+            "\n",
+            r#"println!("cargo::warning=a rerun-if-changed=b"); println!("cargo:rerun-if-changed=../outside.txt");"#,
+            2,
+        ),
+        (
             "one line",
+            "\n",
             r#"println!("cargo:rerun-if-changed=inside rerun-if-changed=../outside.txt");"#,
             0,
         ),
     ] {
-        let build = format!("fn main() {{\n    {call}\n}}\n");
+        let build = format!("fn main() {{{eol}    {call}{eol}}}{eol}");
         let f = PinFixture::tasty_moved_twice(
             &[
                 ("crates/outside.txt", "one\n"),
