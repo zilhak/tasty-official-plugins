@@ -1339,15 +1339,16 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
 }
 
 # Whether the inherited sources of the tasty root Cargo.toml differ between two commits:
-# [workspace.dependencies] and [workspace.package] with their subtables, and dotted keys
-# dependencies.* and package.* of [workspace] (or workspace.* at the top). The manifest is
-# read as TOML keys (toml_lines_body with TOML_MULTI=1). A comment does not count, nor do
-# the blanks at the ends of a line that no multi-line string spans. Spacing inside a line,
-# and the lines a multi-line string spans with their blanks (also those after its closing
-# delimiter, up to a comment), are kept, which errs toward a bump or a stop. Only matters
-# to a crate that inherits from them. Stops when a record that cannot be read could be in
-# those sources, or when a multi-line value in them changed; a multi-line string elsewhere,
-# or one in them that did not change, is passed over.
+# [workspace.dependencies] and [workspace.package] with their subtables, and the keys
+# dependencies and package of [workspace], dotted or as inline tables (or the same keys under
+# workspace. at the top). An inline table is one record, so a change of any of its fields is
+# a change. The manifest is read as TOML keys (toml_lines_body with TOML_MULTI=1). A comment
+# does not count, nor do the blanks at the ends of a line that no multi-line string spans.
+# Spacing inside a line, and the lines a multi-line string spans with their blanks (also
+# those after its closing delimiter, up to a comment), are kept, which errs toward a bump or
+# a stop. Only matters to a crate that inherits from them. Stops when a record that cannot
+# be read could be in those sources, or when a multi-line value in them changed; a
+# multi-line string elsewhere, or one in them that did not change, is passed over.
 pin_root_inherited_changed() {  # <src> <old> <new>
     local c bad
     for c in "$2" "$3"; do
@@ -1359,8 +1360,8 @@ pin_root_inherited_changed() {  # <src> <old> <new>
                 if (n >= 2 && sp[1] == "workspace" && (sp[2] == "dependencies" || sp[2] == "package")) return 1
                 e = eq_at(line); if (!e) return 0
                 m = split_key(substr(line, 1, e - 1), kp)
-                if (sec != "" && n == 1 && sp[1] == "workspace") return m >= 2 && (kp[1] == "dependencies" || kp[1] == "package")
-                if (sec == "") return m >= 3 && kp[1] == "workspace" && (kp[2] == "dependencies" || kp[2] == "package")
+                if (sec != "" && n == 1 && sp[1] == "workspace") return m >= 1 && (kp[1] == "dependencies" || kp[1] == "package")
+                if (sec == "") return m >= 2 && kp[1] == "workspace" && (kp[2] == "dependencies" || kp[2] == "package")
                 return 0
             }
             $1 == "<unreadable>" {

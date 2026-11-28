@@ -2860,11 +2860,18 @@ impl PinFixture {
     /// [package] lines of tasty-a, pinned; then `from` → `to` in the root manifest (or a new
     /// docs/new.md when `from` is empty) and another pin move.
     fn inherited_move(root: &str, a: &str, from: &str, to: &str) -> PinFixture {
-        let f = PinFixture::new();
-        f.tasty_write(
-            "Cargo.toml",
+        PinFixture::inherited_move_whole(
             &format!("[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n{root}"),
-        );
+            a,
+            from,
+            to,
+        )
+    }
+
+    /// inherited_move with `root` as the whole root manifest.
+    fn inherited_move_whole(root: &str, a: &str, from: &str, to: &str) -> PinFixture {
+        let f = PinFixture::new();
+        f.tasty_write("Cargo.toml", root);
         f.tasty_write(
             "crates/tasty-a/Cargo.toml",
             &format!("[package]\nname = \"tasty-a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n{a}"),
@@ -3033,6 +3040,67 @@ fn a_workspace_key_inside_a_string_is_no_inheritance() {
         }
     }
     assert_cases(failures);
+}
+
+/// The keys package and dependencies of the root [workspace] are inherited sources also
+/// when written as inline tables, at the top under workspace. as well.
+#[test]
+fn an_inline_table_of_the_root_workspace_is_an_inherited_source() {
+    let mut failures = Vec::new();
+    let mut case = |what: &str, f: PinFixture| {
+        let (code, text) = f.check(&HEAD_RANGE);
+        let inherited = reasons_of(&text, "alpha")
+            .iter()
+            .any(|r| r.starts_with("tasty-a ") && r.contains(INHERITED));
+        if code != 1 || !inherited {
+            failures.push(format!("{what}: exit {code}\n{text}"));
+        }
+    };
+    case(
+        "package in [workspace]",
+        PinFixture::inherited_move(
+            "package = { authors = [\"one\"] }\n",
+            AUTHORS,
+            "\"one\"",
+            "\"two\"",
+        ),
+    );
+    case(
+        "dependencies in [workspace]",
+        PinFixture::inherited_move(
+            "dependencies = { tasty-b = { path = \"crates/tasty-b\", version = \"0.1.0\" } }\n",
+            "\n[dependencies]\ntasty-b.workspace = true\n",
+            "\"0.1.0\" }",
+            "\"0.1\" }",
+        ),
+    );
+    case(
+        "workspace.package at the top",
+        PinFixture::inherited_move_whole(
+            "workspace.members = [\"crates/*\"]\nworkspace.resolver = \"2\"\n\
+             workspace.package = { authors = [\"one\"] }\n",
+            AUTHORS,
+            "\"one\"",
+            "\"two\"",
+        ),
+    );
+    assert_cases(failures);
+}
+
+/// A dotted key at the top of the root manifest is read as the same key in its table: a
+/// multi-line value there stops the check when it changed, and a plain one is compared.
+#[test]
+fn a_multi_line_top_level_dotted_key_of_the_inherited_sources_is_read() {
+    let root = "workspace.members = [\"crates/*\"]\nworkspace.resolver = \"2\"\n\
+                workspace.package.description = \"\"\"\none\n\"\"\"\n\
+                workspace.package.authors = [\"a\"]\n";
+    let f = PinFixture::inherited_move_whole(root, AUTHORS, "one\n", "two\n");
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "a multi-line string in the inherited sections of the root Cargo.toml",
+    );
+    let f = PinFixture::inherited_move_whole(root, AUTHORS, "[\"a\"]", "[\"b\"]");
+    assert_inherited(&f.check(&HEAD_RANGE), "authors");
 }
 
 /// version.workspace = true in [package] takes the version of [workspace.package] in the
