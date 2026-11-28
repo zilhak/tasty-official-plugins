@@ -1779,6 +1779,45 @@ fn a_text_include_path_that_goes_up_from_a_link_is_undecidable() {
     );
 }
 
+/// A directory that a .. step leaves and that git cannot look up is undecidable, not taken
+/// as no link. Only the lookup of that directory fails here.
+#[test]
+fn a_link_step_lookup_that_fails_is_undecidable() {
+    const MARK: &str = "zz-link-step-lookup-died-here";
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            ("crates/tasty-b/src/sub/keep", "keep\n"),
+            ("crates/tasty-b/src/help.txt", "one\n"),
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!("pub const H: &str = include_str!(\"sub/../help.txt\");\n{TASTY_B_FN}"),
+            ),
+        ],
+        &[("crates/tasty-b/src/help.txt", "two\n")],
+    );
+    let stub = tempfile::tempdir().expect("stub dir");
+    support::write_executable(
+        &stub.path().join("git"),
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *\" ls-tree \"*\" crates/tasty-b/src/sub \"*) echo {MARK} >&2; exit 68 ;; esac\nexec \"{real}\" \"$@\"\n",
+            real = real_git()
+        ),
+    )
+    .expect("write the stub");
+    let mut cmd = f.command(false);
+    cmd.env("PATH", path_with(stub.path()));
+    let (code, text) = run(cmd, &HEAD_RANGE);
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("cannot read the tree entry of crates/tasty-b/src/sub at "),
+        "{text}"
+    );
+    assert!(
+        text.contains(MARK),
+        "the stand-in did not fail the lookup:\n{text}"
+    );
+}
+
 /// The build script of a nested package opened under another name, through a link, is still
 /// that build script.
 #[test]
@@ -1803,6 +1842,32 @@ fn a_nested_build_script_included_through_a_link_is_undecidable() {
         &f.check(&HEAD_RANGE),
         "tasty-b uses crates/tasty-b/nested/build.rs, the build script of another package \
          (crates/tasty-b/nested/Cargo.toml), as a source",
+    );
+}
+
+/// A build directive string is also taken out of the line before the text search, so a
+/// comment before it that names rerun-if-changed= with ../ is not read as a path that runs
+/// up to the quote of the directive.
+#[test]
+fn a_comment_before_a_build_directive_is_not_read_as_its_path() {
+    let f = PinFixture::tasty_moved_twice(
+        &[(
+            "crates/tasty-b/build.rs",
+            "fn main() {\n    let _ = \"prefix\"; /* rerun-if-changed=../../junk.txt */ \
+             println!(\"cargo:rerun-if-changed=build.rs\");\n}\n",
+        )],
+        &[(
+            "crates/tasty-b/src/lib.rs",
+            "pub fn b() -> u32 {\n    3\n}\n",
+        )],
+    );
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.contains("changed: crates/tasty-b/src/lib.rs")),
+        "{text}"
     );
 }
 
