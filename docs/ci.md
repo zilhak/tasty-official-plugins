@@ -643,7 +643,9 @@ order:
    manifest `version`.
 3. `pack` then writes `SHA256SUMS-<platform>.txt` (the `sha256sum` format) and
    `plugins-<platform>.tsv` with the columns `id`, `version`, `platform`, `file`,
-   `sha256`.
+   `sha256`. A `repo-gates` test (`crates/repo-gates/tests/archive_modes.rs`) passes the
+   two lists of a `pack` run to `scripts/release-check.sh` `sums` and `rows` as the publish
+   job does; the format those take is in the head comment of that script.
 
 The packages are not signed. `pack` fails if the stage holds a `.sig` file or if an
 archive contains one. It also fails if an archive lacks a file of the notice set, or the
