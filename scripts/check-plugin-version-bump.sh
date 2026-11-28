@@ -959,6 +959,8 @@ open_tree_file() {  # <src> <commit> <path> <out>
 # A path is decoded from \\, \", \', \x00-\x7F, \u{0}-\u{7F} and line continuations (also
 # before a CR LF line end); any other escape, a line break, a tab, a CR or a NUL makes it a
 # bad record.
+# This is an awk program, so its $ fields must not expand in the shell.
+# shellcheck disable=SC2016
 RUST_SCAN_AWK='
 function cur() { if (ln > N) return ""; return (cl <= LN[ln]) ? substr(L[ln], cl, 1) : "\n" }
 function peek(k,    p) {
