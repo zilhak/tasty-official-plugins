@@ -2047,6 +2047,363 @@ fn a_judge_started_for_an_included_file_skips_non_shipping_sources() {
     assert_ext_changed(&f.check_judged(&HEAD_RANGE), "README.md", "judged");
 }
 
+// The include calls of a pinned crate are read as Rust tokens (RUST_SCAN_AWK in the script).
+// Each test runs all its inputs and fails once with every input that did not hold.
+
+/// Fails with every collected failure, so one input does not hide the others.
+fn assert_cases(failures: Vec<String>) {
+    assert!(
+        failures.is_empty(),
+        "{} case(s) failed:\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+/// `Some(path)`: exit 1 with beta flagged for `changed: <path>` of ext; `None`: exit 0.
+fn ext_outcome((code, text): &(i32, String), want: Option<&str>) -> Result<(), String> {
+    let ok = match want {
+        Some(path) => {
+            *code == 1
+                && text.contains("crates/tasty-plugin-beta: shipped content changed")
+                && reasons_of(text, "beta")
+                    .iter()
+                    .any(|r| r.starts_with("ext ") && r.contains(&format!("changed: {path}")))
+        }
+        None => *code == 0,
+    };
+    if ok {
+        return Ok(());
+    }
+    let want = want.map_or("exit 0".to_string(), |p| format!("exit 1 for {p}"));
+    Err(format!("want {want}, got exit {code}:\n{text}"))
+}
+
+/// ext with `files` and src/help.md, then a pin move that changes only src/help.md; the gate
+/// with the judge or without.
+fn help_moved(files: &[(&str, &str)], judged: bool) -> (i32, String) {
+    let mut all = vec![("src/help.md", "1\n")];
+    all.extend_from_slice(files);
+    let f = PinFixture::ext_moved(&all, &[("src/help.md", "2\n")]);
+    if judged {
+        f.check_judged(&HEAD_RANGE)
+    } else {
+        f.check(&HEAD_RANGE)
+    }
+}
+
+/// Each `(line, want)`: src/lib.rs is EXT_LIB and `line`, then only src/help.md changes.
+fn help_line_cases(cases: &[(&str, Option<&str>)]) {
+    let mut failures = Vec::new();
+    for (line, want) in cases {
+        let lib = format!("{EXT_LIB}{line}\n");
+        if let Err(e) = ext_outcome(&help_moved(&[("src/lib.rs", &lib)], false), *want) {
+            failures.push(format!("{line:?}: {e}"));
+        }
+    }
+    assert_cases(failures);
+}
+
+const HELP: Option<&str> = Some("src/help.md");
+
+#[test]
+fn an_include_with_another_delimiter_or_a_comment_is_compared() {
+    help_line_cases(&[
+        ("pub const H: &str = include_str!{\"help.md\"};", HELP),
+        ("pub const H: &str = include_str![\"help.md\"];", HELP),
+        (
+            "pub const H: &str = include_str!(/* c */ \"help.md\");",
+            HELP,
+        ),
+        (
+            "pub const H: &str = include_str!(// c\n    \"help.md\");",
+            HELP,
+        ),
+        ("pub const H: &str = include_str !(\"help.md\");", HELP),
+        (
+            "pub const H: &str = include_str /* c */ ! (\"help.md\");",
+            HELP,
+        ),
+        ("pub const H: &[u8] = include_bytes! { \"help.md\" };", HELP),
+        ("pub const H: &str = r#include_str!(\"help.md\");", HELP),
+        ("pub const H: &str = std::include_str!(\"help.md\");", HELP),
+    ]);
+}
+
+#[test]
+fn a_raw_string_doc_attribute_does_not_hide_a_later_include() {
+    help_line_cases(&[(
+        "#[doc = r#\"a \" b\"#]\npub fn d() {}\npub const H: &str = include_str!(\"help.md\");",
+        HELP,
+    )]);
+}
+
+/// A raw string ends at a quote with as many hashes as opened it: fewer do not end it, and
+/// more leave the rest as tokens of their own.
+#[test]
+fn a_raw_string_ends_after_its_own_hashes() {
+    help_line_cases(&[
+        (
+            "pub const S: &str = r##\"a \"# include_str!(\"help.md\") b\"##;",
+            None,
+        ),
+        (
+            "macro_rules! tail { ($x:literal #) => {}; }\ntail!(r#\"ok\"##);\n\
+             pub const H: &str = include_str!(\"help.md\");",
+            HELP,
+        ),
+    ]);
+}
+
+/// The macro name is a whole identifier: a longer name that ends in include_str is another
+/// macro, also with a prefix outside ASCII, while Rust whitespace outside ASCII (U+200E)
+/// before the name separates it.
+#[test]
+fn an_include_name_is_read_as_a_whole_token() {
+    help_line_cases(&[
+        (
+            "macro_rules! my_include_str { ($p:literal) => { \"\" }; }\n\
+             pub const H: &str = my_include_str!(\"help.md\");",
+            None,
+        ),
+        (
+            "macro_rules! 가include_str { ($p:literal) => { \"\" }; }\n\
+             pub const H: &str = 가include_str!(\"help.md\");",
+            None,
+        ),
+        (
+            "pub const H: &str = \u{200e}include_str!(\"help.md\");",
+            HELP,
+        ),
+        ("pub const H: &str = include_str!(\"help.md\");", HELP),
+    ]);
+}
+
+#[test]
+fn a_quote_in_a_char_literal_does_not_hide_an_include() {
+    let call = "pub const H: &str = include_str!(\"help.md\");";
+    let cases: Vec<String> = [
+        "pub const Q: char = '\"';",
+        "pub const Q: char = '\\'';",
+        "pub const Q: u8 = b'\"';",
+        "pub const Q: char = '가';",
+        "pub fn f<'a>(x: &'a str) -> &'a str { x }",
+    ]
+    .iter()
+    .map(|l| format!("{l}\n{call}"))
+    .collect();
+    let cases: Vec<(&str, Option<&str>)> = cases.iter().map(|c| (c.as_str(), HELP)).collect();
+    help_line_cases(&cases);
+}
+
+#[test]
+fn an_include_after_a_nested_block_comment_is_compared() {
+    help_line_cases(&[(
+        "/* a /* b */ c */\npub const H: &str = include_str!(\"help.md\");",
+        HELP,
+    )]);
+}
+
+#[test]
+fn an_include_between_the_closes_of_a_nested_comment_is_not_read() {
+    help_line_cases(&[("/* a /* b */ include_str!(\"help.md\") */", None)]);
+}
+
+#[test]
+fn an_include_written_inside_a_plain_string_is_not_read() {
+    help_line_cases(&[(
+        "pub const S: &str = \"include_str!(\\\"help.md\\\")\";",
+        None,
+    )]);
+}
+
+#[test]
+fn an_include_written_inside_a_comment_or_raw_string_is_not_read() {
+    help_line_cases(&[
+        ("// include_str!(\"help.md\")", None),
+        (
+            "pub const S: &str = r#\"include_str!(\"help.md\")\"#;",
+            None,
+        ),
+        (
+            "pub const S: &[u8] = br#\"include_str!(\"help.md\")\"#;",
+            None,
+        ),
+        (
+            "pub const S: &std::ffi::CStr = cr#\"include_str!(\"help.md\")\"#;",
+            None,
+        ),
+    ]);
+}
+
+#[test]
+fn a_byte_or_c_raw_string_does_not_hide_a_later_include() {
+    let call = "pub const H: &str = include_str!(\"help.md\");";
+    let byte = format!("pub const A: &[u8] = br#\"one \" two\"#;\n{call}");
+    let c = format!("pub const C: &std::ffi::CStr = cr#\"one \" two\"#;\n{call}");
+    help_line_cases(&[(&byte, HELP), (&c, HELP)]);
+}
+
+#[test]
+fn an_include_path_with_escapes_is_decoded() {
+    help_line_cases(&[
+        ("pub const H: &str = include_str!(\"he\\x6cp.md\");", HELP),
+        ("pub const H: &str = include_str!(\"\\u{68}elp.md\");", HELP),
+        (
+            "pub const H: &str = include_str!(\"he\\\n    lp.md\");",
+            HELP,
+        ),
+    ]);
+}
+
+/// A path that cannot be decoded to one line stops the check and names the file and the
+/// line of the call (EXT_LIB has three lines).
+#[test]
+fn an_include_path_that_cannot_be_decoded_is_undecidable() {
+    let mut failures = Vec::new();
+    for line in [
+        "pub const H: &str = include_str!(\"help\\n.md\");",
+        "pub const H: &str = include_str!(\"he\\u{e9}lp.md\");",
+    ] {
+        let lib = format!("{EXT_LIB}{line}\n");
+        let (code, text) = help_moved(&[("src/lib.rs", &lib)], false);
+        if code != 2 || !text.contains("cannot read the path of an include in src/lib.rs line 4") {
+            failures.push(format!(
+                "{line:?}: want exit 2 naming src/lib.rs line 4, got exit {code}:\n{text}"
+            ));
+        }
+    }
+    assert_cases(failures);
+}
+
+/// A call in a doc attribute is left out before its path is read, so one that cannot be
+/// decoded does not stop the check.
+#[test]
+fn an_undecodable_include_in_crate_docs_is_still_left_out() {
+    let mut failures = Vec::new();
+    for attr in [
+        "#![doc = include_str!(\"he\\u{e9}lp.md\")]\n",
+        "#![doc = include_str!(\"he\\\nlp.md\")]\n",
+    ] {
+        for judged in [false, true] {
+            let lib = format!("{attr}{EXT_LIB}");
+            let f = PinFixture::ext_moved(
+                &[("src/lib.rs", &lib), ("src/help.md", "1\n")],
+                &[("src/help.md", "2\n"), ("README.md", "ext, more\n")],
+            );
+            let r = if judged {
+                f.check_judged(&HEAD_RANGE)
+            } else {
+                f.check(&HEAD_RANGE)
+            };
+            if let Err(e) = ext_outcome(&r, None) {
+                failures.push(format!("{attr:?}, judged {judged}: {e}"));
+            }
+        }
+    }
+    assert_cases(failures);
+}
+
+#[test]
+fn an_include_inside_another_macro_call_is_compared() {
+    help_line_cases(&[(
+        "pub const H: &str = concat!(\"[\", include_str!(\"help.md\"), \"]\");",
+        HELP,
+    )]);
+}
+
+/// stringify! does not open the file, but a call that the tokens name counts: a bump that
+/// may not be needed, not a missed one.
+#[test]
+fn an_include_inside_stringify_is_counted() {
+    help_line_cases(&[(
+        "pub const S: &str = stringify!(include_str!(\"help.md\"));",
+        HELP,
+    )]);
+}
+
+#[test]
+fn an_include_inside_an_included_fragment_is_compared() {
+    let lib = format!("{EXT_LIB}include!(\"body.inc\");\n");
+    let r = help_moved(
+        &[
+            ("src/lib.rs", &lib),
+            (
+                "src/body.inc",
+                "pub const H: &str = include_str!(\n    \"help.md\"\n);\n",
+            ),
+        ],
+        false,
+    );
+    assert_cases(ext_outcome(&r, HELP).err().into_iter().collect());
+}
+
+/// git archive leaves an export-ignore fragment out, so the fragment is read from git.
+#[test]
+fn an_include_inside_an_export_ignored_fragment_is_compared() {
+    let lib = format!("{EXT_LIB}include!(\"body.inc\");\n");
+    let mut failures = Vec::new();
+    for judged in [false, true] {
+        let r = help_moved(
+            &[
+                ("src/lib.rs", &lib),
+                (
+                    "src/body.inc",
+                    "pub const H: &str = include_str!(\"help.md\");\n",
+                ),
+                (".gitattributes", "src/body.inc export-ignore\n"),
+            ],
+            judged,
+        );
+        if let Err(e) = ext_outcome(&r, HELP) {
+            failures.push(format!("judged {judged}: {e}"));
+        }
+    }
+    assert_cases(failures);
+}
+
+/// A fragment that is a link is read through it, and the paths in it are resolved from the
+/// link, as rustc does: help.md sits next to the link only. A link out of the repository
+/// stops the check.
+#[test]
+fn an_include_through_a_linked_fragment_reads_the_link_target() {
+    let lib = format!("{EXT_LIB}include!(\"body.inc\");\n");
+    let mut failures = Vec::new();
+    for (target, inside) in [
+        ("../piece/body.inc", true),
+        ("../../outside/body.inc", false),
+    ] {
+        let f = PinFixture::new();
+        let src = f.ext_dir().join("src");
+        fs::create_dir_all(&src).expect("ext src dir");
+        std::os::unix::fs::symlink(target, src.join("body.inc")).expect("link the fragment");
+        f.root_crate_source(
+            EXT_MANIFEST,
+            &[
+                ("src/lib.rs", &lib),
+                ("src/help.md", "1\n"),
+                (
+                    "piece/body.inc",
+                    "pub const H: &str = include_str!(\"help.md\");\n",
+                ),
+            ],
+        );
+        f.ext_write("src/help.md", "2\n");
+        f.move_ext_pin();
+        let (code, text) = f.check(&HEAD_RANGE);
+        if inside {
+            if let Err(e) = ext_outcome(&(code, text), HELP) {
+                failures.push(format!("{target}: {e}"));
+            }
+        } else if code != 2 || !text.contains("is a link that leaves the repository") {
+            failures.push(format!(
+                "{target}: want exit 2 for a link that leaves the repository, got exit {code}:\n{text}"
+            ));
+        }
+    }
+    assert_cases(failures);
+}
+
 /// A line that only looks like the version line, inside a multi-line string, is content:
 /// with a multi-line string the manifest is compared whole.
 #[test]

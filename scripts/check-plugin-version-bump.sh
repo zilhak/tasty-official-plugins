@@ -697,54 +697,353 @@ pin_sum() {  # <root> <cooked root> <path> <crate dir> <edition>
     esac
 }
 
-# The repository paths that the Rust files under <root> read with include_str! or
-# include_bytes! and a string literal, one per line, resolved against the file that holds
-# the call (the call and its literal may span lines). A call inside a doc attribute
-# (#[doc = ...] or #![doc = ...], up to the bracket that closes it) is crate documentation
-# and is left out. Paths built by macros are not read.
-include_paths() {  # <root>
-    [ -d "$1" ] || return 0
-    (cd "$1" && find . -name '*.rs' -type f -exec awk '
-        function flush(   s, n, i, c, q, d, st, ns, p, rest, lit, base, parts, np, out, j, top, stack, bad) {
-            s = buf; n = length(s); ns = 0
-            # The spans of the doc attributes, with brackets counted outside strings.
-            rest = s; p = 0
-            while (match(rest, /#!?\[[[:space:]]*doc[[:space:]]*=/)) {
-                st = p + RSTART; d = 0; q = 0
-                for (i = st; i <= n; i++) {
-                    c = substr(s, i, 1)
-                    if (q) { if (c == "\\") i++; else if (c == "\"") q = 0; continue }
-                    if (c == "\"") q = 1
-                    else if (c == "[") d++
-                    else if (c == "]") { d--; if (d == 0) break }
-                }
-                ns++; ds[ns] = st; de[ns] = i
-                p = i; rest = substr(s, i + 1)
+# Sets TREE_MODE, TREE_TYPE and TREE_OID to the entry of exactly <path> in the tree of <rev>
+# in <src> (ls-tree -z --full-tree, the name as it is). Returns 0 when the entry is there, 1
+# when git listed the tree and it has no such entry, 2 when git cannot list it. Called
+# without command substitution, so that the caller tells the three apart in the main shell.
+tree_entry() {  # <src> <rev> <path>
+    local t="$WORK/tree-entry" rec meta tab
+    tab=$(printf '\t')
+    TREE_MODE=""; TREE_TYPE=""; TREE_OID=""
+    xgit -C "$1" --literal-pathspecs ls-tree -z --full-tree "$2" -- "$3" > "$t" || return 2
+    while IFS= read -r -d '' rec; do
+        [ "${rec#*"$tab"}" = "$3" ] || continue
+        meta=${rec%%"$tab"*}
+        TREE_MODE=${meta%% *}; meta=${meta#* }
+        TREE_TYPE=${meta%% *}; TREE_OID=${meta#* }
+        return 0
+    done < "$t"
+    return 1
+}
+
+# Writes the file <path> of <src> at <commit> to <out>, through links inside the repository
+# (each resolved from its own directory, at most 8 in a row). Returns 1 when git listed the
+# tree and has no entry there, and no directory above it is a link or a submodule: rustc
+# finds nothing there either. Stops on a link that leaves the repository, a submodule or
+# a directory, a path below a link or a submodule, and a tree that git cannot list.
+open_tree_file() {  # <src> <commit> <path> <out>
+    local p="$3" hops=0 rc t up
+    while :; do
+        rc=0; tree_entry "$1" "$2" "$p" || rc=$?
+        [ "$rc" -le 1 ] || die "cannot read the tree entry of $p at ${2:0:8} in $1."
+        if [ "$rc" = 1 ]; then
+            up=$p
+            while [ "${up%/*}" != "$up" ]; do
+                up=${up%/*}
+                rc=0; tree_entry "$1" "$2" "$up" || rc=$?
+                [ "$rc" -le 1 ] || die "cannot read the tree entry of $up at ${2:0:8} in $1."
+                [ "$rc" = 1 ] && continue
+                [ "$TREE_MODE" = 040000 ] && break
+                die "$3 at ${2:0:8} is below $up, which is not a directory (mode $TREE_MODE); judge the plugin versions by hand."
+            done
+            return 1
+        fi
+        case "$TREE_MODE" in
+            100644|100755)
+                xgit -C "$1" cat-file blob "$TREE_OID" > "$4" || die "cannot read $p at ${2:0:8} in $1."
+                return 0 ;;
+            120000)
+                hops=$((hops + 1))
+                [ "$hops" -le 8 ] || die "$3 at ${2:0:8} goes through more than 8 links; judge the plugin versions by hand."
+                t=$(xgit -C "$1" cat-file blob "$TREE_OID") || die "cannot read the link $p at ${2:0:8} in $1."
+                case "$t" in /*) up="" ;; *) up=$(norm_path "$(dirname "$p")/$t") ;; esac
+                [ -n "$up" ] || die "$3 at ${2:0:8} is a link that leaves the repository ($p -> $t); judge the plugin versions by hand."
+                p=$up ;;
+            *) die "$3 at ${2:0:8} is not a file ($p is a $TREE_TYPE, mode $TREE_MODE); judge the plugin versions by hand." ;;
+        esac
+    done
+}
+
+# Reads one Rust file as tokens, byte by byte (run with LC_ALL=C, so every awk reads the same
+# bytes), and prints a record per include!, include_str! and include_bytes! call, tab
+# separated: "lit <kind> <file> <doc> <line> <start line:col> <end line:col> <path>" when
+# the first token of its arguments is a plain or raw string, "bad <kind> <file> <doc>
+# <line> <reason> <path with ? for what is not decoded>" when that string cannot be
+# decoded to one line, and "arg <kind> <file> <doc> <line> <arguments as written>"
+# otherwise. <file> is RS_NAME, <line> the line of the macro name, <doc> 1 inside a doc
+# attribute (#[doc = ...] or #![doc = ...], to the bracket that closes it), and the
+# columns those of the literal with its prefix and quotes, in bytes.
+# Line, block (nested) and doc comments, strings, byte and C strings, raw strings (closed
+# by a quote and as many hashes as opened them), character and byte literals, lifetimes and
+# raw identifiers are tokens, so a call written inside them is not read. Rust whitespace
+# (also U+0085, U+200E, U+200F, U+2028, U+2029) separates tokens; any other byte outside
+# ASCII belongs to an identifier, so my_include_str! and an identifier that ends in
+# include_str are other macros. A call inside the arguments of another macro is read, also
+# inside stringify!, which does not open the file: a call the tokens name counts.
+# A path is decoded from \\, \", \', \x00-\x7F, \u{0}-\u{7F} and line continuations; any
+# other escape, a line break, a tab, a CR or a NUL makes it a bad record.
+RUST_SCAN_AWK='
+function cur() { if (ln > N) return ""; return (cl <= LN[ln]) ? substr(L[ln], cl, 1) : "\n" }
+function peek(k,    p) {
+    if (ln > N) return ""
+    p = cl + k
+    if (p <= LN[ln]) return substr(L[ln], p, 1)
+    return (p == LN[ln] + 1) ? "\n" : ""
+}
+function adv() { if (ln > N) return; if (cl <= LN[ln]) cl++; else { ln++; cl = 1 } }
+function advn(k) { while (k-- > 0) adv() }
+function wslen(    c, s) {
+    c = cur()
+    if (c == " " || c == "\t" || c == "\n" || c == "\r" || c == "\013" || c == "\014") return 1
+    if (c == "\302") return (peek(1) == "\205") ? 2 : 0
+    if (c == "\342") {
+        s = peek(1) peek(2)
+        if (s == "\200\216" || s == "\200\217" || s == "\200\250" || s == "\200\251") return 3
+    }
+    return 0
+}
+function idc(c) { return c ~ /^[A-Za-z0-9_]$/ || c >= "\200" }
+function ident(    s, c) {
+    s = ""
+    while (ln <= N) {
+        c = cur()
+        if (!idc(c) || (c >= "\200" && wslen())) break
+        s = s c; adv()
+    }
+    return s
+}
+function hexval(h,    i, c, d, n) {
+    if (h == "" || substr(h, 1, 1) == "_") return -1
+    n = 0
+    for (i = 1; i <= length(h); i++) {
+        c = substr(h, i, 1)
+        if (c == "_") continue
+        d = index("0123456789abcdef", tolower(c))
+        if (!d) return -1
+        n = n * 16 + d - 1
+        if (n > 1114111) return 1114112
+    }
+    return n
+}
+function addc(n) {
+    if (n == 0 || n == 9 || n == 10 || n == 13) { SB = "a control character in the path"; SV = SV "?"; return }
+    SV = SV sprintf("%c", n)
+}
+function plain(sl, sc, kind,    c, e, h) {
+    SV = ""; SB = ""; adv()
+    while (ln <= N) {
+        c = cur()
+        if (c == "\"") { adv(); return lit(kind, sl, sc) }
+        if (c == "\\") {
+            adv(); e = cur()
+            if (e == "\n") {
+                adv()
+                while (ln <= N && (cur() == " " || cur() == "\t" || cur() == "\n" || cur() == "\r")) adv()
+                continue
             }
-            rest = s; p = 0
-            while (match(rest, /include_(str|bytes)![[:space:]]*\([[:space:]]*r?#*"[^"]*"/)) {
-                st = p + RSTART; lit = substr(rest, RSTART, RLENGTH)
-                p = p + RSTART + RLENGTH - 1; rest = substr(s, p + 1)
-                for (j = 1; j <= ns; j++) if (st >= ds[j] && st <= de[j]) break
-                if (j <= ns) continue
-                sub(/^[^"]*"/, "", lit); sub(/"$/, "", lit)
-                if (lit == "" || substr(lit, 1, 1) == "/") continue
-                base = file; sub(/[^\/]*$/, "", base)
-                np = split(base lit, parts, "/"); top = 0; bad = 0
-                for (j = 1; j <= np; j++) {
-                    if (parts[j] == "" || parts[j] == ".") continue
-                    if (parts[j] == "..") { if (top == 0) { bad = 1; break } top--; continue }
-                    stack[++top] = parts[j]
-                }
-                if (bad) continue
-                out = ""
-                for (j = 1; j <= top; j++) out = out (j > 1 ? "/" : "") stack[j]
-                print out
+            if (e == "\\" || e == "\"" || e == "\047") { SV = SV e; adv(); continue }
+            if (e == "x") {
+                adv(); h = cur(); adv(); h = h cur(); adv()
+                e = hexval(h)
+                if (e < 0 || e > 127) { SB = "the escape \\x" h; SV = SV "?" } else addc(e)
+                continue
             }
+            if (e == "u") {
+                adv(); h = ""
+                if (cur() == "{") {
+                    adv()
+                    while (ln <= N && cur() ~ /^[0-9A-Fa-f_]$/) { h = h cur(); adv() }
+                    if (cur() == "}") adv()
+                }
+                e = hexval(h)
+                if (e < 0 || e > 127) { SB = "the escape \\u{" h "}"; SV = SV "?" } else addc(e)
+                continue
+            }
+            SB = "the escape \\" e; SV = SV "?"; adv(); continue
         }
-        FNR == 1 { if (file != "") flush(); file = FILENAME; sub(/^\.\//, "", file); buf = "" }
-        { buf = buf $0 "\n" }
-        END { if (file != "") flush() }' {} +) | sort -u
+        if (c == "\n" || c == "\t" || c == "\r") { SB = "a line break or a tab in the path"; SV = SV "?"; adv(); continue }
+        SV = SV c; adv()
+    }
+    return 0
+}
+function raw(sl, sc, h, kind,    c, j) {
+    SV = ""; SB = ""; advn(h + 1)
+    while (ln <= N) {
+        c = cur()
+        if (c == "\"") {
+            j = 0
+            while (j < h && peek(j + 1) == "#") j++
+            if (j == h) { advn(h + 1); return lit(kind, sl, sc) }
+        }
+        if (c == "\n" || c == "\t" || c == "\r") { SB = "a line break or a tab in the path"; c = "?" }
+        SV = SV c; adv()
+    }
+    return 0
+}
+function lit(kind, sl, sc) { SK = kind; SEL = ln; SEC = cl - 1; tok("s", "", sl, sc); return 1 }
+function quote(sl, sc,    p, k) {
+    p = peek(1)
+    if (p == "\\") {
+        advn(3)
+        while (ln <= N && cur() != "\047" && cur() != "\n") adv()
+        if (cur() == "\047") adv()
+        tok("c", "", sl, sc); return
+    }
+    if (p != "" && p != "\n" && p != "\047" && p < "\200" && peek(2) == "\047") { advn(3); tok("c", "", sl, sc); return }
+    if (p >= "\200") {
+        k = 1
+        while (k < 4 && peek(k + 1) >= "\200") k++
+        if (peek(k + 1) == "\047") { advn(k + 2); tok("c", "", sl, sc); return }
+    }
+    if (idc(p)) { adv(); ident(); tok("l", "", sl, sc); return }
+    adv(); tok("p", "\047", sl, sc)
+}
+function comment(    d) {
+    d = 1; advn(2)
+    while (ln <= N) {
+        if (cur() == "/" && peek(1) == "*") { d++; advn(2); continue }
+        if (cur() == "*" && peek(1) == "/") { d--; advn(2); if (d == 0) return 1; continue }
+        adv()
+    }
+    return 0
+}
+function span(l1, c1, l2, c2,    s, i) {
+    if (l1 == l2) s = substr(L[l1], c1, c2 - c1 + 1)
+    else {
+        s = substr(L[l1], c1)
+        for (i = l1 + 1; i < l2; i++) s = s " " L[i]
+        s = s " " substr(L[l2], 1, c2)
+    }
+    gsub(/\t/, " ", s)
+    return s
+}
+function out(type, kind, doc, line, rest) {
+    print type "\t" kind "\t" NAME "\t" (doc + 0) "\t" line "\t" rest
+}
+function tok(t, x, sl, sc,    open) {
+    if (CS == 3) {
+        if (t == "s" && (SK == "plain" || SK == "raw")) {
+            if (SB != "") out("bad", CK, CD, CL, SB "\t" SV)
+            else out("lit", CK, CD, CL, sl ":" sc "\t" SEL ":" SEC "\t" SV)
+        } else {
+            NP++; PL[NP] = CLEV; PK[NP] = CK; PD[NP] = CD; PN[NP] = CL; PSL[NP] = AL; PSC[NP] = AC
+        }
+        CS = 0
+    }
+    open = (t == "p" && (x == "(" || x == "[" || x == "{"))
+    if (open) BD++
+    else if (t == "p" && (x == ")" || x == "]" || x == "}")) {
+        while (NP > 0 && PL[NP] == BD) {
+            out("arg", PK[NP], PD[NP], PN[NP], span(PSL[NP], PSC[NP], sl, sc - 1))
+            NP--
+        }
+        if (INDOC && BD == DOCBD && x == "]") INDOC = 0
+        if (BD > 0) BD--
+    }
+    if (CS == 1) CS = (t == "p" && x == "!") ? 2 : 0
+    else if (CS == 2) {
+        if (open) { CS = 3; CLEV = BD; AL = sl; AC = sc + 1 } else CS = 0
+    } else if (t == "i" && (x == "include" || x == "include_str" || x == "include_bytes")) {
+        CS = 1; CK = x; CD = INDOC; CL = sl
+    }
+    if (DA == 1 || DA == 2) {
+        if (DA == 1 && t == "p" && x == "!") DA = 2
+        else if (open && x == "[") { DA = 3; ALEV = BD }
+        else DA = 0
+    } else if (DA == 3) DA = (t == "i" && x == "doc") ? 4 : 0
+    else if (DA == 4) { if (t == "p" && x == "=") { INDOC = 1; DOCBD = ALEV } DA = 0 }
+    if (DA == 0 && t == "p" && x == "#") DA = 1
+}
+function scan(    c, k, sl, sc, id, h) {
+    ln = 1; cl = 1
+    while (ln <= N) {
+        k = wslen()
+        if (k) { advn(k); continue }
+        c = cur(); sl = ln; sc = cl
+        if (c == "/" && peek(1) == "/") { ln++; cl = 1; continue }
+        if (c == "/" && peek(1) == "*") { if (!comment()) return; continue }
+        if (c == "\"") { if (!plain(sl, sc, "plain")) return; continue }
+        if (c == "\047") { quote(sl, sc); continue }
+        if (idc(c)) {
+            id = ident(); c = cur()
+            if ((id == "r" || id == "br" || id == "cr") && (c == "\"" || c == "#")) {
+                h = 0
+                while (peek(h) == "#") h++
+                if (peek(h) == "\"") { if (!raw(sl, sc, h, id == "r" ? "raw" : id)) return; continue }
+                if (id == "r" && h == 1 && idc(peek(1))) { adv(); tok("i", ident(), sl, sc); continue }
+            }
+            if ((id == "b" || id == "c") && c == "\"") { if (!plain(sl, sc, id)) return; continue }
+            if (id == "b" && c == "\047") { quote(sl, sc); continue }
+            tok("i", id, sl, sc); continue
+        }
+        adv(); tok("p", c, sl, sc)
+    }
+}
+{ L[++N] = $0; LN[N] = length($0) }
+END { NAME = ENVIRON["RS_NAME"]; scan() }
+'
+
+# Runs RUST_SCAN_AWK on the Rust files <path>... of <src> at <commit> and on the files that
+# their include! calls outside doc attributes open, also from those files, appending the
+# records to <out>. A file is read from <root>/<path> when <root> is given and holds it as
+# a regular file, otherwise from git: a <path> as git stores it, an included file through
+# open_tree_file. An include! path that is absolute or climbs above the repository root is
+# not followed, nor one that git has not got; each file is read once. The path of a call
+# in an included file is resolved from that file as include! names it (a link, not its target).
+rust_records() {  # <src> <commit> <root> <out> <path>...
+    local src="$1" c="$2" root="$3" out="$4" queue=() i=0 first f p q seen nl
+    shift 4
+    nl='
+'
+    first=$#
+    seen=$nl
+    for f in "$@"; do queue+=("$f"); seen="$seen$f$nl"; done
+    while [ "$i" -lt "${#queue[@]}" ]; do
+        f=${queue[$i]}; i=$((i + 1))
+        if [ -n "$root" ] && [ -f "$root/$f" ] && [ ! -L "$root/$f" ]; then
+            cp "$root/$f" "$out.src" || die "cannot copy $f."
+        elif [ "$i" -le "$first" ]; then
+            xgit -C "$src" show "$c:$f" > "$out.src" || die "cannot read $f at ${c:0:8} in $src."
+        else
+            open_tree_file "$src" "$c" "$f" "$out.src" || continue
+        fi
+        RS_NAME="$f" LC_ALL=C awk "$RUST_SCAN_AWK" "$out.src" > "$out.one" \
+            || die "cannot read the Rust tokens of $f at ${c:0:8}."
+        cat "$out.one" >> "$out" || die "cannot write the work directory."
+        while IFS= read -r p; do
+            case "$p" in ""|/*) continue ;; esac
+            q=$(norm_path "$(dirname "$f")/$p")
+            [ -n "$q" ] || continue
+            case "$seen" in *"$nl$q$nl"*) continue ;; esac
+            seen="$seen$q$nl"; queue+=("$q")
+        done < <(awk -F '\t' '$1 == "lit" && $2 == "include" && $4 == 0 { print $8 }' "$out.one")
+    done
+}
+
+# The repository paths that the Rust files under <root> (the shipped sources of a crate of
+# <src> at <commit>) read with include_str! or include_bytes! and a string literal, one per
+# line, resolved against the file that holds the call. The files are read as tokens
+# (RUST_SCAN_AWK, rust_records), with the files that their include! calls open, which are
+# read from git when <root> has not got them. A call inside a doc attribute is crate
+# documentation and is left out. A literal path that cannot be decoded stops the check.
+# Paths built by macros are not read.
+include_paths() {  # <root> <src> <commit>
+    local root="$1" rec="$WORK/include-paths" rs=() f bad
+    [ -d "$root" ] || return 0
+    (cd "$root" && find . -name '*.rs' -type f -exec grep -l --null -e include -- {} +) > "$rec.files"
+    while IFS= read -r -d '' f; do rs+=("${f#./}"); done < "$rec.files"
+    : > "$rec" || die "cannot write the work directory."
+    [ "${#rs[@]}" -gt 0 ] || return 0
+    rust_records "$2" "$3" "$root" "$rec" "${rs[@]}"
+    bad=$(awk -F '\t' '$1 == "bad" && $4 == 0 { print $3 " line " $5 " (" $6 ")"; exit }' "$rec")
+    [ -z "$bad" ] || die "cannot read the path of an include in $bad; judge the plugin versions by hand."
+    awk -F '\t' '
+        $1 != "lit" || $4 != 0 || ($2 != "include_str" && $2 != "include_bytes") { next }
+        {
+            lit = $8
+            if (lit == "" || substr(lit, 1, 1) == "/") next
+            base = $3; sub(/[^\/]*$/, "", base)
+            np = split(base lit, parts, "/"); top = 0; bad = 0
+            for (j = 1; j <= np; j++) {
+                if (parts[j] == "" || parts[j] == ".") continue
+                if (parts[j] == "..") { if (top == 0) { bad = 1; break } top--; continue }
+                stack[++top] = parts[j]
+            }
+            if (bad) next
+            out = ""
+            for (j = 1; j <= top; j++) out = out (j > 1 ? "/" : "") stack[j]
+            print out
+        }' "$rec" | sort -u
 }
 
 # Copies the Rust files of the crate in <dir> at <commit> outside its tests/, benches/ and
@@ -830,7 +1129,7 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
         for side in old new; do
             if [ "$side" = old ]; then c="$old"; else c="$new"; fi
             shipped_sources "$src" "$c" "$dir" "$WORK/$k.$side.raw" "$WORK/$k.$side.ship"
-            include_paths "$WORK/$k.$side.ship" >> "$WORK/$k.included" \
+            include_paths "$WORK/$k.$side.ship" "$src" "$c" >> "$WORK/$k.included" \
                 || die "cannot read the includes of $name at ${c:0:8}."
         done
         hit=0
@@ -844,7 +1143,7 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
                 [ -d "$WORK/$k.$side.ship/$dir" ] || continue
                 "$STRIP_BIN" --blank-test-only-files "$WORK/$k.$side.shipcooked" "$WORK/$k.$side.ship" "$dir" >/dev/null \
                     || die "the test-only code remover failed ($name at ${c:0:8})."
-                include_paths "$WORK/$k.$side.shipcooked" >> "$WORK/$k.included" \
+                include_paths "$WORK/$k.$side.shipcooked" "$src" "$c" >> "$WORK/$k.included" \
                     || die "cannot read the includes of $name at ${c:0:8}."
             done
         fi
