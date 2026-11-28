@@ -1232,6 +1232,45 @@ mod tests {
             assert_last_ring_inside_the_surface(&rig);
             let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
         }
+
+        /// 보기 모드 캔버스는 표면과 좌우가 같다. 툴바 행 끝의 여백이 행과 중앙 패널을 표면 밖으로 늘리면
+        /// 캔버스도 그 폭을 받아 표면보다 넓어지고 중심이 오른쪽으로 간다.
+        #[test]
+        fn the_canvas_is_as_wide_as_the_surface() {
+            let (dir, doc) = loaded_doc("canvas-width");
+            let mut rig = Rig::new(doc);
+            rig.frame(Vec::new(), &mut no_read);
+            rig.frame(Vec::new(), &mut no_read);
+            assert!(!rig.doc.is_editing());
+            let surface = rig.ctx().screen_rect();
+            let wide: Vec<egui::WidgetRect> = rig.ctx().viewport(|v| {
+                v.prev_pass
+                    .widgets
+                    .layers()
+                    .flat_map(|(_, widgets)| widgets.iter())
+                    .filter(|w| w.rect.width() >= 200.0 && w.sense.senses_drag())
+                    .copied()
+                    .collect()
+            });
+            let [canvas] = wide.as_slice() else {
+                panic!("끌기를 받는 폭 200 이상 위젯은 캔버스 하나여야 한다: {wide:?}");
+            };
+            assert!(
+                canvas.sense.senses_click() && canvas.sense.senses_drag(),
+                "캔버스는 클릭과 끌기를 받는다: {canvas:?}"
+            );
+            assert!(
+                canvas.rect.top() > surface.top() && canvas.rect.bottom() == surface.bottom(),
+                "캔버스는 툴바 아래에서 표면 바닥까지 찬다: {canvas:?}"
+            );
+            assert_eq!(
+                (canvas.rect.left(), canvas.rect.right()),
+                (surface.left(), surface.right()),
+                "캔버스 {:?}의 좌우가 표면 {surface:?}과 같아야 한다",
+                canvas.rect
+            );
+            let _ = std::fs::remove_dir_all(&dir); // best-effort 정리 — 실패 무시.
+        }
     }
 
     #[test]
