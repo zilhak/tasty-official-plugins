@@ -2146,13 +2146,14 @@ fn a_comment_before_a_build_directive_is_not_read_as_its_path() {
     );
 }
 
-/// Cargo splits the output of a build script at LF only, so a string that holds two
-/// directives on two lines (an escaped LF, an escaped byte 0x0a or a raw string over two
-/// lines, also in a file with CR LF line ends) names the path of each, while an escaped CR
-/// stays in the path. A line is a directive only under the name rerun-if-changed, in the
-/// cargo: and the cargo:: form: a warning that names it is no input, also next to a real
-/// directive on the same source line. Two directives on one line are one path, which stays
-/// in the crate.
+/// Cargo splits the output of a build script at LF only and trims each line, so a string
+/// that holds two directives on two lines (an escaped LF, an escaped byte 0x0a or a raw
+/// string over two lines, also in a file with CR LF line ends, also indented by blanks, a
+/// tab or a CR) names the path of each, while an escaped CR inside a line stays in the
+/// path. A line that names another directive outright, such as a warning, is no input, also
+/// when indented and next to a real directive on the same source line. A line whose prefix
+/// a format argument may give is read as a directive. Two directives on one line are one
+/// path, which stays in the crate.
 #[test]
 fn each_line_of_a_build_directive_string_is_read() {
     let want = "tasty-b reads crates/outside.txt outside its crate (crates/tasty-b/build.rs)";
@@ -2228,6 +2229,60 @@ fn each_line_of_a_build_directive_string_is_read() {
             "warning, then a directive on the same line",
             "\n",
             r#"println!("cargo::warning=a rerun-if-changed=b"); println!("cargo:rerun-if-changed=../outside.txt");"#,
+            2,
+        ),
+        (
+            "indented after a written LF",
+            "\n",
+            "println!(\"cargo:rerun-if-changed=build.rs\n    cargo:rerun-if-changed=../outside.txt\");",
+            2,
+        ),
+        (
+            "raw string, indented after a written LF",
+            "\n",
+            "println!(r\"cargo:rerun-if-changed=build.rs\n    cargo:rerun-if-changed=../outside.txt\");",
+            2,
+        ),
+        (
+            "tab after an escaped LF",
+            "\n",
+            r#"println!("cargo:rerun-if-changed=build.rs\n\tcargo:rerun-if-changed=../outside.txt");"#,
+            2,
+        ),
+        (
+            "CR after an escaped LF",
+            "\n",
+            r#"println!("cargo:rerun-if-changed=build.rs\n\rcargo:rerun-if-changed=../outside.txt");"#,
+            2,
+        ),
+        (
+            "indented warning",
+            "\n",
+            r#"println!("cargo:rerun-if-changed=build.rs\n    cargo::warning=example rerun-if-changed=../outside.txt");"#,
+            0,
+        ),
+        (
+            "prefix from a format argument after an LF",
+            "\n",
+            r#"println!("cargo:rerun-if-changed=build.rs\n{}rerun-if-changed=../outside.txt", "cargo:");"#,
+            2,
+        ),
+        (
+            "prefix from a format argument on a later line",
+            "\n",
+            r#"println!("building\n{}rerun-if-changed=../outside.txt", "cargo:");"#,
+            2,
+        ),
+        (
+            "name from a format argument",
+            "\n",
+            r#"println!("cargo:{}rerun-if-changed=../outside.txt", ":");"#,
+            2,
+        ),
+        (
+            "prefix in another string",
+            "\n",
+            r#"println!("cargo:{}", "rerun-if-changed=../outside.txt");"#,
             2,
         ),
         (

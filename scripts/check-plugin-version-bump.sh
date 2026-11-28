@@ -940,11 +940,11 @@ open_tree_file() {  # <src> <commit> <path> <out>
 # the first token of its arguments is a plain or raw string, "bad <kind> <file> <doc>
 # <line> <reason> <path with ? for what is not decoded>" when that string cannot be
 # decoded to one line, and "arg <kind> <file> <doc> <line> <arguments as written>"
-# otherwise; and "str rerun <file> <doc> <line> <start> <end> <text>" for each build
-# directive line in the text of a plain or raw string that holds rerun-if-changed= (an LF,
-# written or escaped, ends a line; an escaped CR, a tab or a byte that is not decoded reads
-# as ?), or one with an empty <text> when no line is one, so that the string is still
-# blanked out of its line. <file> is RS_NAME, <line> the line of the macro
+# otherwise; and "str rerun <file> <doc> <line> <start> <end> <text>" for each line in the
+# text of a plain or raw string that holds rerun-if-changed= and names no other directive
+# outright (an LF, written or escaped, ends a line; an escaped CR, a tab or a byte that is
+# not decoded reads as ?), or one with an empty <text> when every line names another, so
+# that the string is still blanked out of its line. <file> is RS_NAME, <line> the line of the macro
 # name (of the string for str), <doc> 1 inside a doc attribute (#[doc = ...] or
 # #![doc = ...], to the bracket that closes it), and the columns those of the literal with
 # its prefix and quotes, in bytes.
@@ -1105,21 +1105,26 @@ function span(l1, c1, l2, c2,    s, i) {
 function out(type, kind, doc, line, rest) {
     print type "\t" kind "\t" NAME "\t" (doc + 0) "\t" line "\t" rest
 }
-function tok(t, x, sl, sc,    open, nd, nr, i) {
+function tok(t, x, sl, sc,    open, nd, nr, i, dt, dn) {
     # A string that names rerun-if-changed= is a build directive for the outside input check,
-    # read within its own quotes. Cargo splits the output of a build script at LF only, so
-    # each line of the string text (SD: LF kept, an escaped CR, a tab or a byte that is not
-    # decoded as ?) is read on its own. A line that starts with cargo: or cargo:: is a
-    # directive only under the name rerun-if-changed (cargo::warning=... rerun-if-changed=x
-    # is a warning). A line after an LF starts an output line, so without that prefix it is
-    # no directive; the first line may go on a line that the program printed before, and
-    # without the prefix it is still read.
+    # read within its own quotes. Cargo splits the output of a build script at LF only and
+    # trims each line, so each line of the string text (SD: LF kept, an escaped CR, a tab or
+    # a byte that is not decoded as ?) is read on its own, after the blanks and ? in front of
+    # it. A line is left out only when it then names another directive outright: cargo: or
+    # cargo:: and a name without a format brace before the first =, other than
+    # rerun-if-changed with blanks after it (cargo::warning=... rerun-if-changed=x is a
+    # warning). Every other line
+    # that holds rerun-if-changed= is read as one, also one without the prefix or with a
+    # brace, whose format arguments may give it.
     if (t == "s" && (SK == "plain" || SK == "raw") && index(SD, "rerun-if-changed=")) {
         nd = split(SD, DL, "\n"); nr = 0
         for (i = 1; i <= nd; i++) {
             if (!index(DL[i], "rerun-if-changed=")) continue
-            if (DL[i] ~ /^cargo:/) { if (DL[i] !~ /^cargo::?rerun-if-changed=/) continue }
-            else if (i > 1) continue
+            dt = DL[i]; sub(/^[ ?\013\014]+/, "", dt)
+            if (match(dt, /^cargo::?[^={]*=/)) {
+                dn = substr(dt, 1, RLENGTH - 1); sub(/^cargo::?/, "", dn); sub(/[ ?\013\014]+$/, "", dn)
+                if (dn != "rerun-if-changed") continue
+            }
             out("str", "rerun", INDOC, sl, sl ":" sc "\t" SEL ":" SEC "\t" DL[i]); nr++
         }
         if (nr == 0) out("str", "rerun", INDOC, sl, sl ":" sc "\t" SEL ":" SEC "\t")
