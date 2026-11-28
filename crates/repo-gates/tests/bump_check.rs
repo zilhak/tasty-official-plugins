@@ -1693,6 +1693,30 @@ fn a_build_directive_after_a_resolved_include_on_the_same_line_is_still_read() {
     );
 }
 
+/// A build directive is read within its own quotes: the closing quote of a string before it
+/// and a comment that names rerun-if-changed= do not swallow it.
+#[test]
+fn a_build_directive_after_another_string_and_a_comment_is_still_read() {
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            ("crates/outside.txt", "one\n"),
+            ("crates/tasty-b/data.txt", "data\n"),
+            ("crates/tasty-b/sub/keep", "keep\n"),
+            (
+                "crates/tasty-b/build.rs",
+                "fn main() {\n    let _ = include_str!(\"sub/../data.txt\"); let _ = \"prefix\"; \
+                 /* rerun-if-changed=sub/../data.txt */ \
+                 println!(\"cargo:rerun-if-changed=../outside.txt\");\n}\n",
+            ),
+        ],
+        &[("crates/outside.txt", "two\n")],
+    );
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "tasty-b reads crates/outside.txt outside its crate (crates/tasty-b/build.rs)",
+    );
+}
+
 /// A path continued on the next line still climbs out of the crate, after a LF line end and
 /// after a CR LF one.
 #[test]

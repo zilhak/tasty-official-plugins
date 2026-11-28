@@ -544,10 +544,11 @@ repo_path() {  # <dir> <rel>
 # tasty-extra-inputs.txt does not list. Lines that name include_str!, include_bytes!, concat!
 # or rerun-if-changed and ../ are read as text, test files and comment lines skipped: the
 # first string with ../ and each string with rerun-if-changed= (outside_text_path). Before
-# that, the string literals of the include calls that the Rust tokens give
-# (crate_rust_records) are blanked out of the line; their paths, decoded, are resolved
-# here instead, also when the call spans lines, is escaped, or sits in an included file
-# (doc attributes too, as for the lines). The arguments of a call that are no literal are
+# that, the string literals of the include calls and the strings with rerun-if-changed=
+# that the Rust tokens give (crate_rust_records) are blanked out of the line; they are
+# resolved here instead, decoded and within their own quotes, so a quote of another string
+# or a comment on the line does not swallow them, also when the call spans lines, is
+# escaped, or sits in an included file (doc attributes too, as for the lines). The arguments of a call that are no literal are
 # searched for a string with ../ as a line is, and a literal path that cannot be decoded
 # stops the check when its decoded part has a .. step. Unlike include_paths, which leaves
 # doc attributes out and stops on any such literal, this check reads them too, so it stops
@@ -589,6 +590,10 @@ EOF2
                 # a is the start column, p the end column, partial the decoded path.
                 case "/$partial/" in */../*) ;; *) continue ;; esac
                 outside_resolved "$dir" "$name" "$f" "$partial" "$(norm_path "$(dirname "$f")/$partial")" ;;
+            str)
+                # A build directive string, as decoded; partial is its text.
+                case "$partial" in *..*) ;; *) continue ;; esac
+                outside_text_path "$src" "$c" "$dir" "$name" "$f" "\"$partial\"" ;;
             arg)
                 cand=$(printf '%s\n' "$a" | grep -oE '"[^"]*\.\./[^"]*"' | sed -n '1p')
                 [ -n "$cand" ] && outside_text_path "$src" "$c" "$dir" "$name" "$f" "$cand" ;;
@@ -634,11 +639,11 @@ outside_resolved() {  # <dir> <name> <file> <lit> <resolved>
         || die "$2 reads $5 outside its crate ($3); add it to scripts/lib/tasty-extra-inputs.txt"
 }
 
-# <text>, line <line> of <file>, with the bytes of the string literals that the lit records
-# in <records> give for that line turned into blanks.
+# <text>, line <line> of <file>, with the bytes of the string literals that the lit and str
+# records in <records> give for that line turned into blanks.
 mask_literals() {  # <records> <file> <line> <text>
     F="$2" N="$3" X="$4" LC_ALL=C awk -F '\t' '
-        $1 == "lit" && $3 == ENVIRON["F"] {
+        ($1 == "lit" || $1 == "str") && $3 == ENVIRON["F"] {
             n = ENVIRON["N"] + 0; split($6, a, ":"); split($7, b, ":")
             if (a[1] + 0 > n || b[1] + 0 < n) next
             k++; S[k] = (a[1] + 0 < n) ? 1 : a[2] + 0; E[k] = (b[1] + 0 > n) ? -1 : b[2] + 0
@@ -878,9 +883,11 @@ open_tree_file() {  # <src> <commit> <path> <out>
 # the first token of its arguments is a plain or raw string, "bad <kind> <file> <doc>
 # <line> <reason> <path with ? for what is not decoded>" when that string cannot be
 # decoded to one line, and "arg <kind> <file> <doc> <line> <arguments as written>"
-# otherwise. <file> is RS_NAME, <line> the line of the macro name, <doc> 1 inside a doc
-# attribute (#[doc = ...] or #![doc = ...], to the bracket that closes it), and the
-# columns those of the literal with its prefix and quotes, in bytes.
+# otherwise; and "str rerun <file> <doc> <line> <start> <end> <text>" for each plain or raw
+# string whose text holds rerun-if-changed=. <file> is RS_NAME, <line> the line of the macro
+# name (of the string for str), <doc> 1 inside a doc attribute (#[doc = ...] or
+# #![doc = ...], to the bracket that closes it), and the columns those of the literal with
+# its prefix and quotes, in bytes.
 # Line, block (nested) and doc comments, strings, byte and C strings, raw strings (closed
 # by a quote and as many hashes as opened them), character and byte literals, lifetimes and
 # raw identifiers are tokens, so a call written inside them is not read. Rust whitespace
@@ -1032,6 +1039,10 @@ function out(type, kind, doc, line, rest) {
     print type "\t" kind "\t" NAME "\t" (doc + 0) "\t" line "\t" rest
 }
 function tok(t, x, sl, sc,    open) {
+    # A string that names rerun-if-changed= is a build directive for the outside input check,
+    # read within its own quotes.
+    if (t == "s" && (SK == "plain" || SK == "raw") && index(SV, "rerun-if-changed="))
+        out("str", "rerun", INDOC, sl, sl ":" sc "\t" SEL ":" SEC "\t" SV)
     if (CS == 3) {
         if (t == "s" && (SK == "plain" || SK == "raw")) {
             if (SB != "") out("bad", CK, CD, CL, SB "\t" SV)
@@ -1136,7 +1147,7 @@ rust_records() {  # <src> <commit> <root> <out> <path>...
 }
 
 # The rust_records of the Rust files of package <dir> of <src> at <commit> that hold the word
-# include, outside its tests, benches and examples (the files that pin_check_outside_inputs
+# include or rerun-if-changed=, outside its tests, benches and examples (the files that pin_check_outside_inputs
 # reads), with the files their include! calls open, into the file CRATE_RECORDS. The result
 # of the last arguments is kept. Stops when git cannot list the files.
 CRATE_KEY=""; CRATE_SEQ=0; CRATE_RECORDS=""
@@ -1144,7 +1155,7 @@ crate_rust_records() {  # <src> <commit> <dir>
     local f rs=() rc=0
     [ "$CRATE_KEY" = "$1 $2 $3" ] && return 0
     CRATE_SEQ=$((CRATE_SEQ + 1)); CRATE_RECORDS="$WORK/crate-rust.$CRATE_SEQ"
-    xgit -C "$1" grep -z -l -F -e include "$2" -- \
+    xgit -C "$1" grep -z -l -F -e include -e rerun-if-changed= "$2" -- \
         "$3" ":(exclude)$3/tests" ":(exclude)$3/**/tests.rs" ":(exclude)$3/**/tests/**" \
         ":(exclude)$3/benches" ":(exclude)$3/examples" > "$CRATE_RECORDS.list" || rc=$?
     [ "$rc" -le 1 ] || die "cannot list the Rust files of $3 at ${2:0:8} in $1."
