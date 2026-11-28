@@ -1210,11 +1210,13 @@ shipped_sources() {  # <src> <commit> <dir> <raw> <out>
 # Whether package <name> in <dir> ships other content at <new> than at <old>. Sets PIN_FILES
 # to the changed paths. Tests, benches, examples and Markdown are left out, except a file
 # that shipped code reads with include_str! or include_bytes! (include_paths, of the code
-# that the judge keeps). Stops when git cannot list the changed paths.
+# that the judge keeps). Such a file is content as git stores it (pin_entry), also a Rust
+# file: its bytes are what ships, so it is not formatted or judged as code. Stops when git
+# cannot list the changed paths or their tree entries.
 PIN_SEQ=0
 pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
     local src="$1" old="$2" new="$3" dir="$4" name="$5" ed="$6" paths=("$4") e f
-    local present side k raw cooked has_rs=0 a b c hit
+    local present side k raw cooked has_rs=0 a b c hit bytes
     PIN_FILES=""
     for e in $(extra_inputs_of "$name" use); do paths+=("${e%/}"); done
     local diffs=() cands=()
@@ -1258,10 +1260,11 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
                 || die "the test-only code remover failed ($name at ${c:0:8})."
         fi
     done
-    if [ "${#cands[@]}" -gt 0 ]; then
+    if [ "${#cands[@]}" -gt 0 ] || [ "$has_rs" = 1 ]; then
         # The includes of the shipped sources of either side, as they are first. Only when one
-        # of them names a left-out path is the judge run, on those sources alone: it reads
-        # every file it is given, and a test fixture need not be valid Rust or UTF-8.
+        # of them names a left-out path or a changed Rust file is the judge run, on those
+        # sources alone: it reads every file it is given, and a test fixture need not be
+        # valid Rust or UTF-8.
         : > "$WORK/$k.included"
         for side in old new; do
             if [ "$side" = old ]; then c="$old"; else c="$new"; fi
@@ -1270,7 +1273,8 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
                 || die "cannot read the includes of $name at ${c:0:8}."
         done
         hit=0
-        for f in "${cands[@]}"; do
+        for f in ${cands[@]+"${cands[@]}"} ${diffs[@]+"${diffs[@]}"}; do
+            case "$f" in "$(repo_path "$dir" tests)"/*|"$(repo_path "$dir" benches)"/*|"$(repo_path "$dir" examples)"/*|*.md|*.rs) ;; *) continue ;; esac
             if grep -qxF -- "$f" "$WORK/$k.included"; then hit=1; break; fi
         done
         if [ "$hit" = 1 ] && [ -n "$STRIP_BIN" ]; then
@@ -1284,7 +1288,7 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
                     || die "cannot read the includes of $name at ${c:0:8}."
             done
         fi
-        if [ "$hit" = 1 ]; then
+        if [ "$hit" = 1 ] && [ "${#cands[@]}" -gt 0 ]; then
             for f in "${cands[@]}"; do
                 if grep -qxF -- "$f" "$WORK/$k.included"; then diffs+=("$f"); fi
             done
@@ -1308,24 +1312,27 @@ pin_package_changed() {  # <src> <old> <new> <dir> <name> <edition>
             PIN_FILES="$PIN_FILES $f"
             continue
         fi
-        # Each value is read in this shell and checked: a failure inside a command
-        # substitution would leave two equal empty values.
+        # A Rust file that shipped code reads as text is compared as bytes, as is every file
+        # but Rust code and the manifest. Each value is read in this shell and checked: a
+        # failure inside a command substitution would leave two equal empty values.
+        bytes=1
         case "$f" in
-            *.rs|"$(repo_path "$dir" Cargo.toml)")
-                a=$(pin_sum "$WORK/$k.old.raw" "$WORK/$k.old.cooked" "$f" "$dir" "$ed") \
-                    || die "cannot compare $f of $name at ${old:0:8}."
-                b=$(pin_sum "$WORK/$k.new.raw" "$WORK/$k.new.cooked" "$f" "$dir" "$ed") \
-                    || die "cannot compare $f of $name at ${new:0:8}."
-                ;;
-            *)
-                pin_entry "$src" "$old" "$WORK/$k.old.raw" "$f" \
-                    || die "cannot read the tree entry of $f at ${old:0:8} ($name)."
-                a=$PIN_ENTRY
-                pin_entry "$src" "$new" "$WORK/$k.new.raw" "$f" \
-                    || die "cannot read the tree entry of $f at ${new:0:8} ($name)."
-                b=$PIN_ENTRY
-                ;;
+            *.rs) { [ -f "$WORK/$k.included" ] && grep -qxF -- "$f" "$WORK/$k.included"; } || bytes=0 ;;
+            "$(repo_path "$dir" Cargo.toml)") bytes=0 ;;
         esac
+        if [ "$bytes" = 0 ]; then
+            a=$(pin_sum "$WORK/$k.old.raw" "$WORK/$k.old.cooked" "$f" "$dir" "$ed") \
+                || die "cannot compare $f of $name at ${old:0:8}."
+            b=$(pin_sum "$WORK/$k.new.raw" "$WORK/$k.new.cooked" "$f" "$dir" "$ed") \
+                || die "cannot compare $f of $name at ${new:0:8}."
+        else
+            pin_entry "$src" "$old" "$WORK/$k.old.raw" "$f" \
+                || die "cannot read the tree entry of $f at ${old:0:8} ($name)."
+            a=$PIN_ENTRY
+            pin_entry "$src" "$new" "$WORK/$k.new.raw" "$f" \
+                || die "cannot read the tree entry of $f at ${new:0:8} ($name)."
+            b=$PIN_ENTRY
+        fi
         [ "$a" = "$b" ] || PIN_FILES="$PIN_FILES $f"
     done
     [ -n "$PIN_FILES" ]

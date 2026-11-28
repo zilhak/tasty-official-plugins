@@ -2104,6 +2104,137 @@ fn a_tree_lookup_that_fails_on_both_sides_is_undecidable() {
     );
 }
 
+// A Rust file that shipped code reads as text (include_str!, include_bytes!) is compared as
+// its bytes; one compiled through include! is still compared as code.
+
+/// Two spellings of the same code: rustfmt and the blank line removal make them equal.
+const TEXT_RS: [&str; 2] = [
+    "fn main() {\n    let a = 1;\n}\n",
+    "fn main() {\n\n  let a   =  1;\n}\n",
+];
+
+/// The pin move of ext with `files` and then `change`, with the judge or without.
+fn ext_checked(files: &[(&str, &str)], change: &[(&str, &str)], judged: bool) -> (i32, String) {
+    let f = PinFixture::ext_moved(files, change);
+    if judged {
+        f.check_judged(&HEAD_RANGE)
+    } else {
+        f.check(&HEAD_RANGE)
+    }
+}
+
+#[test]
+fn a_rust_file_that_shipped_code_reads_as_text_is_compared_as_bytes() {
+    let lib = format!("{EXT_LIB}pub const X: &str = include_str!(\"../tests/x.rs\");\n");
+    let mut failures = Vec::new();
+    for judged in [false, true] {
+        let r = ext_checked(
+            &[("src/lib.rs", &lib), ("tests/x.rs", TEXT_RS[0])],
+            &[("tests/x.rs", TEXT_RS[1])],
+            judged,
+        );
+        if let Err(e) = ext_outcome(&r, Some("tests/x.rs")) {
+            failures.push(format!("judged {judged}: {e}"));
+        }
+    }
+    assert_cases(failures);
+}
+
+/// The judge empties a test file in the judged copies; the bytes of the file that shipped
+/// code reads are still compared.
+#[test]
+fn a_text_included_test_file_is_compared_when_the_judge_blanks_it() {
+    let lib = |msg: &str| {
+        format!(
+            "{EXT_LIB}pub const X: &str = include_str!(\"../tests/x.rs\");\n\n#[cfg(test)]\nmod tests {{\n    \
+             #[test]\n    fn t() {{\n        assert_eq!(super::e(), 1{msg});\n    }}\n}}\n"
+        )
+    };
+    let r = ext_checked(
+        &[("src/lib.rs", &lib("")), ("tests/x.rs", "fn main() {}\n")],
+        &[
+            ("src/lib.rs", &lib(", \"e\"")),
+            ("tests/x.rs", "fn main() {\n    let _ = 2;\n}\n"),
+        ],
+        true,
+    );
+    assert_cases(
+        ext_outcome(&r, Some("tests/x.rs"))
+            .err()
+            .into_iter()
+            .collect(),
+    );
+}
+
+#[test]
+fn a_source_file_read_as_text_is_compared_as_bytes() {
+    let lib = format!("{EXT_LIB}pub const T: &str = include_str!(\"tpl.rs\");\n");
+    let mut failures = Vec::new();
+    for judged in [false, true] {
+        let r = ext_checked(
+            &[("src/lib.rs", &lib), ("src/tpl.rs", TEXT_RS[0])],
+            &[("src/tpl.rs", TEXT_RS[1])],
+            judged,
+        );
+        if let Err(e) = ext_outcome(&r, Some("src/tpl.rs")) {
+            failures.push(format!("judged {judged}: {e}"));
+        }
+    }
+    assert_cases(failures);
+}
+
+/// With the judge, a file that only its test module reads as text is not shipped text, so
+/// its formatting change is still left out as for code.
+#[test]
+fn a_source_read_as_text_only_by_its_tests_is_still_compared_as_code() {
+    let tests = "\n#[cfg(test)]\nmod tests {\n    const SELF: &str = include_str!(\"lib.rs\");\n\n    \
+                 #[test]\n    fn t() {\n        assert!(!SELF.is_empty());\n    }\n}\n";
+    let before = format!("{EXT_LIB}{tests}");
+    let after = format!("pub fn   e() -> u32\n{{\n        1\n}}\n{tests}");
+    let r = ext_checked(&[("src/lib.rs", &before)], &[("src/lib.rs", &after)], true);
+    assert_cases(ext_outcome(&r, None).err().into_iter().collect());
+}
+
+#[test]
+fn a_rust_file_compiled_through_include_is_still_compared_as_code() {
+    let lib = format!("{EXT_LIB}include!(\"piece.rs\");\n");
+    let mut failures = Vec::new();
+    for judged in [false, true] {
+        let r = ext_checked(
+            &[
+                ("src/lib.rs", &lib),
+                ("src/piece.rs", "pub fn p() -> u32 {\n    1\n}\n"),
+            ],
+            &[("src/piece.rs", "pub fn   p() -> u32\n{\n    1\n}\n")],
+            judged,
+        );
+        if let Err(e) = ext_outcome(&r, None) {
+            failures.push(format!("judged {judged}: {e}"));
+        }
+    }
+    assert_cases(failures);
+}
+
+#[test]
+fn a_text_included_rust_file_with_export_subst_is_compared_as_git_stores_it() {
+    let lib = format!("{EXT_LIB}pub const T: &str = include_str!(\"tpl.rs\");\n");
+    let r = ext_checked(
+        &[
+            ("src/lib.rs", &lib),
+            ("src/tpl.rs", "$Format:%s$\n"),
+            (".gitattributes", "src/tpl.rs export-subst\n"),
+        ],
+        &[("src/tpl.rs", "ext seed\n")],
+        false,
+    );
+    assert_cases(
+        ext_outcome(&r, Some("src/tpl.rs"))
+            .err()
+            .into_iter()
+            .collect(),
+    );
+}
+
 /// The version line of the root manifest is left out as for a crate in a directory, also
 /// when [workspace.package] comes first with a version of its own.
 #[test]
