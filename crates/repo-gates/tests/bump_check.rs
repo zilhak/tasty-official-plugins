@@ -3049,9 +3049,12 @@ fn an_inline_table_of_the_root_workspace_is_an_inherited_source() {
     let mut failures = Vec::new();
     let mut case = |what: &str, f: PinFixture| {
         let (code, text) = f.check(&HEAD_RANGE);
-        let inherited = reasons_of(&text, "alpha")
-            .iter()
-            .any(|r| r.starts_with("tasty-a ") && r.contains(INHERITED));
+        // reasons_of panics without a violation, which would hide the other inputs.
+        let inherited = code == 1
+            && text.contains("crates/tasty-plugin-alpha: shipped content changed")
+            && reasons_of(&text, "alpha")
+                .iter()
+                .any(|r| r.starts_with("tasty-a ") && r.contains(INHERITED));
         if code != 1 || !inherited {
             failures.push(format!("{what}: exit {code}\n{text}"));
         }
