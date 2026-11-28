@@ -615,7 +615,6 @@ EOF2
             lit)
                 # a is the start column, p the end column, partial the decoded path.
                 case "/$partial/" in */../*) ;; *) continue ;; esac
-                check_link_steps "$src" "$c" "$(dirname "$f")/$partial" "$name ($f)"
                 outside_resolved "$dir" "$name" "$f" "$partial" "$(norm_path "$(dirname "$f")/$partial")" ;;
             str)
                 # A build directive string, as decoded; partial is its text.
@@ -768,7 +767,6 @@ pin_check_included_build_scripts() {  # <src> <commit> <dir> <name>
         case "$t" in
             lit)
                 case "$p" in ""|/*) continue ;; esac
-                check_link_steps "$1" "$2" "$(dirname "$f")/$p" "$4 ($f)"
                 q=$(norm_path "$(dirname "$f")/$p") ;;
             # A file opened through a link is judged by what it is, not by its name.
             open) q=$a ;;
@@ -1150,15 +1148,17 @@ END { NAME = ENVIRON["RS_NAME"]; scan() }
 # records to <out>. A file is read from <root>/<path> when <root> is given and holds it as
 # a regular file, otherwise from git: a <path> as git stores it, an included file through
 # open_tree_file. An include! path that is absolute or climbs above the repository root is
-# not followed, nor one that git has not got; each file is read once, and a path with a ..
-# step right after a link stops the check (check_link_steps). The path of a call in an
-# included file is resolved from that file as include! names it (a link, not its target); a
-# file read through a link adds the record "open include <name> 0 0 <target>".
+# not followed, nor one that git has not got; each file is read once, and a literal path of
+# any include kind with a .. step right after a link stops the check (check_link_steps). The
+# path of a call in an included file is resolved from that file as include! names it (a
+# link, not its target); a file read through a link adds the record
+# "open include <name> 0 0 <target>".
 rust_records() {  # <src> <commit> <root> <out> <path>...
-    local src="$1" c="$2" root="$3" out="$4" queue=() i=0 first f p q seen nl
+    local src="$1" c="$2" root="$3" out="$4" queue=() i=0 first f p q seen nl tab
     shift 4
     nl='
 '
+    tab=$(printf '\t')
     first=$#
     seen=$nl
     for f in "$@"; do queue+=("$f"); seen="$seen$f$nl"; done
@@ -1179,9 +1179,13 @@ rust_records() {  # <src> <commit> <root> <out> <path>...
         RS_NAME="$f" LC_ALL=C awk "$RUST_SCAN_AWK" "$out.src" > "$out.one" \
             || die "cannot read the Rust tokens of $f at ${c:0:8}."
         cat "$out.one" >> "$out" || die "cannot write the work directory."
+        # Every literal path with a .. step, of any include kind, is checked here once, before
+        # a caller folds it.
+        while IFS="$tab" read -r p q; do
+            check_link_steps "$src" "$c" "$(dirname "$q")/$p" "$q"
+        done < <(awk -F '\t' '$1 == "lit" && index($8, "..") && substr($8, 1, 1) != "/" { print $8 "\t" $3 }' "$out.one")
         while IFS= read -r p; do
             case "$p" in ""|/*) continue ;; esac
-            check_link_steps "$src" "$c" "$(dirname "$f")/$p" "$f"
             q=$(norm_path "$(dirname "$f")/$p")
             [ -n "$q" ] || continue
             case "$seen" in *"$nl$q$nl"*) continue ;; esac
@@ -1221,8 +1225,7 @@ crate_rust_records() {  # <src> <commit> <dir>
 # does a failure to list or search the files.
 # Paths built by macros are not read.
 include_paths() {  # <root> <src> <commit>
-    local root="$1" rec="$WORK/include-paths" rs=() f p bad tab
-    tab=$(printf '\t')
+    local root="$1" rec="$WORK/include-paths" rs=() f bad
     [ -d "$root" ] || return 0
     # A list that cannot be made stops the check: an empty list would read as no includes.
     # grep -l returns 1 for files without the word, which is no failure.
@@ -1239,9 +1242,6 @@ include_paths() {  # <root> <src> <commit>
     rust_records "$2" "$3" "$root" "$rec" "${rs[@]}"
     bad=$(awk -F '\t' '$1 == "bad" && $4 == 0 { print $3 " line " $5 " (" $6 ")"; exit }' "$rec")
     [ -z "$bad" ] || die "cannot read the path of an include in $bad; judge the plugin versions by hand."
-    while IFS="$tab" read -r f p; do
-        check_link_steps "$2" "$3" "$(dirname "$f")/$p" "$f"
-    done < <(awk -F '\t' '$1 == "lit" && $4 == 0 && ($2 == "include_str" || $2 == "include_bytes") && index($8, "..") { print $3 "\t" $8 }' "$rec")
     awk -F '\t' '
         $1 != "lit" || $4 != 0 || ($2 != "include_str" && $2 != "include_bytes") { next }
         {

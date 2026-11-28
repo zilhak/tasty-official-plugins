@@ -1757,6 +1757,28 @@ fn an_include_path_that_goes_up_from_a_link_is_undecidable() {
     );
 }
 
+/// The same holds for a path that include_str! reads: the file is the one under the target
+/// of the link, not the one the folded path names.
+#[test]
+fn a_text_include_path_that_goes_up_from_a_link_is_undecidable() {
+    let f = PinFixture::tasty_moved_twice_with_links(
+        &[
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!("pub const H: &str = include_str!(\"link/../help.txt\");\n{TASTY_B_FN}"),
+            ),
+            ("other/sub/keep", "keep\n"),
+            ("other/help.txt", "one\n"),
+        ],
+        &[("crates/tasty-b/src/link", "../../../other/sub")],
+        &[("other/help.txt", "two\n")],
+    );
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "a path that goes up from the link crates/tasty-b/src/link",
+    );
+}
+
 /// The build script of a nested package opened under another name, through a link, is still
 /// that build script.
 #[test]
