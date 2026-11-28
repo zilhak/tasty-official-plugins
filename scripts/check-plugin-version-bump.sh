@@ -541,49 +541,114 @@ repo_path() {  # <dir> <rel>
 }
 
 # Stops as undecidable when package <name> in <dir> reads a file outside its directory that
-# tasty-extra-inputs.txt does not list. Test files and comment lines are skipped. A crate at
-# the root of its repository has the whole repository as its directory.
+# tasty-extra-inputs.txt does not list. Lines that name include_str!, include_bytes!, concat!
+# or rerun-if-changed and ../ are read as text, test files and comment lines skipped: the
+# first string with ../ and each string with rerun-if-changed= (outside_text_path). Before
+# that, the string literals of the include calls that the Rust tokens give
+# (crate_rust_records) are blanked out of the line; their paths, decoded, are resolved
+# here instead, also when the call spans lines, is escaped, or sits in an included file
+# (doc attributes too, as for the lines). The arguments of a call that are no literal are
+# searched for a string with ../ as a line is, and a literal path that cannot be decoded
+# stops the check when its decoded part has a .. step. A crate at the root of its
+# repository has the whole repository as its directory.
 pin_check_outside_inputs() {  # <src> <commit> <dir> <name>
-    local src="$1" c="$2" dir="$3" name="$4" hits line rest file content lit base resolved fdir
+    local src="$1" c="$2" dir="$3" name="$4" hits line rest file content lno masked cand tab
+    local t kind f l a p partial
+    tab=$(printf '\t')
     hits=$(xgit -C "$src" -c core.quotePath=false grep -nE '(include_(str|bytes)!|concat!|rerun-if-changed).*\.\./' "$c" -- \
         "$dir" ":(exclude)$dir/tests" ":(exclude)$dir/**/tests.rs" ":(exclude)$dir/**/tests/**" \
         ":(exclude)$dir/benches" ":(exclude)$dir/examples")
+    crate_rust_records "$src" "$c" "$dir"
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         rest=${line#"$c":}
         file=${rest%%:*}
         content=${rest#*:}
+        lno=${content%%:*}
         content=${content#*:}
         case "$content" in *[![:space:]]*) ;; *) continue ;; esac
         if grep -qE '^[[:space:]]*//' <<<"$content"; then continue; fi
         # A quoted file name cannot be split from the line or resolved.
         case "$rest" in '"'*) die "$name has a file $file that may read outside its crate, but $QUOTED_NOTE." ;; esac
-        lit=$(printf '%s\n' "$content" | grep -oE '"[^"]*\.\./[^"]*"' | sed -n '1p')
-        lit=${lit#\"}; lit=${lit%\"}
-        case "$lit" in
-            *rerun-if-changed=*)
-                lit=${lit#*rerun-if-changed=}
-                # Cargo runs a build script in the root of the package that owns it. A
-                # build.rs right next to a package manifest is read from that package; any
-                # other file (a helper a build script includes) from the crate judged.
-                base="$dir"
-                fdir=$(dirname "$file")
-                if [ "$(basename "$file")" = build.rs ] \
-                    && xgit -C "$src" cat-file -e "$c:$(repo_path "$fdir" Cargo.toml)" 2>/dev/null; then
-                    base="$fdir"
-                fi ;;
-            *) base=$(dirname "$file") ;;
-        esac
-        lit=${lit%%\{*}
-        resolved=$(norm_path "$base/$lit")
-        [ -n "$resolved" ] || die "$name reads a path above the source root ($file: $lit)"
-        [ "$dir" = . ] && continue
-        case "$resolved" in "$dir"/*) continue ;; esac
-        extra_input_listed "$name" "$resolved" \
-            || die "$name reads $resolved outside its crate ($file); add it to scripts/lib/tasty-extra-inputs.txt"
+        masked=$(mask_literals "$CRATE_RECORDS" "$file" "$lno" "$content")
+        while IFS= read -r cand; do
+            [ -n "$cand" ] && outside_text_path "$src" "$c" "$dir" "$name" "$file" "$cand"
+        done <<EOF3
+$(printf '%s\n' "$masked" | grep -oE '"[^"]*\.\./[^"]*"' | sed -n '1p'
+  printf '%s\n' "$masked" | grep -oE '"[^"]*rerun-if-changed=[^"]*"')
+EOF3
     done <<EOF2
 $hits
 EOF2
+    while IFS="$tab" read -r t kind f _ l a p partial; do
+        case "$t" in
+            lit)
+                # a is the start column, p the end column, partial the decoded path.
+                case "/$partial/" in */../*) ;; *) continue ;; esac
+                outside_resolved "$dir" "$name" "$f" "$partial" "$(norm_path "$(dirname "$f")/$partial")" ;;
+            arg)
+                cand=$(printf '%s\n' "$a" | grep -oE '"[^"]*\.\./[^"]*"' | sed -n '1p')
+                [ -n "$cand" ] && outside_text_path "$src" "$c" "$dir" "$name" "$f" "$cand" ;;
+            bad)
+                case "/$p/" in
+                    */../*) die "$name has a $kind! in $f line $l whose path cannot be read ($a) and climbs out of its directory; judge the plugin versions by hand." ;;
+                esac ;;
+        esac
+    done < "$CRATE_RECORDS"
+}
+
+# A string <lit> (with its quotes) that line text of <file> holds, checked as a path that
+# package <name> in <dir> reads: after rerun-if-changed= the path that a build script names,
+# from the package that runs it, otherwise a path from <file>; cut at a { (a format string).
+outside_text_path() {  # <src> <commit> <dir> <name> <file> <lit>
+    local dir="$3" file="$5" lit="$6" base fdir
+    lit=${lit#\"}; lit=${lit%\"}
+    case "$lit" in
+        *rerun-if-changed=*)
+            lit=${lit#*rerun-if-changed=}
+            # Cargo runs a build script in the root of the package that owns it. A
+            # build.rs right next to a package manifest is read from that package; any
+            # other file (a helper a build script includes) from the crate judged.
+            base="$dir"
+            fdir=$(dirname "$file")
+            if [ "$(basename "$file")" = build.rs ] \
+                && xgit -C "$1" cat-file -e "$2:$(repo_path "$fdir" Cargo.toml)" 2>/dev/null; then
+                base="$fdir"
+            fi ;;
+        *) base=$(dirname "$file") ;;
+    esac
+    lit=${lit%%\{*}
+    outside_resolved "$dir" "$4" "$file" "$lit" "$(norm_path "$base/$lit")"
+}
+
+# Stops when the path <resolved> (empty above the source root) that <file> of package <name>
+# in <dir> reads as <lit> is outside <dir> and not listed in tasty-extra-inputs.txt.
+outside_resolved() {  # <dir> <name> <file> <lit> <resolved>
+    [ -n "$5" ] || die "$2 reads a path above the source root ($3: $4)"
+    [ "$1" = . ] && return 0
+    case "$5" in "$1"/*) return 0 ;; esac
+    extra_input_listed "$2" "$5" \
+        || die "$2 reads $5 outside its crate ($3); add it to scripts/lib/tasty-extra-inputs.txt"
+}
+
+# <text>, line <line> of <file>, with the bytes of the string literals that the lit records
+# in <records> give for that line turned into blanks.
+mask_literals() {  # <records> <file> <line> <text>
+    F="$2" N="$3" X="$4" LC_ALL=C awk -F '\t' '
+        $1 == "lit" && $3 == ENVIRON["F"] {
+            n = ENVIRON["N"] + 0; split($6, a, ":"); split($7, b, ":")
+            if (a[1] + 0 > n || b[1] + 0 < n) next
+            k++; S[k] = (a[1] + 0 < n) ? 1 : a[2] + 0; E[k] = (b[1] + 0 > n) ? -1 : b[2] + 0
+        }
+        END {
+            x = ENVIRON["X"]
+            for (i = 1; i <= k; i++) {
+                e = E[i]; if (e < 0 || e > length(x)) e = length(x)
+                if (S[i] > e) continue
+                x = substr(x, 1, S[i] - 1) sprintf("%" (e - S[i] + 1) "s", "") substr(x, e + 1)
+            }
+            print x
+        }' "$1"
 }
 
 # Reads the edition from the manifest of <dir> at <commit>; stops when it cannot. The
@@ -1008,6 +1073,28 @@ rust_records() {  # <src> <commit> <root> <out> <path>...
             seen="$seen$q$nl"; queue+=("$q")
         done < <(awk -F '\t' '$1 == "lit" && $2 == "include" && $4 == 0 { print $8 }' "$out.one")
     done
+}
+
+# The rust_records of the Rust files of package <dir> of <src> at <commit> that hold the word
+# include, outside its tests, benches and examples (the files that pin_check_outside_inputs
+# reads), with the files their include! calls open, into the file CRATE_RECORDS. The result
+# of the last arguments is kept. Stops when git cannot list the files.
+CRATE_KEY=""; CRATE_SEQ=0; CRATE_RECORDS=""
+crate_rust_records() {  # <src> <commit> <dir>
+    local f rs=() rc=0
+    [ "$CRATE_KEY" = "$1 $2 $3" ] && return 0
+    CRATE_SEQ=$((CRATE_SEQ + 1)); CRATE_RECORDS="$WORK/crate-rust.$CRATE_SEQ"
+    xgit -C "$1" grep -z -l -F -e include "$2" -- \
+        "$3" ":(exclude)$3/tests" ":(exclude)$3/**/tests.rs" ":(exclude)$3/**/tests/**" \
+        ":(exclude)$3/benches" ":(exclude)$3/examples" > "$CRATE_RECORDS.list" || rc=$?
+    [ "$rc" -le 1 ] || die "cannot list the Rust files of $3 at ${2:0:8} in $1."
+    while IFS= read -r -d '' f; do
+        f=${f#"$2":}
+        case "$f" in *.rs) rs+=("$f") ;; esac
+    done < "$CRATE_RECORDS.list"
+    : > "$CRATE_RECORDS" || die "cannot write the work directory."
+    if [ "${#rs[@]}" -gt 0 ]; then rust_records "$1" "$2" "" "$CRATE_RECORDS" "${rs[@]}"; fi
+    CRATE_KEY="$1 $2 $3"
 }
 
 # The repository paths that the Rust files under <root> (the shipped sources of a crate of

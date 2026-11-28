@@ -1480,6 +1480,219 @@ fn a_pin_move_with_an_unlisted_outside_input_is_undecidable() {
     assert!(text.contains("tasty-extra-inputs.txt"), "{text}");
 }
 
+// The outside input check also takes the include calls read as Rust tokens.
+
+impl PinFixture {
+    /// tasty with `files`, pinned; then `change` and another pin move.
+    fn tasty_moved_twice(files: &[(&str, &str)], change: &[(&str, &str)]) -> PinFixture {
+        let f = PinFixture::new();
+        for (rel, body) in files {
+            f.tasty_write(rel, body);
+        }
+        let t2 = f.tasty_commit("add the inputs");
+        f.move_pin(&t2);
+        f.commit("move the pin to the inputs");
+        for (rel, body) in change {
+            f.tasty_write(rel, body);
+        }
+        let t3 = f.tasty_commit("change an input");
+        f.move_pin(&t3);
+        f.commit("move the pin past the change");
+        f
+    }
+}
+
+const TASTY_B_FN: &str = "pub fn b() -> u32 {\n    2\n}\n";
+
+/// Each `(label, files)`: tasty-b with `files` and other/x.txt, then a pin move that changes
+/// only other/x.txt, stops the check with `want`.
+fn outside_cases(cases: &[(&str, Vec<(&str, String)>)], want: &str) {
+    let mut failures = Vec::new();
+    for (label, files) in cases {
+        let mut all: Vec<(&str, &str)> = vec![("other/x.txt", "one\n")];
+        all.extend(files.iter().map(|(p, b)| (*p, b.as_str())));
+        let f = PinFixture::tasty_moved_twice(&all, &[("other/x.txt", "two\n")]);
+        let (code, text) = f.check(&HEAD_RANGE);
+        if code != 2 || !text.contains(want) {
+            failures.push(format!(
+                "{label}: want exit 2 with {want:?}, got exit {code}:\n{text}"
+            ));
+        }
+    }
+    assert_cases(failures);
+}
+
+fn tasty_b_lib(line: &str) -> Vec<(&'static str, String)> {
+    vec![("crates/tasty-b/src/lib.rs", format!("{line}\n{TASTY_B_FN}"))]
+}
+
+const OTHER_X: &str = "tasty-b reads other/x.txt outside its crate (crates/tasty-b/src/";
+
+#[test]
+fn an_include_reading_outside_its_crate_over_several_lines_is_undecidable() {
+    outside_cases(
+        &[(
+            "over three lines",
+            tasty_b_lib("pub const X: &str = include_str!(\n    \"../../../other/x.txt\"\n);"),
+        )],
+        OTHER_X,
+    );
+}
+
+#[test]
+fn an_include_through_a_path_macro_reading_outside_its_crate_is_undecidable() {
+    let def = "macro_rules! path { ($p:literal) => { $p }; }\n";
+    outside_cases(
+        &[
+            (
+                "one line",
+                tasty_b_lib(&format!(
+                    "{def}pub const X: &str = include_str!(path!(\"../../../other/x.txt\"));"
+                )),
+            ),
+            (
+                "over three lines",
+                tasty_b_lib(&format!(
+                    "{def}pub const X: &str = include_str!(\n    path!(\"../../../other/x.txt\")\n);"
+                )),
+            ),
+        ],
+        OTHER_X,
+    );
+}
+
+#[test]
+fn an_included_fragment_reading_outside_its_crate_is_undecidable() {
+    let mut cases = Vec::new();
+    for (label, body) in [
+        (
+            "one line",
+            "pub const X: &str = include_str!(\"../../../other/x.txt\");\n",
+        ),
+        (
+            "over three lines",
+            "pub const X: &str = include_str!(\n    \"../../../other/x.txt\"\n);\n",
+        ),
+    ] {
+        let mut files = tasty_b_lib("include!(\"body.inc\");");
+        files.push(("crates/tasty-b/src/body.inc", body.to_string()));
+        cases.push((label, files));
+    }
+    outside_cases(&cases, OTHER_X);
+}
+
+/// A call written inside a raw string is no include, but the line still names concat! and
+/// ../, which the text search reads.
+#[test]
+fn an_outside_path_in_a_raw_string_concat_still_stops_the_check() {
+    outside_cases(
+        &[(
+            "a raw string",
+            tasty_b_lib(
+                "pub const S: &str = r#\"include_str!(concat!(\"../../../other/\", \"x.txt\"))\"#;",
+            ),
+        )],
+        "tasty-b reads other/ outside its crate",
+    );
+}
+
+#[test]
+fn an_escaped_outside_path_is_undecidable() {
+    outside_cases(
+        &[(
+            "escaped dots",
+            tasty_b_lib(
+                "pub const X: &str = include_str!(\"\\x2e\\x2e/\\x2e\\x2e/\\x2e\\x2e/other/x.txt\");",
+            ),
+        )],
+        OTHER_X,
+    );
+}
+
+/// The path that a macro builds is no literal: the string with ../ in its arguments is read
+/// as a line is, so the listed lang/ of tasty-i18n is judged, also from a doc comment of the
+/// macro.
+#[test]
+fn a_macro_built_include_of_a_listed_root_input_is_judged() {
+    let lib = "/// The built-in languages.\nmacro_rules! builtin_languages {\n    ($($code:literal),*) => {\n        \
+               pub const BUILTIN: &[(&str, &str)] = &[$(\n            ($code, include_str!(concat!(\"../../../lang/\", $code, \".toml\"))),\n        )*];\n    };\n}\n\
+               builtin_languages!(\"en\");\n";
+    let f = PinFixture::tasty_moved_twice(
+        &[("crates/tasty-i18n/src/lib.rs", lib)],
+        &[("lang/en.toml", "hello = \"Hi\"\n")],
+    );
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        reasons_of(&text, "alpha")
+            .iter()
+            .any(|r| r.starts_with("tasty-i18n ") && r.contains("lang/en.toml")),
+        "{text}"
+    );
+}
+
+/// tasty-b reads `lit` (which comes back into the crate) and `dir`/keep exists; a change of
+/// crates/tasty-b/src/help.txt alone is a change of the crate.
+fn assert_resolves_inside_the_crate(lit: &str, dir: &str) {
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            (&format!("{dir}/keep"), "keep\n"),
+            ("crates/tasty-b/src/help.txt", "one\n"),
+            (
+                "crates/tasty-b/src/lib.rs",
+                &format!("pub const H: &str = include_str!(\"{lit}\");\n{TASTY_B_FN}"),
+            ),
+        ],
+        &[("crates/tasty-b/src/help.txt", "two\n")],
+    );
+    let (code, text) = f.check(&HEAD_RANGE);
+    assert_eq!(code, 1, "{lit}:\n{text}");
+    assert!(
+        reasons_of(&text, "beta")
+            .iter()
+            .any(|r| r.contains("changed: crates/tasty-b/src/help.txt")),
+        "{lit}:\n{text}"
+    );
+}
+
+/// The decoded path is resolved whole, so an escaped quote in it does not cut it.
+#[test]
+fn an_include_path_that_resolves_inside_its_crate_is_not_cut_at_an_escaped_quote() {
+    assert_resolves_inside_the_crate(
+        "../../../other/\\\"dir/../../crates/tasty-b/src/help.txt",
+        "other/\"dir",
+    );
+}
+
+/// A brace is cut only from a path guessed from the text (a format string), not from a
+/// decoded literal.
+#[test]
+fn a_resolved_include_path_is_not_cut_at_a_brace() {
+    assert_resolves_inside_the_crate("../../../{dir}/../crates/tasty-b/src/help.txt", "{dir}");
+}
+
+/// A string of a resolved include is taken out of the line before the text search, so a
+/// build directive after it on the same line is still read, with its own path.
+#[test]
+fn a_build_directive_after_a_resolved_include_on_the_same_line_is_still_read() {
+    let f = PinFixture::tasty_moved_twice(
+        &[
+            ("crates/outside.txt", "one\n"),
+            ("crates/tasty-b/data.txt", "data\n"),
+            (
+                "crates/tasty-b/build.rs",
+                "fn main() {\n    let _ = include_str!(\"data.txt\"); /* ../rerun-if-changed=../outside.txt */ \
+                 println!(\"cargo:rerun-if-changed=../outside.txt\");\n}\n",
+            ),
+        ],
+        &[("crates/outside.txt", "two\n")],
+    );
+    assert_undecidable_with(
+        &f.check(&HEAD_RANGE),
+        "tasty-b reads crates/outside.txt outside its crate (crates/tasty-b/build.rs)",
+    );
+}
+
 /// Case 8: The old commit cannot be found anywhere (no TASTY_GIT_DIR, not in the cargo database,
 /// and the URL does not have it).
 #[test]
